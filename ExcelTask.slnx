@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ExcelTask.Core/ExcelTask.Core.csproj" />
+    <Project Path="src/ExcelTask.Excel/ExcelTask.Excel.csproj" />
+    <Project Path="src/ExcelTask.McpServer/ExcelTask.McpServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ExcelTask.Core.Tests/ExcelTask.Core.Tests.csproj" />
+    <Project Path="tests/ExcelTask.Excel.Tests/ExcelTask.Excel.Tests.csproj" />
+    <Project Path="tests/ExcelTask.McpServer.Tests/ExcelTask.McpServer.Tests.csproj" />
+  </Folder>
+</Solution>

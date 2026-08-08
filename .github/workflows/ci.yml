@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  model-free:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - run: dotnet restore ExcelTask.slnx -p:NuGetAudit=false
+      - run: dotnet build ExcelTask.slnx -c Release --no-restore -p:NuGetAudit=false
+      - run: dotnet test ExcelTask.slnx -c Release --no-build --no-restore --filter "RunType!=OnDemand" -p:NuGetAudit=false
