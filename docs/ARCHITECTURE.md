@@ -7,6 +7,7 @@ GitHub Copilot (currently selected model)
   -> MCP adapter: one excel_task interface
   -> Task Engine: inspect, validate, plan, policy, receipt
   -> Workbook Runtime port
+  -> Supervisor: one bounded private worker per operation
   -> Excel adapter: one STA owner, exact workbook identity, COM, save/verify
   -> compact structured receipt
 ```
@@ -29,6 +30,12 @@ The Excel adapter satisfies the workbook-runtime port. It owns one STA thread,
 all COM references, exact open/owned workbook identity, formula/exhibit
 execution, save/reopen verification, and process cleanup. COM types never cross
 the seam.
+
+The MCP host never loads Excel COM. A short-lived private worker owns the STA
+adapter, and a worker-local watchdog may terminate only the exact Excel process
+captured from the application it created. The supervisor treats worker process
+reports as evidence only, enforces a two-minute deadline, and returns `Unknown`
+when completion or cleanup cannot be proved.
 
 The adapter has two ownership modes:
 

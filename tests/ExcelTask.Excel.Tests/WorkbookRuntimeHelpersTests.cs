@@ -9,10 +9,11 @@ public sealed class WorkbookRuntimeHelpersTests
     {
         var finalPath = Path.Combine(Path.GetTempPath(), "ExcelTask", "output.xlsm");
 
-        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath);
+        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath, "test-task");
 
         Assert.Equal(Path.GetDirectoryName(Path.GetFullPath(finalPath)), Path.GetDirectoryName(stagingPath));
         Assert.Equal(".xlsm", Path.GetExtension(stagingPath));
+        Assert.StartsWith(".output.excel-task-test-task-", Path.GetFileNameWithoutExtension(stagingPath), StringComparison.Ordinal);
         Assert.NotEqual(Path.GetFullPath(finalPath), stagingPath);
     }
 
@@ -22,7 +23,7 @@ public sealed class WorkbookRuntimeHelpersTests
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var finalPath = Path.Combine(directory, "output.xlsx");
-        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath);
+        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath, "test-task");
         try
         {
             File.WriteAllText(stagingPath, "staged");
@@ -45,7 +46,7 @@ public sealed class WorkbookRuntimeHelpersTests
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var finalPath = Path.Combine(directory, "output.xlsx");
-        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath);
+        var stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(finalPath, "test-task");
         try
         {
             File.WriteAllText(stagingPath, "staged");

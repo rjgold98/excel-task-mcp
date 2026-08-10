@@ -19,6 +19,8 @@ CLI, model selection, or model SDK dependencies.
 
 - Only the owning STA thread touches Excel COM objects.
 - Never share an RCW across threads or retain one past its worker lifetime.
+- The MCP host never owns COM. Each operation uses one private worker; only
+  that worker may recover the Excel process it created.
 - A timeout after mutation dispatch is `Unknown`; never retry it blindly.
 - Return `Completed`, `Partial`, `Unknown`, `Rejected`, or
   `NeedsConfirmation` truthfully.

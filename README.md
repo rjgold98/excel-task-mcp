@@ -1,4 +1,4 @@
-# ExcelTask 0.1.0
+# ExcelTask 0.2.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -23,6 +23,10 @@ One request can:
    the worksheet and repairs; and
 4. return a compact, structured receipt without workbook values or formula
    text.
+
+Every inspection and execution runs in a short-lived private worker. The MCP
+host enforces a two-minute deadline, reports interrupted mutations as
+`Unknown`, and never kills Excel based on worker-reported process data.
 
 The MVP accepts `.xlsx` and `.xlsm`. Copy output must keep the target file's
 extension. Macro execution is disabled when ExcelTask opens a workbook.
@@ -98,8 +102,8 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.1.0 proves the formula/exhibit vertical slice. It does not yet edit VBA,
-refresh Power Query or data models, attach to unsaved workbooks, or expose a
-general automation surface. A blocked Office authentication or IRM dialog can
-still stall the in-process COM worker; hard worker-process deadlines are a
-post-MVP reliability gate, not a claimed capability of this build.
+Version 0.2.0 proves the formula/exhibit vertical slice through a supervised
+private Excel worker. It does not yet edit VBA, refresh Power Query or data
+models, attach to unsaved workbooks, or expose a general automation surface.
+Authentication or IRM can still require a person; an interrupted mutation is
+reported as `Unknown` and must be reconciled before retrying.

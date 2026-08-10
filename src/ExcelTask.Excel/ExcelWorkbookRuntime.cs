@@ -14,20 +14,26 @@ namespace ExcelTask.Excel;
 public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 {
     private readonly StaComDispatcher _dispatcher = new();
+    private readonly IExcelWorkbookRuntimeObserver _observer;
     private bool _disposed;
+
+    public ExcelWorkbookRuntime() : this(NullExcelWorkbookRuntimeObserver.Instance) { }
+
+    internal ExcelWorkbookRuntime(IExcelWorkbookRuntimeObserver observer) =>
+        _observer = observer ?? throw new ArgumentNullException(nameof(observer));
 
     public Task<WorkbookInspection> InspectAsync(WorkbookInspectionRequest request, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(request);
-        return _dispatcher.InvokeAsync(() => InspectCore(request), cancellationToken);
+        return _dispatcher.InvokeAsync(() => InspectCore(request, _observer), cancellationToken);
     }
 
     public Task<WorkbookExecutionOutcome> ExecuteAsync(ExcelTaskPlan plan, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(plan);
-        return _dispatcher.InvokeAsync(() => ExecuteCore(plan), cancellationToken);
+        return _dispatcher.InvokeAsync(() => ExecuteCore(plan, _observer), cancellationToken);
     }
 
     public void Dispose()
@@ -37,8 +43,9 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         _dispatcher.Dispose();
     }
 
-    private static WorkbookInspection InspectCore(WorkbookInspectionRequest request)
+    private static WorkbookInspection InspectCore(WorkbookInspectionRequest request, IExcelWorkbookRuntimeObserver observer)
     {
+        observer.OnPhase("inspection");
         var targetPath = WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath);
         var referencePath = WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
         WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
@@ -58,7 +65,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             Checks: [new TaskCheck("target-path", true, "Target path was normalized and checked against the running object table.")]);
     }
 
-    private static WorkbookExecutionOutcome ExecuteCore(ExcelTaskPlan plan)
+    private static WorkbookExecutionOutcome ExecuteCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
     {
         try
         {
@@ -89,6 +96,12 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         var checks = new List<TaskCheck>();
         var repairs = new RepairApplication([], []);
         var phase = "input-validation";
+        void SetPhase(string value)
+        {
+            phase = value;
+            observer.OnPhase(value);
+        }
+        SetPhase(phase);
         var savedPath = WorkbookRuntimeHelpers.NormalizePath(plan.Request.Save == SaveMode.Copy
             ? plan.Request.OutputWorkbookPath ?? throw new InvalidOperationException("Copy output path is required.")
             : plan.Request.TargetWorkbookPath);
@@ -116,9 +129,9 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 }
             }
 
-            phase = "session-open";
-            session = ExcelSession.Open(plan.Request, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
-            phase = "preflight";
+            SetPhase("session-open");
+            session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
+            SetPhase("preflight");
             var preflight = PreflightWorksheetCopy(session, plan.Request.ReferenceWorksheet, plan.Request.NewWorksheetName);
             checks.AddRange(preflight.Checks);
             if (!preflight.IsFeasible)
@@ -157,11 +170,11 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             mutationAttempted = true;
-            phase = "worksheet-copy";
-            CopyReferenceWorksheet(session, plan.Request.ReferenceWorksheet, plan.Request.NewWorksheetName, value => phase = value);
+            SetPhase("worksheet-copy");
+            CopyReferenceWorksheet(session, plan.Request.ReferenceWorksheet, plan.Request.NewWorksheetName, SetPhase);
             changes.Add(new TaskChange("worksheet-copy", "workbook", "Copied the requested reference worksheet."));
 
-            phase = "formula-repair";
+            SetPhase("formula-repair");
             repairs = ApplyFormulaRepairs(session, plan.Request.NewWorksheetName, plan.Request.FormulaRepairRanges);
             changes.AddRange(repairs.RangeResults.Select(result => new TaskChange(
                 "formula-repair",
@@ -169,12 +182,13 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 $"Applied {result.RepairCount} safely inferred blank repairs in the requested range.")));
             checks.Add(new TaskCheck("formula-repair-count", true, $"Applied {repairs.Repairs.Count} repairs across {repairs.RangeResults.Count} requested ranges."));
 
-            phase = "recalculate";
+            SetPhase("recalculate");
             Invoke(session.Application, "CalculateFull");
-            phase = "save";
+            SetPhase("save");
             if (plan.Request.Save == SaveMode.Copy)
             {
-                stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(savedPath);
+                stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(savedPath, plan.TaskId);
+                observer.OnStagingPathCreated(stagingPath);
                 Invoke(session.TargetWorkbook, "SaveAs", stagingPath);
             }
             else
@@ -183,7 +197,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             checks.Add(new TaskCheck("save", true, "Excel completed the requested save operation."));
-            phase = "primary-cleanup";
+            SetPhase("primary-cleanup");
             var primaryCleanupVerified = session.Close();
             session = null;
             if (!primaryCleanupVerified)
@@ -207,8 +221,8 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             var verificationPath = stagingPath ?? savedPath;
-            phase = "reopen-verification";
-            if (!VerifySavedWorkbook(verificationPath, plan.Request.NewWorksheetName, repairs.Repairs, out var verificationCheck))
+            SetPhase("reopen-verification");
+            if (!VerifySavedWorkbook(verificationPath, plan.Request.NewWorksheetName, repairs.Repairs, observer, out var verificationCheck))
             {
                 checks.Add(verificationCheck);
                 AddStagingCleanupCheck(stagingPath, checks);
@@ -225,14 +239,14 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             verified = true;
             if (stagingPath is not null)
             {
-                phase = "copy-promotion";
+                SetPhase("copy-promotion");
                 WorkbookRuntimeHelpers.PromoteStaging(stagingPath, savedPath, plan.Request.OverwriteConfirmed);
                 stagingPath = null;
                 changes.Add(new TaskChange("copy-promotion", "workbook", "Promoted the verified staging workbook to the requested output path."));
             }
             return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook changes were saved and verified after reopening.", changes, checks);
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             var ownedCleanupFailed = false;
             if (session is not null)
@@ -245,7 +259,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             if (!stagingCleanupFailed) stagingPath = null;
             var status = ownedCleanupFailed || stagingCleanupFailed ? ExcelTaskStatus.Unknown : verified ? ExcelTaskStatus.Partial : mutationAttempted ? ExcelTaskStatus.Unknown : ExcelTaskStatus.Rejected;
             checks.Add(new TaskCheck("execution", false, mutationAttempted
-                ? $"Excel reported {exception.GetType().Name} during {phase}; the change was not fully verified."
+                ? "Excel execution did not complete during the current phase; the change was not fully verified."
                 : "Excel did not complete the requested read-only preflight."));
             if (ownedCleanupFailed) checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit during cleanup."));
             if (stagingCleanupFailed) checks.Add(new TaskCheck("staging-cleanup", false, "A staging workbook could not be deleted; inspect the output directory before retrying."));
@@ -374,6 +388,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         string path,
         string worksheetName,
         IReadOnlyList<ExpectedFormula> expectedRepairs,
+        IExcelWorkbookRuntimeObserver observer,
         out TaskCheck check)
     {
         ExcelSession? verification = null;
@@ -381,7 +396,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         check = new TaskCheck("reopen-verification", false, "Saved workbook verification did not complete.");
         try
         {
-            verification = ExcelSession.OpenForVerification(path);
+            verification = ExcelSession.OpenForVerification(path, observer);
             using var references = new ComReferenceScope();
             var sheets = references.Add(Get(verification.TargetWorkbook, "Worksheets"));
             var sheet = references.Add(Get(sheets, "Item", worksheetName));
@@ -469,7 +484,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         public object ReferenceWorkbook { get; }
 
-        public static ExcelSession Open(NormalizedExcelTaskRequest request, bool readOnlyTarget = false)
+        public static ExcelSession Open(NormalizedExcelTaskRequest request, IExcelWorkbookRuntimeObserver observer, bool readOnlyTarget = false)
         {
             if (request.WorkbookBinding == WorkbookBinding.UseOpen)
             {
@@ -545,7 +560,8 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             var app = CreateApplication();
             try
             {
-                var identity = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                var ownedProcess = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                observer.OnOwnedProcessCaptured(ownedProcess.Identity);
                 ConfigureOwnedApplication(app);
                 var workbooks = Get(app, "Workbooks");
                 try
@@ -557,7 +573,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                         reference = WorkbookRuntimeHelpers.PathsEqual(request.TargetWorkbookPath, request.ReferenceWorkbookPath)
                             ? target
                             : OpenWorkbook(workbooks, request.ReferenceWorkbookPath, readOnly: true);
-                        return new ExcelSession(app, target, reference, ownsApplication: true, closeTarget: true, closeReference: !ReferenceEquals(target, reference), identity);
+                        return new ExcelSession(app, target, reference, ownsApplication: true, closeTarget: true, closeReference: !ReferenceEquals(target, reference), ownedProcess);
                     }
                     catch
                     {
@@ -579,19 +595,20 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
         }
 
-        public static ExcelSession OpenForVerification(string path)
+        public static ExcelSession OpenForVerification(string path, IExcelWorkbookRuntimeObserver observer)
         {
             var beforeStart = OwnedExcelProcess.SnapshotExcelProcesses();
             var app = CreateApplication();
             try
             {
-                var identity = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                var ownedProcess = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                observer.OnOwnedProcessCaptured(ownedProcess.Identity);
                 ConfigureOwnedApplication(app);
                 var workbooks = Get(app, "Workbooks");
                 try
                 {
                     var workbook = OpenWorkbook(workbooks, path, readOnly: true);
-                    return new ExcelSession(app, workbook, workbook, ownsApplication: true, closeTarget: true, closeReference: false, identity);
+                    return new ExcelSession(app, workbook, workbook, ownsApplication: true, closeTarget: true, closeReference: false, ownedProcess);
                 }
                 finally
                 {
@@ -750,14 +767,22 @@ internal static class WorkbookRuntimeHelpers
         }
     }
 
-    public static string CreateStagingPath(string finalPath)
+    public static string CreateStagingPath(string finalPath, string taskId)
     {
         var normalized = NormalizePath(finalPath);
         var directory = Path.GetDirectoryName(normalized) ?? throw new InvalidOperationException("Copy output directory is required.");
         var extension = Path.GetExtension(normalized);
         var name = Path.GetFileNameWithoutExtension(normalized);
-        return Path.Combine(directory, $".{name}.excel-task-{Guid.NewGuid():N}{extension}");
+        if (!IsSafeTaskId(taskId))
+        {
+            throw new InvalidOperationException("Task identity cannot be used for staging.");
+        }
+
+        return Path.Combine(directory, $".{name}.excel-task-{taskId}-{Guid.NewGuid():N}{extension}");
     }
+
+    public static bool IsSafeTaskId(string? taskId) => taskId is { Length: > 0 and <= 128 } &&
+        taskId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     public static void PromoteStaging(string stagingPath, string finalPath, bool overwrite)
     {
@@ -981,6 +1006,8 @@ internal sealed class OwnedExcelProcess
     private readonly ProcessIdentity _identity;
 
     private OwnedExcelProcess(ProcessIdentity identity) => _identity = identity;
+
+    internal ProcessIdentity Identity => _identity;
 
     public static HashSet<ProcessIdentity> SnapshotExcelProcesses()
     {

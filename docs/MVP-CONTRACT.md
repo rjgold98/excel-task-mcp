@@ -37,6 +37,7 @@ checkpoint switches, idempotency keys, model selection, or CLI behavior.
 7. Save-in-place without explicit authorization is rejected before Excel
    mutation.
 8. The engine never closes or quits a user-owned Excel instance.
-9. An isolated task leaves no owned Excel process or workbook file lock.
+9. An isolated task runs in a supervised private worker and leaves no owned
+   Excel process or workbook file lock.
 10. The receipt distinguishes rejected, completed, partial, and unknown
     outcomes and states whether retry is safe.
