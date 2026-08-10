@@ -356,6 +356,74 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Theory]
+    // An icon adds a Static control, which is what a real analyst macro almost always uses. The
+    // count-based rule this replaced matched only the bare form and ignored the rest in silence.
+    [InlineData("MsgBox \"field message\"")]
+    [InlineData("MsgBox \"field message\", vbInformation")]
+    [InlineData("MsgBox \"field message\", vbCritical, \"Title\"")]
+    public async Task MacroMessageBoxRaisedByACalledProcedureIsAnsweredSoTheRunCanFinish(string call)
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        var output = Path.Combine(directory, "macro-output.xlsm");
+        const string component = "SafeModule";
+        const string procedure = "WriteMarker";
+        // The dialog comes from Announce, not from the replacement, so pre-flight source screening
+        // cannot see it. Only the sentry can clear it once the automation thread is blocked.
+        const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        var helper = $"\nPublic Sub Announce()\n    {call}\nEnd Sub";
+        const string replacementSource = "Public Sub WriteMarker()\n    Announce\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"after\"\nEnd Sub";
+        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+
+        try
+        {
+            try { ExcelTestWorkbook.CreateMacroTarget(target, component, originalSource + helper); }
+            catch (Exception exception) when (IsAccessVbomUnavailable(exception))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("Excel Trust Center does not permit programmatic VBA project access on this machine.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-plan", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var applied = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-apply", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Apply,
+                planned.MacroProcedure!.Sha256, replacementSource, runAfterEdit: true)), CancellationToken.None);
+            started.Stop();
+
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(90), $"Run took {started.Elapsed}, so the message box was never answered.");
+
+            // Answering a message box is reported, not hidden: the run is not a clean success.
+            Assert.Equal(ExcelTaskStatus.Partial, applied.Status);
+            var runCheck = Assert.Single(applied.Checks!, check => check.Name == "macro-run");
+            Assert.False(runCheck.Passed);
+            Assert.Contains("message box", runCheck.Detail, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("field message", runCheck.Detail, StringComparison.Ordinal);
+
+            // The macro ran past the dialog, which is the proof the button was really pressed.
+            Assert.True(ExcelTestWorkbook.HasValue(output, "A1", "after"));
+            Assert.Equal(replacementSource, ExcelTestWorkbook.ReadMacroProcedure(output, component, procedure));
+            Assert.DoesNotContain("ExcelTaskRun", ExcelTestWorkbook.ReadModuleText(output, component), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Assert.Empty(leaked);
+        }
+    }
+
+    // A dialog offering a real choice - Yes/No, OK/Cancel, Retry/Cancel - is deliberately left
+    // alone, so the blocked automation call never returns. Only the supervised runtime bounds that,
+    // by its deadline; this direct-runtime layer has none and would hang forever. The exclusion is
+    // therefore covered by ModalDialogSentryTests against real dialogs rather than here.
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)

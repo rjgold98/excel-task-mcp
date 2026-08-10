@@ -36,12 +36,17 @@ internal sealed record DismissedDialog(ModalDialogKind Kind, string Message);
 internal sealed class ModalDialogSentry : IDisposable
 {
     private const string DialogClassName = "#32770";
+    private const string ButtonClassName = "Button";
+    // The VBA editor's own frame window. A compile error belongs to the editor; a MsgBox raised by
+    // running macro code has no owner at all. Measured, and unlike a caption it is not translated.
+    private const string VbaEditorClassName = "wndclass_desked_gsk";
     private const int MaxMessageLength = 200;
 
     // Control identifiers are stable across Office language packs, unlike button captions.
+    // Beware: identifier 2 is the OK button on a one-button dialog but the Cancel button on
+    // OK/Cancel and Retry/Cancel, so it is only ever pressed when no other choice button exists.
     private const int IdOk = 2;
     private const int IdHelp = 9;
-    private const int IdCompileErrorDecoration = 20;
     private const int IdStaticText = 65535;
     private const int IdRuntimeEnd = 4800;
     private const int IdRuntimeDebug = 4801;
@@ -177,9 +182,12 @@ internal sealed class ModalDialogSentry : IDisposable
         buttonToClick = IntPtr.Zero;
 
         var controls = new Dictionary<int, IntPtr>();
+        var buttonIds = new HashSet<int>();
         EnumChildWindows(dialog, (child, state) =>
         {
-            controls.TryAdd(GetDlgCtrlID(child), child);
+            var id = GetDlgCtrlID(child);
+            controls.TryAdd(id, child);
+            if (ReadClassName(child) == ButtonClassName) buttonIds.Add(id);
             return true;
         }, IntPtr.Zero);
 
@@ -197,18 +205,24 @@ internal sealed class ModalDialogSentry : IDisposable
 
         if (!controls.TryGetValue(IdOk, out var okButton)) return false;
 
-        // A compile error carries a Help button and a decoration control alongside OK.
-        if (controls.ContainsKey(IdHelp) && controls.ContainsKey(IdCompileErrorDecoration))
+        // A compile error and a MsgBox carrying a help button have identical control identifiers, so
+        // ownership is what separates them. Only the editor's own dialog may end this process; a
+        // dialog raised by macro code never can, however much it looks like one.
+        if (IsOwnedByVbaEditor(dialog))
         {
+            if (!controls.ContainsKey(IdHelp)) return false;
             kind = ModalDialogKind.VbaCompileError;
             message = ReadControlText(controls, IdStaticText);
             buttonToClick = okButton;
             return true;
         }
 
-        // A MsgBox offering only OK. Anything offering a real choice - Yes/No, OK/Cancel, Retry -
-        // is left alone, because picking an answer on the user's behalf is not the sentry's call.
-        if (controls.Count == 2 && controls.ContainsKey(IdStaticText))
+        // A MsgBox whose only real choice is OK. Help is auxiliary, and an icon adds a Static rather
+        // than a Button, so both are tolerated. Anything offering a genuine choice - Yes/No,
+        // OK/Cancel, Retry/Cancel - is left alone, because answering for the user is not this
+        // class's call. That exclusion is by button identity, not by control count: on those dialogs
+        // identifier 2 is Cancel, so counting alone would press the wrong button.
+        if (controls.ContainsKey(IdStaticText) && buttonIds.All(id => id is IdOk or IdHelp))
         {
             kind = ModalDialogKind.MacroMessageBox;
             message = ReadControlText(controls, IdStaticText);
@@ -217,6 +231,13 @@ internal sealed class ModalDialogSentry : IDisposable
         }
 
         return false;
+    }
+
+    /// <summary>True when the dialog belongs to the VBA editor frame rather than to macro code.</summary>
+    private static bool IsOwnedByVbaEditor(IntPtr dialog)
+    {
+        var owner = GetWindow(dialog, GwOwner);
+        return owner != IntPtr.Zero && ReadClassName(owner) == VbaEditorClassName;
     }
 
     private static string ReadControlText(Dictionary<int, IntPtr> controls, int id) =>
@@ -246,6 +267,7 @@ internal sealed class ModalDialogSentry : IDisposable
 
     private const uint BM_CLICK = 0x00F5;
     private const uint SMTO_ABORTIFHUNG = 0x0002;
+    private const uint GwOwner = 4;
 
     private delegate bool EnumWindowProc(IntPtr handle, IntPtr parameter);
 
@@ -269,6 +291,9 @@ internal sealed class ModalDialogSentry : IDisposable
 
     [DllImport("user32.dll")]
     private static extern int GetDlgCtrlID(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr handle, uint command);
 
     [DllImport("user32.dll", EntryPoint = "SendMessageTimeoutW")]
     private static extern IntPtr SendMessageTimeout(
