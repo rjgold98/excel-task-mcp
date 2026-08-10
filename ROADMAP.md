@@ -41,7 +41,13 @@ promise.
    other workbooks - names and shapes only, never values, M text, connection
    strings, or paths - with the receipt proving by size and timestamp that the
    workbook was not changed. The development gate is met: the fixture set
-   produces a correct bounded report, verified against real Excel. Remaining
-   field gate: an audit of a representative real workbook on the work computer,
-   reporting counts and timings only. Following multiple workbooks through
-   their links into one report remains open.
+   produces a correct bounded report, verified against real Excel. On
+   2026-08-10 the first real-workbook audit ran on the work computer: one call,
+   nothing changed by the receipt's own proof and by independent metadata, no
+   process left behind. See `docs/field-reports/2026-08-10-audit/`. That proved
+   the audit safe on real content but not yet complete on rich content - the
+   chosen workbook had no Power Query or Data Model flows, so those surfaces
+   have only been exercised against fixtures. Remaining field gate: one audit
+   of a workbook the owner knows to contain query and model flows, with the
+   owner confirming the reported categories. Following multiple workbooks
+   through their links into one report remains open.
