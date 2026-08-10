@@ -35,5 +35,13 @@ promise.
    tests through the real MCP boundary, with VBA project access permitted by
    that machine's own policy and no Excel process left behind.
 4. **Read-first multi-workbook audit** - inspect Power Query and Data Model
-   flows before considering mutation. Gate: the agreed fixture set produces a
-   correct bounded dependency report without modifying a workbook.
+   flows before considering mutation. v0.7.0 delivered the single-workbook
+   slice: `AuditWorkbookFlows` reports queries and their load destinations,
+   connections, model tables, relationships and measures, pivots, and links to
+   other workbooks - names and shapes only, never values, M text, connection
+   strings, or paths - with the receipt proving by size and timestamp that the
+   workbook was not changed. The development gate is met: the fixture set
+   produces a correct bounded report, verified against real Excel. Remaining
+   field gate: an audit of a representative real workbook on the work computer,
+   reporting counts and timings only. Following multiple workbooks through
+   their links into one report remains open.

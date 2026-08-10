@@ -39,16 +39,7 @@ internal sealed class FieldCheckFixtures
         try
         {
             var workbooks = Get(application, "Workbooks");
-            var target = Invoke(workbooks, "Add")!;
-            var sheets = Get(target, "Worksheets");
-            var model = Get(sheets, "Item", 1);
-            Set(model, "Name", "Model");
-            Set(Get(model, "Range", "A1:D1"), "Formula", new object[,] { { "=1", "=2", "=3", "=4" } });
-            Set(Get(model, "Range", "A2"), "Formula", "=A1*2");
-            Set(Get(model, "Range", "B2"), "Formula", "=B1*2");
-            Invoke(target, "SaveAs", targetPath);
-            Invoke(target, "Close", false);
-
+            // Reference first, so the target can carry an external link to it for the audit to find.
             var reference = Invoke(workbooks, "Add")!;
             var referenceSheets = Get(reference, "Worksheets");
             var referenceSheet = Get(referenceSheets, "Item", 1);
@@ -57,6 +48,31 @@ internal sealed class FieldCheckFixtures
             Set(Get(referenceSheet, "Range", "A3"), "Formula", "=ROW()");
             Invoke(reference, "SaveAs", referencePath);
             Invoke(reference, "Close", false);
+
+            var target = Invoke(workbooks, "Add")!;
+            var sheets = Get(target, "Worksheets");
+            var model = Get(sheets, "Item", 1);
+            Set(model, "Name", "Model");
+            Set(Get(model, "Range", "A1:D1"), "Formula", new object[,] { { "=1", "=2", "=3", "=4" } });
+            Set(Get(model, "Range", "A2"), "Formula", "=A1*2");
+            Set(Get(model, "Range", "B2"), "Formula", "=B1*2");
+            // Audit surfaces, both tolerated as absent: a link into the reference workbook, in F1
+            // where no formula operation looks, and one Power Query on builds that permit adding one.
+            var referenceDirectory = Path.GetDirectoryName(Path.GetFullPath(referencePath));
+            var referenceFile = Path.GetFileName(referencePath);
+            Set(Get(model, "Range", "F1"), "Formula", $"='{referenceDirectory}\\[{referenceFile}]Reference'!$A$1");
+            try
+            {
+                var queries = Get(target, "Queries");
+                Invoke(queries, "Add", "FieldQuery", "let Source = #table({\"A\"}, {{1}}) in Source");
+            }
+            catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException)
+            {
+                // Older Excel or policy without Power Query; the audit reports what exists.
+            }
+
+            Invoke(target, "SaveAs", targetPath);
+            Invoke(target, "Close", false);
         }
         finally
         {

@@ -76,7 +76,11 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
 
         var tool = Assert.Single(listed.Tools);
         Assert.Equal("excel_task", tool.Name);
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 8 * 1024);
+        // The budget forces every operation to earn its bytes. It was 8 KB for four operations and
+        // grew to 9 KB when the audit became the fifth. It must not grow to make room for wordier
+        // prose - only for rules the caller cannot act without, which field measurement showed cost
+        // two round trips when they were left out of the schema.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 9 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -114,6 +118,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
         AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
         AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
+        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options.");
 
         var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
         AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed.");

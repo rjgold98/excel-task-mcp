@@ -180,6 +180,11 @@ internal static class FieldCheck
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Copy,
             System.IO.Path.Combine(work, "out-extend.xlsx"), OverwriteConfirmed: true));
 
+        await RunAsync(client, fixtures, operations, "AuditWorkbookFlows (Apply)", new ExcelTaskRequest(
+            target,
+            new ExcelOperation(ExcelOperationKind.AuditWorkbookFlows, AuditWorkbookFlows: new AuditWorkbookFlowsOperation()),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
+
         if (!macroReady) return;
 
         var macroTarget = System.IO.Path.Combine(work, "macro-target.xlsm");

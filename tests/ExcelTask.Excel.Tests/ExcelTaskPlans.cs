@@ -4,6 +4,20 @@ namespace ExcelTask.Excel.Tests;
 
 internal static class ExcelTaskPlans
 {
+    public static NormalizedExcelTaskRequest Audit(
+        string target,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        false,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.AuditWorkbookFlows,
+            AuditWorkbookFlows: new NormalizedAuditWorkbookFlowsOperation()));
+
     public static NormalizedExcelTaskRequest Copy(
         string target,
         string reference,

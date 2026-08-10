@@ -37,6 +37,37 @@ internal static class ExcelTestWorkbook
         Release(sheets);
     });
 
+    /// <summary>
+    /// A workbook with audit surfaces: one external-link formula into the reference workbook, and
+    /// one Power Query when this Excel permits adding one. Returns whether the query was created.
+    /// </summary>
+    public static bool CreateAuditTarget(string path, string referencePath)
+    {
+        var hasQuery = false;
+        Create(path, workbook =>
+        {
+            var sheets = Get(workbook, "Worksheets");
+            var sheet = Get(sheets, "Item", 1);
+            var directory = Path.GetDirectoryName(Path.GetFullPath(referencePath));
+            var file = Path.GetFileName(referencePath);
+            Set(Get(sheet, "Range", "F1"), "Formula", $"='{directory}\\[{file}]Reference'!$A$1");
+            try
+            {
+                var queries = Get(workbook, "Queries");
+                Invoke(queries, "Add", "AuditQuery", "let Source = #table({\"A\"}, {{1}}) in Source");
+                hasQuery = true;
+                Release(queries);
+            }
+            catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or System.Reflection.TargetInvocationException)
+            {
+                // This Excel build or policy does not permit adding queries; the audit reports what exists.
+            }
+            Release(sheet);
+            Release(sheets);
+        });
+        return hasQuery;
+    }
+
     public static void CreateMacroTarget(string path, string componentName, string source)
     {
         using var application = TestExcelApplication.Start();

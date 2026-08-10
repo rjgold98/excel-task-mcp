@@ -74,6 +74,12 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteMacroCore(plan, observer);
         }
 
+        // Dispatched before the write-oriented gates below: an audit has no save to confirm.
+        if (plan.Request.Operation.Kind == ExcelOperationKind.AuditWorkbookFlows)
+        {
+            return ExecuteAuditCore(plan, observer);
+        }
+
         try
         {
             WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");

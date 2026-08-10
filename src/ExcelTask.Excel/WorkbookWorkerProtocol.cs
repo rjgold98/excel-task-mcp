@@ -96,7 +96,8 @@ internal static class WorkbookWorkerProtocol
         }).ToArray(),
         Checks = BoundChecks(outcome.Checks),
         RetryReason = Bound(outcome.RetryReason),
-        MacroProcedure = Bound(outcome.MacroProcedure)
+        MacroProcedure = Bound(outcome.MacroProcedure),
+        Audit = Bound(outcome.Audit)
     };
 
     private static TaskCheck[] BoundChecks(IReadOnlyList<TaskCheck>? checks) => (checks ?? [])
@@ -114,6 +115,19 @@ internal static class WorkbookWorkerProtocol
         ProcedureName = BoundRequired(receipt.ProcedureName),
         Sha256 = BoundRequired(receipt.Sha256),
         Source = receipt.Source is { Length: > MacroProcedureText.MaxSourceCharacters } source ? source[..MacroProcedureText.MaxSourceCharacters] : receipt.Source
+    };
+
+    private static WorkbookAuditReceipt? Bound(WorkbookAuditReceipt? audit) => audit is null ? null : audit with
+    {
+        Items = audit.Items.Take(MaxResultItems).Select(item => item with
+        {
+            Kind = BoundRequired(item.Kind),
+            Name = BoundRequired(item.Name),
+            Detail = BoundRequired(item.Detail),
+            DependsOn = Bound(item.DependsOn)
+        }).ToArray(),
+        // The real total survives the cap, so a trimmed report still says what it is not showing.
+        Truncated = audit.Truncated || audit.Items.Count > MaxResultItems
     };
 
 }

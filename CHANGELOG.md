@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0 - 2026-08-10
+
+- Added the fifth operation, `AuditWorkbookFlows`: a read-only report of how one
+  workbook's data flows fit together - Power Query queries and where each loads,
+  connections, Data Model tables, relationships and measures, PivotTables and
+  their sources, and links to other workbooks. It returns names and shapes only:
+  no cell values, no M formulas, and no connection strings, because those carry
+  servers and credentials. External links are reported as file names, never
+  paths.
+- Read-only is proven, not promised: the session opens read-only, a save
+  destination is refused at validation, and the receipt compares the file's size
+  and timestamp before and after so it can state the workbook was not changed.
+- Every collection entry is resolved through an accessor that tolerates both the
+  property and method bindings of `Item`, the difference that produced two
+  separate defects earlier in the day.
+- The field check now exercises the audit as its fourth operation, and its
+  fixtures carry an external link and a Power Query for it to find.
+- The schema budget test grew from 8 KB to 9 KB for the fifth operation. The
+  advertised surface is 8,182 bytes - still 7.1x smaller than the original
+  server's 58,324.
+
 ## 0.6.4 - 2026-08-10
 
 - Made the macro rules visible in the schema instead of only in the rejection.

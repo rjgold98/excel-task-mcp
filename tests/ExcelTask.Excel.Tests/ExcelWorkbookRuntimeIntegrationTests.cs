@@ -424,6 +424,57 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     // by its deadline; this direct-runtime layer has none and would hang forever. The exclusion is
     // therefore covered by ModalDialogSentryTests against real dialogs rather than here.
 
+    [Fact]
+    public async Task AuditReportsFlowsWithoutChangingTheWorkbookOrLeakingPaths()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "audit-target.xlsx");
+        var reference = Path.Combine(directory, "audit-reference.xlsx");
+        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+
+        try
+        {
+            ExcelTestWorkbook.CreateReference(reference);
+            var hasQuery = ExcelTestWorkbook.CreateAuditTarget(target, reference);
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("audit", ExcelTaskPlans.Audit(target)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.NotNull(outcome.Audit);
+            Assert.True(outcome.Audit.WorkbookUnchanged);
+            Assert.True(outcome.Audit.TotalFound >= 1);
+
+            // The external link is reported as a file name only; the directory would carry
+            // machine-specific path segments a receipt must never contain.
+            var link = Assert.Single(outcome.Audit.Items, item => item.Kind == "external-link");
+            Assert.Equal("audit-reference.xlsx", link.Name);
+            Assert.All(outcome.Audit.Items, item => Assert.DoesNotContain(directory, item.Name + item.Detail + item.DependsOn, StringComparison.OrdinalIgnoreCase));
+
+            if (hasQuery)
+            {
+                var query = Assert.Single(outcome.Audit.Items, item => item.Kind == "query");
+                Assert.Equal("AuditQuery", query.Name);
+            }
+
+            // Read-only means provably unchanged on disk, not just unpersisted.
+            var stampAfter = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+            Assert.Equal(stampBefore, stampAfter);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "workbook-unchanged" && check.Passed);
+        }
+        finally
+        {
+            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Assert.Empty(leaked);
+        }
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
