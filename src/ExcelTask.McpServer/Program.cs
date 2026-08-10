@@ -19,6 +19,14 @@ if (args is ["--field-check", ..])
     return;
 }
 
+// Disposable workbooks to try the server against. Needed because every operation requires an
+// existing workbook and a locked-down machine cannot script Excel to produce one.
+if (args is ["--make-fixture", ..])
+{
+    Environment.ExitCode = MakeFixture.Run(args);
+    return;
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Logging.ClearProviders();

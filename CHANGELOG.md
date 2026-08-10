@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.3 - 2026-08-10
+
+- Added `--make-fixture <directory>`, which writes a few disposable workbooks to
+  try the server against and prints ready-made prompts. Every operation needs an
+  existing workbook, and a managed computer usually cannot script Excel to produce
+  one, so the first real test otherwise depended on building a workbook by hand.
+- Added `docs/FIRST-TEST.md`: the shortest path from a downloaded release to
+  watching a client actually change a workbook.
+
 ## 0.6.2 - 2026-08-10
 
 - Released every COM interface the environment probe obtains. A retained one
