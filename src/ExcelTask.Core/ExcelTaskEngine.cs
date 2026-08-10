@@ -160,7 +160,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 outcome.MacroProcedure,
                 normalizedRequest.Mode == ExcelTaskMode.Plan &&
                 normalizedRequest.Operation.EditMacroProcedure is not null &&
-                outcome.Status == ExcelTaskStatus.Planned);
+                outcome.Status == ExcelTaskStatus.Planned,
+                outcome.Audit);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -198,6 +199,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 "target-open",
                 "Target is open. Resubmit with workbook binding UseOpen or Isolated after choosing how Excel should bind it."));
         }
+
+        // A read-only operation has no save to authorize. Asking to confirm an overwrite that
+        // cannot happen would teach the caller that the confirmation means nothing.
+        if (request.Operation.AuditWorkbookFlows is not null) return requirements;
 
         if (request.Mode == ExcelTaskMode.Apply && request.Save == SaveMode.Same && !request.OverwriteConfirmed)
         {
@@ -255,7 +260,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         TimeSpan execution,
         TimeSpan total,
         MacroProcedureReceipt? macroProcedure = null,
-        bool includeMacroSource = false)
+        bool includeMacroSource = false,
+        WorkbookAuditReceipt? audit = null)
     {
         if (status == ExcelTaskStatus.Rejected)
         {
@@ -283,7 +289,28 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             new RetryReceipt(canRetry, Bound(retryReason)),
             new ConfirmationReceipt(confirmationRequired, BoundRequirements(requirements)),
             new PhaseTimings(validation, inspection, execution, total),
-            BoundMacroProcedure(macroProcedure, includeMacroSource));
+            BoundMacroProcedure(macroProcedure, includeMacroSource),
+            BoundAudit(audit));
+    }
+
+    /// <summary>
+    /// Caps the audit at the same receipt limits as everything else. The reported total counts what
+    /// the workbook actually contains, so a bounded report still says how much it is not showing.
+    /// </summary>
+    private static WorkbookAuditReceipt? BoundAudit(WorkbookAuditReceipt? audit)
+    {
+        if (audit is null) return null;
+
+        var items = audit.Items
+            .Take(MaxReceiptItems)
+            .Select(item => new WorkbookFlowItem(
+                Bound(item.Kind) ?? string.Empty,
+                Bound(item.Name) ?? string.Empty,
+                Bound(item.Detail) ?? string.Empty,
+                Bound(item.DependsOn)))
+            .ToArray();
+
+        return new WorkbookAuditReceipt(items, audit.TotalFound, audit.Truncated || audit.Items.Count > items.Length, audit.WorkbookUnchanged);
     }
 
     private static MacroProcedureReceipt? BoundMacroProcedure(MacroProcedureReceipt? macroProcedure, bool includeSource)
@@ -381,6 +408,15 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         if (operation!.EditMacroProcedure is not null &&
             !TryValidateMacroRequestPolicy(target!, request.WorkbookBinding, request.Save, output, out error))
         {
+            return false;
+        }
+
+        // An audit reads and reports; it has nothing to write. Refusing a save destination outright
+        // means the read-only promise is enforced by the request shape rather than by the runtime
+        // remembering not to save.
+        if (operation.AuditWorkbookFlows is not null && (request.Save == SaveMode.Copy || output is not null))
+        {
+            error = "Auditing workbook flows never writes, so it must not be given a save destination.";
             return false;
         }
 
@@ -498,7 +534,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         var payloadCount = (operation.CopyExhibit is null ? 0 : 1) +
                            (operation.RepairExistingWorksheet is null ? 0 : 1) +
                            (operation.ExtendFormulaSeries is null ? 0 : 1) +
-                           (operation.EditMacroProcedure is null ? 0 : 1);
+                           (operation.EditMacroProcedure is null ? 0 : 1) +
+                           (operation.AuditWorkbookFlows is null ? 0 : 1);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";
@@ -551,6 +588,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
             case ExcelOperationKind.EditMacroProcedure when operation.EditMacroProcedure is not null:
                 return TryNormalizeMacroOperation(operation.EditMacroProcedure, mode, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.AuditWorkbookFlows when operation.AuditWorkbookFlows is not null:
+                normalized = new NormalizedExcelOperation(operation.Kind, AuditWorkbookFlows: new NormalizedAuditWorkbookFlowsOperation());
+                return true;
 
             default:
                 error = "Operation payload does not match its kind.";

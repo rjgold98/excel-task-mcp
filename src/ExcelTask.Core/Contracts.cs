@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -36,13 +36,23 @@ public sealed record EditMacroProcedureOperation(
     [property: Description("Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
     [property: Description("Apply only, and must be omitted for Plan. When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.")] bool RunAfterEdit = false);
 
+/// <summary>
+/// Reports how one workbook's data flows fit together: its Power Query queries and where each one
+/// loads, its connections, its Data Model tables, relationships and measures, its PivotTables, and
+/// the other workbooks it links to. It never changes anything, and it returns names and shapes
+/// rather than data: no cell values, no query text, and no connection strings, because those carry
+/// server names and credentials.
+/// </summary>
+public sealed record AuditWorkbookFlowsOperation();
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
     [property: Description("Required only when kind is CopyExhibit; all other payloads must be null.")] CopyExhibitOperation? CopyExhibit = null,
     [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
-    [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null);
+    [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
+    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
@@ -99,13 +109,16 @@ public sealed record NormalizedEditMacroProcedureOperation(
     string? ReplacementSource,
     bool RunAfterEdit);
 
+public sealed record NormalizedAuditWorkbookFlowsOperation();
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
     NormalizedCopyExhibitOperation? CopyExhibit = null,
     NormalizedRepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     NormalizedExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
-    NormalizedEditMacroProcedureOperation? EditMacroProcedure = null);
+    NormalizedEditMacroProcedureOperation? EditMacroProcedure = null,
+    NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,
@@ -120,10 +133,29 @@ public sealed record ExcelTaskPlan(string TaskId, NormalizedExcelTaskRequest Req
 public sealed record TaskChange(string Kind, string Target, string Summary);
 public sealed record TaskCheck(string Name, bool Passed, string Detail);
 public sealed record MacroProcedureReceipt(string ComponentName, string ProcedureName, string Sha256, string? Source, bool RunRequested, bool RunCompleted);
-public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null);
+
+/// <summary>
+/// One element of a workbook's data flow. <paramref name="Kind"/> says what it is - a query, a
+/// connection, a model table, a relationship, a measure, a pivot, or an external link.
+/// <paramref name="DependsOn"/> names what it reads from, which is what turns a list into a map.
+/// Everything here is a name or a shape; never a value, query text, or connection string.
+/// </summary>
+public sealed record WorkbookFlowItem(string Kind, string Name, string Detail, string? DependsOn = null);
+
+/// <summary>
+/// A bounded description of one workbook's data flows. <paramref name="TotalFound"/> counts what
+/// existed, not what fitted, so a truncated report can never be mistaken for a complete one.
+/// </summary>
+public sealed record WorkbookAuditReceipt(
+    IReadOnlyList<WorkbookFlowItem> Items,
+    int TotalFound,
+    bool Truncated,
+    bool WorkbookUnchanged);
+
+public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
 public sealed record ConfirmationRequirement(string Code, string Prompt);
 public sealed record ConfirmationReceipt(bool Required, IReadOnlyList<ConfirmationRequirement> Requirements);
 public sealed record PhaseTimings(TimeSpan Validation, TimeSpan Inspection, TimeSpan Execution, TimeSpan Total);
-public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null);
+public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null);

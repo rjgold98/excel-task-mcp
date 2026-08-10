@@ -495,6 +495,81 @@ public sealed class ExcelTaskEngineTests
         Assert.Null(receipt.MacroProcedure.Source);
     }
 
+    [Fact]
+    public async Task AuditDispatchesWithNoSaveDestinationAndReturnsItsReport()
+    {
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(
+                ExcelTaskStatus.Completed,
+                "Audited",
+                Audit: new WorkbookAuditReceipt(
+                    [
+                        new WorkbookFlowItem("query", "Trial Balance", "loads to model"),
+                        new WorkbookFlowItem("relationship", "Accounts -> TB", "many to one", "Accounts")
+                    ],
+                    2,
+                    Truncated: false,
+                    WorkbookUnchanged: true))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(AuditRequest(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.NotNull(runtime.Plan!.Request.Operation.AuditWorkbookFlows);
+        Assert.Null(runtime.Plan.Request.OutputWorkbookPath);
+        Assert.Equal(SaveMode.Same, runtime.Plan.Request.Save);
+        Assert.Equal(2, receipt.Audit!.Items.Count);
+        Assert.True(receipt.Audit.WorkbookUnchanged);
+        Assert.Equal("Accounts", receipt.Audit.Items[1].DependsOn);
+    }
+
+    [Theory]
+    [InlineData(SaveMode.Copy, ".\\out.xlsx")]
+    [InlineData(SaveMode.Same, ".\\out.xlsx")]
+    public async Task AuditRefusesAnySaveDestinationBecauseItNeverWrites(SaveMode save, string? output)
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(AuditRequest(save: save, output: output), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.Plan);
+    }
+
+    [Fact]
+    public async Task AuditReportBoundsItsItemsWhileStillReportingTheRealTotal()
+    {
+        var many = Enumerable.Range(0, 60)
+            .Select(index => new WorkbookFlowItem("query", $"Query {index}", new string('d', 400)))
+            .ToArray();
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(ExcelTaskStatus.Completed, "Audited",
+                Audit: new WorkbookAuditReceipt(many, many.Length, Truncated: false, WorkbookUnchanged: true))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(AuditRequest(), CancellationToken.None);
+
+        Assert.True(receipt.Audit!.Items.Count < many.Length);
+        Assert.True(receipt.Audit.Truncated);
+        // The count of what exists survives the cap, so a partial map cannot read as a whole one.
+        Assert.Equal(60, receipt.Audit.TotalFound);
+        Assert.All(receipt.Audit.Items, item => Assert.True(item.Detail.Length <= 256));
+    }
+
+    private static ExcelTaskRequest AuditRequest(
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        SaveMode save = SaveMode.Same,
+        string? output = null) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(ExcelOperationKind.AuditWorkbookFlows, AuditWorkbookFlows: new AuditWorkbookFlowsOperation()),
+            Mode: mode,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: save,
+            OutputWorkbookPath: output,
+            OverwriteConfirmed: false);
+
     private static ExcelTaskRequest Request(
         ExcelOperation? operation = null,
         ExcelTaskMode mode = ExcelTaskMode.Plan,
