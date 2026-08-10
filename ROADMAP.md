@@ -10,9 +10,16 @@ promise.
    Excel processes running and untouched. The tool-surface comparison is done:
    1 tool and 7,164 bytes against the original's 25 tools and 58,324 bytes, a
    ratio of 8.1x. See `docs/field-reports/2026-08-10-comparison/`.
-   Remaining gate: the three controlled client tasks with measured prompt-to-done
-   time. Until those run, nothing is known about end-to-end speed or token use
-   during real work - only about context cost before work begins.
+   The three controlled client tasks then ran as six fresh sessions, three per
+   server: 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
+   and 53% less wall time to a verified workbook, with all six correct after
+   reopening. See `docs/field-reports/2026-08-10-comparison/CLIENT-SESSIONS.md`.
+   Two qualifications belong with those figures: ExcelTask's own Excel execution
+   was 13% *slower*, and the whole advantage came from removing model
+   coordination between calls; and both tool catalogs were registered during
+   those sessions, so they measure orchestration, not schema loading. This phase
+   is met. What remains is repetition - one run per workflow is evidence, not a
+   benchmark.
 2. **Formula/exhibit depth** - v0.3.0 delivered bounded in-place gap repair and
    stable right/down formula-series extension through the existing one-tool
    operation union. Remaining field gate: three controlled Copilot tasks finish

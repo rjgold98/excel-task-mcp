@@ -25,12 +25,16 @@ public sealed record ExtendFormulaSeriesOperation(
     [property: Description("Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.")] string EvidenceRange,
     [property: Description("Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.")] string DestinationRange);
 
+/// <summary>
+/// Macro editing always uses workbookBinding Isolated and save Copy, on an .xlsm target and output.
+/// Plan is inspect-only and must carry none of the Apply fields.
+/// </summary>
 public sealed record EditMacroProcedureOperation(
     [property: Description("Existing VBA component name containing the procedure to inspect or replace.")] string ComponentName,
     [property: Description("Existing VBA procedure name to inspect or replace.")] string ProcedureName,
-    [property: Description("Required for Apply: SHA-256 fingerprint of the existing normalized procedure source.")] string? ExpectedProcedureSha256 = null,
-    [property: Description("Required for Apply: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
-    [property: Description("When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.")] bool RunAfterEdit = false);
+    [property: Description("Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.")] string? ExpectedProcedureSha256 = null,
+    [property: Description("Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
+    [property: Description("Apply only, and must be omitted for Plan. When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.")] bool RunAfterEdit = false);
 
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
@@ -44,8 +48,8 @@ public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
-    [property: Description("Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
-    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
+    [property: Description("Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated. EditMacroProcedure requires Isolated and rejects anything else.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
+    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same.")] string? OutputWorkbookPath = null,
     [property: Description("Explicit authorization required before Apply can overwrite an existing save destination.")] bool OverwriteConfirmed = false);
 

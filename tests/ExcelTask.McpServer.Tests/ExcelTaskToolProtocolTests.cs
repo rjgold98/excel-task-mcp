@@ -80,6 +80,12 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
+
+        // Field measurement showed a caller losing two round trips to macro rules it could not see:
+        // it sent Apply-only fields on a Plan, and used the default binding where only Isolated is
+        // permitted. Both rules must stay visible in the schema itself, not only in the rejection.
+        Assert.Contains("Isolated", schema, StringComparison.Ordinal);
+        Assert.Contains("omitted for Plan", schema, StringComparison.Ordinal);
         Assert.DoesNotContain("session", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("workbookData", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("model", schema, StringComparison.OrdinalIgnoreCase);
@@ -96,8 +102,8 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path.");
         AssertDescription(properties, "operation", "The required manual operation union. Supply exactly one payload matching kind.");
         AssertDescription(properties, "mode", "Plan previews without mutation; Apply performs the task after required confirmations.");
-        AssertDescription(properties, "workbookBinding", "Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated.");
-        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath.");
+        AssertDescription(properties, "workbookBinding", "Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated. EditMacroProcedure requires Isolated and rejects anything else.");
+        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same.");
         AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
 
@@ -123,9 +129,9 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var editMacroProperties = editMacro.GetProperty("properties");
         AssertDescription(editMacroProperties, "componentName", "Existing VBA component name containing the procedure to inspect or replace.");
         AssertDescription(editMacroProperties, "procedureName", "Existing VBA procedure name to inspect or replace.");
-        AssertDescription(editMacroProperties, "expectedProcedureSha256", "Required for Apply: SHA-256 fingerprint of the existing normalized procedure source.");
-        AssertDescription(editMacroProperties, "replacementSource", "Required for Apply: one complete replacement Sub or Function procedure with the requested name.");
-        AssertDescription(editMacroProperties, "runAfterEdit", "When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.");
+        AssertDescription(editMacroProperties, "expectedProcedureSha256", "Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.");
+        AssertDescription(editMacroProperties, "replacementSource", "Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.");
+        AssertDescription(editMacroProperties, "runAfterEdit", "Apply only, and must be omitted for Plan. When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.");
     }
 
     [Fact]

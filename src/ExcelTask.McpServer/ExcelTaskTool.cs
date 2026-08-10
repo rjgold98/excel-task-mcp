@@ -26,7 +26,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Destructive = true,
         UseStructuredContent = true,
         OutputSchemaType = typeof(ExcelTaskReceipt))]
-    [Description("Perform one bounded formula, exhibit, or macro-procedure operation in an existing .xlsx or .xlsm workbook. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen.")]
+    [Description("Perform one bounded formula, exhibit, or macro-procedure operation in an existing .xlsx or .xlsm workbook. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen, except EditMacroProcedure, which requires Isolated binding and Copy save to an .xlsm output, and whose Plan must omit every Apply-only field.")]
     public async Task<CallToolResult> RunAsync(
         [Description("The complete Excel task request.")] ExcelTaskRequest request,
         CancellationToken cancellationToken = default)

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.4 - 2026-08-10
+
+- Made the macro rules visible in the schema instead of only in the rejection.
+  Field measurement showed a caller losing two round trips to rules it could not
+  see: it sent Apply-only fields on a Plan, and used the default binding where
+  only `Isolated` is permitted - which the tool description encouraged by saying
+  "Start with AskIfOpen" without exception. A protocol test now holds both rules
+  in the schema.
+- Recorded the six-session client comparison under
+  `docs/field-reports/2026-08-10-comparison/CLIENT-SESSIONS.md`: 74% fewer input
+  tokens, 73% fewer model requests, 84% fewer MCP calls, 53% less wall time, all
+  workbooks correct after reopening. Two qualifications are recorded with it -
+  ExcelTask's own Excel execution was 13% slower, and both tool catalogs were
+  registered during those sessions, so they measure orchestration rather than
+  schema loading.
+
 ## 0.6.3 - 2026-08-10
 
 - Added `--make-fixture <directory>`, which writes a few disposable workbooks to
