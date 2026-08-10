@@ -215,8 +215,15 @@ public static partial class MacroProcedureText
     [GeneratedRegex(@"^End\s+(?<kind>Sub|Function)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ProcedureEndRegex();
 
-    // MsgBox/InputBox/GetOpenFilename/GetSaveAsFilename/FileDialog raise a modal dialog; Stop drops
-    // the VBA host into break mode. All of them wait for a person the product cannot summon.
-    [GeneratedRegex(@"\b(MsgBox|InputBox|GetOpenFilename|GetSaveAsFilename|FileDialog|Stop)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    // MsgBox/InputBox/GetOpenFilename/GetSaveAsFilename/FileDialog raise a modal dialog; the Stop
+    // statement drops the VBA host into break mode. All of them wait for a person the product
+    // cannot summon.
+    //
+    // Stop needs the extra guard because it is also an ordinary method name: a word boundary alone
+    // matches the Stop in timer.Stop or Application.Speech.Stop, which would refuse a legitimate
+    // macro. Requiring that no member access precede it keeps the statement and drops the calls.
+    // The others stay matched anywhere, because Application.FileDialog is exactly the usage worth
+    // refusing.
+    [GeneratedRegex(@"\b(?:MsgBox|InputBox|GetOpenFilename|GetSaveAsFilename|FileDialog)\b|(?<![.!\w])Stop\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex BlockingConstructRegex();
 }

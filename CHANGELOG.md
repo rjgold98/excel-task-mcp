@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0 - 2026-08-10
+
+- A VBA modal dialog no longer stalls a macro run. `RunAfterEdit` now calls the
+  procedure through a generated `On Error` wrapper, so a run-time error comes back
+  as a named VBA error and number instead of opening a dialog nobody can answer.
+  The edit itself is still saved and verified; the outcome is `Partial`.
+- A replacement containing `MsgBox`, `InputBox`, `GetOpenFilename`,
+  `GetSaveAsFilename`, `FileDialog`, or `Stop` is refused before Excel opens, but
+  only when the request also asks to run it. Editing such a procedure is unaffected.
+- Dialogs that a wrapper cannot catch - a compile error, or a message box inside a
+  procedure the replacement calls - are answered by a sentry watching the owned
+  Excel process from outside the blocked call. It acts only on a process ExcelTask
+  created and re-verifies that identity by id, start time, and image path before
+  every action, so a workbook bound with `UseOpen` is never touched.
+- A compile error is distinguished from a message box by window ownership rather
+  than by controls. The two are otherwise identical - `MsgBox "x", vbInformation +
+  vbMsgBoxHelpButton` has the same control identifiers as a compile error - and
+  only the compile error path may end the Excel process, so the difference decides
+  whether a user's own dialog could trigger a termination. It cannot.
+- Message boxes are recognized by button identity, not control count. The previous
+  count rule matched only the bare form, so `MsgBox "x", vbInformation` was ignored
+  and the run blocked until the deadline. Dialogs offering a real choice - Yes/No,
+  OK/Cancel, Retry/Cancel - are still left alone, because on those identifier 2 is
+  Cancel rather than OK and answering would choose for the user.
+- The refusal screen no longer mistakes a method call for the `Stop` statement.
+  A word boundary alone matched the `Stop` in `timer.Stop`, so ordinary macros
+  that never wait for anyone were refused.
+- Compile errors end the owned instance rather than clicking through, because
+  measurement showed answering that dialog leaves VBA in break mode with the
+  blocked call never returning. Nothing has been written at that point, so the
+  outcome is a plain `Rejected` carrying the compiler's own words.
+
 ## 0.5.0 - 2026-08-10
 
 - Moved the work-computer field check into the released executable as

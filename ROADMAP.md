@@ -17,7 +17,9 @@ promise.
    isolated `.xlsm` saved only as a `Copy`: Plan returns a bounded
    requested-procedure source and hash, Apply requires that hash plus a complete
    replacement, returns no source, and may optionally run the no-argument
-   procedure. Trust access remains user-controlled. Field gate met 2026-08-10:
+   procedure. v0.6.0 added dialog containment, so a run-time error, a compile
+   error, or a message box returns a named outcome instead of stalling.
+   Trust access remains user-controlled. Field gate met 2026-08-10:
    the work computer ran the disposable `.xlsm` edit, run, save, and reopen
    tests through the real MCP boundary, with VBA project access permitted by
    that machine's own policy and no Excel process left behind.

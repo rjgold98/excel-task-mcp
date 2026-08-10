@@ -69,6 +69,8 @@ public sealed class MacroProcedureTextTests
     [InlineData("Public Sub RefreshModel()\n    MsgBox \"done\"\nEnd Sub", "MsgBox")]
     [InlineData("Public Sub RefreshModel()\n    Dim answer\n    answer = InputBox(\"name?\")\nEnd Sub", "InputBox")]
     [InlineData("Public Sub RefreshModel()\n    Stop\nEnd Sub", "Stop")]
+    [InlineData("Public Sub RefreshModel()\n    If Range(\"A1\").Value2 = 0 Then Stop\nEnd Sub", "Stop")]
+    [InlineData("Public Sub RefreshModel()\n    Range(\"A1\").Value2 = 1: Stop\nEnd Sub", "Stop")]
     [InlineData("Public Sub RefreshModel()\n    Dim f\n    f = Application.GetOpenFilename()\nEnd Sub", "GetOpenFilename")]
     public void DetectsConstructsThatWaitForAPerson(string source, string expected)
     {
@@ -81,6 +83,11 @@ public sealed class MacroProcedureTextTests
     [InlineData("Public Sub RefreshModel()\n    ' MsgBox in a comment is not code\n    Range(\"A1\").Value2 = 1\nEnd Sub")]
     [InlineData("Public Sub RefreshModel()\n    Debug.Print \"no dialog\"\nEnd Sub")]
     [InlineData("Public Sub StopwatchTotal()\n    Range(\"A1\").Value2 = 1\nEnd Sub")]
+    // Stop is an ordinary method name as well as a statement, and refusing these would refuse
+    // macros that never wait for anyone.
+    [InlineData("Public Sub RefreshModel()\n    timer.Stop\nEnd Sub")]
+    [InlineData("Public Sub RefreshModel()\n    Application.Speech.Stop\nEnd Sub")]
+    [InlineData("Public Sub RefreshModel()\n    Call recorder.Stop()\nEnd Sub")]
     public void DoesNotMistakeStringsCommentsOrSimilarNamesForBlockingCode(string source)
     {
         Assert.False(MacroProcedureText.TryFindBlockingConstruct(source, out var construct));
