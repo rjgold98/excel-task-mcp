@@ -28,11 +28,11 @@ public sealed class ExcelTaskRealExcelOnDemandTests
             ExcelFixtureWorkbook.CreateTarget(target, fixtureProcesses);
             ExcelFixtureWorkbook.CreateReference(reference, fixtureProcesses);
 
-            var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
+            var environment = TestServer.EnvironmentVariables();
             var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
                 Name = "ExcelTask-real-worker-test",
-                Command = Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe"),
+                Command = TestServer.ServerPath,
                 WorkingDirectory = directory,
                 InheritEnvironmentVariables = false,
                 EnvironmentVariables = environment,
@@ -97,11 +97,11 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         {
             ExcelFixtureWorkbook.CreateMacroTarget(target, component, originalSource, fixtureProcesses);
 
-            var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
+            var environment = TestServer.EnvironmentVariables();
             var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
                 Name = "ExcelTask-real-macro-test",
-                Command = Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe"),
+                Command = TestServer.ServerPath,
                 WorkingDirectory = directory,
                 InheritEnvironmentVariables = false,
                 EnvironmentVariables = environment,

@@ -13,9 +13,20 @@ public sealed class PrivateWorkerMcpProcessTests
     };
 
     [Fact]
+    public void ChildEnvironmentCarriesTheHostingRuntimeRoot()
+    {
+        // Guards the per-user .NET install scenario: with inheritance disabled, the launched
+        // apphost must still be told where the runtime lives.
+        var environment = TestServer.EnvironmentVariables();
+
+        Assert.True(environment.TryGetValue("DOTNET_ROOT", out var root));
+        Assert.True(Directory.Exists(Path.Combine(root!, "shared")));
+    }
+
+    [Fact]
     public async Task PrivateWorkerModeCompletesOneBoundedInspection()
     {
-        var server = GetServerPath();
+        var server = TestServer.ServerPath;
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var target = Path.Combine(directory, "target.xlsx");
@@ -74,7 +85,7 @@ public sealed class PrivateWorkerMcpProcessTests
     [Fact]
     public async Task StdioServerUsesPrivateInspectionWorkerFromAnUntrustedWorkingDirectory()
     {
-        var server = GetServerPath();
+        var server = TestServer.ServerPath;
         Assert.True(File.Exists(server), $"Expected MCP server apphost at {server}.");
 
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -87,7 +98,7 @@ public sealed class PrivateWorkerMcpProcessTests
 
         try
         {
-            var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
+            var environment = TestServer.EnvironmentVariables();
             var transport = new StdioClientTransport(new StdioClientTransportOptions
             {
                 Name = "ExcelTask-private-worker-test",
@@ -126,11 +137,4 @@ public sealed class PrivateWorkerMcpProcessTests
         }
     }
 
-    private static string GetServerPath()
-    {
-        var configured = Environment.GetEnvironmentVariable("EXCELTASK_TEST_SERVER_PATH");
-        return string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe")
-            : Path.GetFullPath(configured);
-    }
 }

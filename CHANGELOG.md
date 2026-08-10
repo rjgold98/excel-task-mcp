@@ -1,12 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 - 2026-08-10
 
 - Added `scripts/Invoke-FieldCheck.ps1` and `docs/FIELD-CHECK.md` so the
   work-computer gates the roadmap has always required can actually be run. It
   reports the environment, measures the advertised tool surface against another
   MCP server, and times each operation against disposable workbooks. It changes
   no Excel or security setting.
+- Fixed the test harness for per-user .NET installs. The MCP transports launch
+  the server with environment inheritance disabled, so the framework-dependent
+  apphost could not see `DOTNET_ROOT` and failed with `0x80008083` on machines
+  with no machine-wide .NET, which is how the first work-computer run failed. The
+  child environment now carries the runtime root that hosts the tests. Found by
+  the 2026-08-10 work-computer validation run.
+- Recorded the first work-computer validation: the complete suite passed 146/146
+  there, including desktop Excel integration, macro editing with execution, and
+  process cleanup. VBA project access is permitted on that machine.
 
 ## 0.4.0 - 2026-08-10
 
