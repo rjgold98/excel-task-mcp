@@ -679,7 +679,7 @@ internal sealed class CurrentProcessWorkerLaunchSpecProvider : IWorkbookWorkerLa
     private readonly Func<string?> _entryAssemblyPath;
 
     public CurrentProcessWorkerLaunchSpecProvider()
-        : this(() => Environment.ProcessPath, () => System.Reflection.Assembly.GetEntryAssembly()?.Location)
+        : this(() => Environment.ProcessPath, ResolveEntryAssemblyPath)
     {
     }
 
@@ -705,4 +705,12 @@ internal sealed class CurrentProcessWorkerLaunchSpecProvider : IWorkbookWorkerLa
 
     private static bool IsDotnetHost(string executable) =>
         string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase);
+
+    private static string? ResolveEntryAssemblyPath()
+    {
+        var assemblyName = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name;
+        return string.IsNullOrWhiteSpace(assemblyName)
+            ? null
+            : Path.Combine(AppContext.BaseDirectory, assemblyName + ".dll");
+    }
 }
