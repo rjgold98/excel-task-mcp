@@ -2,7 +2,13 @@
 
 The roadmap gates every phase on real use, not on the developer machine. This is
 that gate. It has two halves: an automated half that needs no AI, and a short
-manual half that measures what only Copilot can show.
+manual half that measures what only the client can show.
+
+The automated half is built into the released executable rather than shipped as
+a script, because managed computers commonly run PowerShell in Constrained
+Language Mode, which forbids the COM and reflection a scripted equivalent needs.
+`--field-check` is not an MCP tool and not a public CLI; the model-facing surface
+is still exactly one tool.
 
 Nothing here changes an Excel setting, a security policy, or any workbook of
 yours. If a managed policy blocks something, the report records that as a fact
@@ -13,39 +19,48 @@ about the machine rather than treating it as a product failure.
 1. Download `ExcelTask-<version>-windows-x64.zip` from the
    [latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest)
    and extract it, for example to `C:\Tools\ExcelTask`.
-2. Copy `scripts\Invoke-FieldCheck.ps1` next to it.
-3. Run:
+2. Run:
 
 ```powershell
-.\Invoke-FieldCheck.ps1 -ServerPath C:\Tools\ExcelTask\excel-task-mcp.exe
+C:\Tools\ExcelTask\excel-task-mcp.exe --field-check
 ```
 
 To measure the original Excel MCP alongside it, add its launch command. Only its
-handshake and tool list are read; no workbook operation is sent to it.
+handshake and tool list are read; no workbook operation is sent to it. Repeat
+`--compare-arg` once per argument the other server needs.
 
 ```powershell
-.\Invoke-FieldCheck.ps1 -ServerPath C:\Tools\ExcelTask\excel-task-mcp.exe -CompareServerPath <path-to-the-other-server.exe>
+C:\Tools\ExcelTask\excel-task-mcp.exe --field-check --compare <other-server.exe> --compare-arg <arg>
 ```
 
-Two files land on the Desktop under `ExcelTask-FieldCheck`. Send both back.
+Options: `--server <exe>` to measure a different build, `--output <dir>` to
+choose where reports land. The default output is
+`Desktop\ExcelTask-FieldCheck`. The exit code is `0` when every operation
+completed and nothing was stranded, `1` otherwise.
+
+Two files are written. Send both back.
 
 What it records:
 
-- **Environment** - Excel version and build, connected COM add-ins, whether
-  "Trust access to the VBA project object model" is permitted, and whether Group
+- **Environment** - Excel version and build, connected COM add-ins, the .NET
+  runtime and `DOTNET_ROOT`, any PowerShell lockdown policy, whether "Trust
+  access to the VBA project object model" is permitted, and whether Group
   Policy is setting macro security.
-- **Tool surface** - how many tools the server advertises and how many bytes its
-  `tools/list` payload occupies. That payload is carried in context every
-  session before any work is requested, so it is the fairest like-for-like
-  context cost between two MCP servers.
+- **Tool surface** - for each server, how many tools it advertises and the exact
+  wire size of its `tools/list` response. That payload is carried in context
+  every session before any work is requested, so it is the fairest like-for-like
+  context cost between two MCP servers. It is measured over raw JSON-RPC rather
+  than through a client library, so the bytes are the server's own.
 - **Operations** - copy exhibit, extend formula series, and macro edit, each run
-  against a disposable workbook, with elapsed seconds, the resulting status, every
-  verification check, and whether any Excel process was left behind.
+  against a disposable workbook through the real MCP boundary, with elapsed
+  seconds, the resulting status, every verification check, and whether any Excel
+  process was left behind. The check's own fixture processes are tracked and
+  excluded, so a leak figure is never the harness being mistaken for the product.
 
 A `Rejected` or `Unknown` status is still a useful result. The check detail says
 which preflight step refused and why.
 
-## Half 2 - manual, in Copilot (about fifteen minutes)
+## Half 2 - manual, in the client (about fifteen minutes)
 
 The automated half cannot see tokens or turns, because only the client knows
 those. Pick three tasks that resemble real work - one exhibit built from a
@@ -64,15 +79,17 @@ For each of the six runs, record:
 | Retries or corrections | How often it had to fix its own call |
 | Result correct | Did the workbook end up right, verified by opening it |
 | Excel left behind | Any stray `EXCEL.EXE` in Task Manager afterwards |
-| Tokens | Only if Copilot exposes a usage figure; leave blank otherwise |
+| Tokens | Only if the client exposes a usage figure; leave blank otherwise |
 
 The number that matters most is the first one: how long from your prompt to the
 work actually being done.
 
 ## Configuring ExcelTask side by side
 
-Use a distinct server key and the full executable path, so the original install
-is untouched:
+`.vscode/mcp.json` in this repository already points at
+`C:\Tools\ExcelTask\excel-task-mcp.exe`, and clients that sync a repository's
+MCP configuration will pick it up. To configure it elsewhere, use a distinct
+server key and the full executable path so the original install is untouched:
 
 ```json
 {
@@ -91,3 +108,10 @@ project object model", which the organization controls. The report shows the
 current value. ExcelTask will never change it, and refusing to edit is the
 correct behaviour when it is off - the point of recording it is so the roadmap
 reflects what is actually possible on that machine.
+
+## Working directory
+
+Real workbooks commonly live in OneDrive or SharePoint-synced folders. The field
+check only ever uses disposable workbooks in the system temp directory, so sync
+behaviour cannot affect its results. Measuring ExcelTask against a synced folder
+is a separate, later task.

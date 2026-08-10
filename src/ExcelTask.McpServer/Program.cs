@@ -11,6 +11,14 @@ if (args is ["--excel-worker"])
     return;
 }
 
+// Field validation. Compiled rather than scripted because managed computers commonly run
+// PowerShell in Constrained Language Mode. Neither this nor --excel-worker is an MCP tool.
+if (args is ["--field-check", ..])
+{
+    Environment.ExitCode = await FieldCheck.RunAsync(args);
+    return;
+}
+
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Logging.ClearProviders();

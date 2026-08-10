@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.0 - 2026-08-10
+
+- Moved the work-computer field check into the released executable as
+  `--field-check`, replacing `scripts/Invoke-FieldCheck.ps1`. Managed computers
+  commonly run PowerShell in Constrained Language Mode, which forbids the COM and
+  reflection the script needed; compiled code is unaffected. It is not an MCP tool
+  and not a public CLI - the model-facing surface is still exactly one tool.
+- The tool-surface comparison now measures the raw `tools/list` wire response over
+  JSON-RPC rather than a re-serialization, so the reported bytes are the server's
+  own. Use `--compare` and `--compare-arg` to measure another MCP server.
+- Field-check fixture processes are tracked and excluded from the leak figures, so
+  a stranded-Excel count can never be the harness mistaken for the product.
+- Added `.vscode/mcp.json` so clients that sync a repository's MCP configuration
+  pick up the `excel-task` server automatically.
+- Added `docs/AGENT-BRIDGE.md`, defining how the lead and field agents divide
+  work, task each other through issues, and report with evidence.
+
 ## 0.4.1 - 2026-08-10
 
 - Added `scripts/Invoke-FieldCheck.ps1` and `docs/FIELD-CHECK.md` so the
