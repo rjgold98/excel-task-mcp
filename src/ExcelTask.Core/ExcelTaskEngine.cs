@@ -290,15 +290,18 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     {
         if (macroProcedure is null) return null;
 
+        // Plan source is evidence read out of the workbook and already bounded by the runtime, so it
+        // is only length-capped here. Re-checking it against the replacement grammar would silently
+        // return a successful plan with no source for procedures that are valid VBA but outside
+        // that deliberately narrow grammar.
         string? source = null;
-        if (includeSource && MacroProcedureText.TryNormalizeProcedureSource(
-                macroProcedure.Source,
-                macroProcedure.ProcedureName,
-                requireZeroParameters: false,
-                out var normalizedSource,
-                out _))
+        if (includeSource && macroProcedure.Source is not null)
         {
-            source = normalizedSource;
+            // Oversized evidence is omitted rather than truncated: a partial procedure could lead a
+            // caller to write a replacement from incomplete source and destroy the remainder. The
+            // runtime already rejects oversized procedures at read time, so this is a boundary guard.
+            var normalized = MacroProcedureText.NormalizeLineEndings(macroProcedure.Source);
+            if (normalized.Length <= MacroProcedureText.MaxSourceCharacters) source = normalized;
         }
 
         return new MacroProcedureReceipt(

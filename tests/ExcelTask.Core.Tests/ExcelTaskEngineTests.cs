@@ -93,6 +93,47 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
+    public async Task PlanReturnsTheProcedureSourceEvenWhenItsSignatureIsNotReplacementParseable()
+    {
+        // A line-continuation signature is valid VBA that the bounded replacement parser rejects.
+        // Plan source is evidence read out of the workbook, not model input, so dropping it would
+        // leave the caller with a successful plan and nothing to edit.
+        const string source = "Public Sub RefreshModel( _\n    ByVal scope As Long)\n    Debug.Print scope\nEnd Sub";
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(
+                ExcelTaskStatus.Planned,
+                "Macro plan ready",
+                MacroProcedure: new MacroProcedureReceipt("StandardModule", "RefreshModel", new string('a', 64), source, false, false))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(MacroRequest(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Planned, receipt.Status);
+        Assert.Equal(source, receipt.MacroProcedure!.Source);
+    }
+
+    [Fact]
+    public async Task ApplyNeverEchoesMacroSourceBackToTheCaller()
+    {
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(
+                ExcelTaskStatus.Completed,
+                "Macro applied",
+                MacroProcedure: new MacroProcedureReceipt("StandardModule", "RefreshModel", new string('a', 64), "Public Sub RefreshModel()\nEnd Sub", false, false))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            MacroRequest(
+                mode: ExcelTaskMode.Apply,
+                operation: Macro(expectedHash: new string('A', 64), replacementSource: "Public Sub RefreshModel()\nEnd Sub")),
+            CancellationToken.None);
+
+        Assert.Null(receipt.MacroProcedure!.Source);
+    }
+
+    [Fact]
     public async Task ApplyMacroProcedureNormalizesHashAndReplacementSource()
     {
         const string source = "Public Sub RefreshModel()\r\nEnd Sub\r\n";

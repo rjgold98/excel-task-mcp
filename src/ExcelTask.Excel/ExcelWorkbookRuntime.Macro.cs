@@ -54,7 +54,11 @@ public sealed partial class ExcelWorkbookRuntime
             }
 
             observer.OnPhase("session-open");
-            session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
+            session = ExcelSession.Open(
+                plan.Request,
+                observer,
+                readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan,
+                enableMacros: plan.Request.Mode == ExcelTaskMode.Apply && operation.RunAfterEdit);
             observer.OnPhase("macro-preflight");
             if (!TryGetVbaSigned(session.TargetWorkbook, out var vbaSigned))
             {
@@ -215,19 +219,35 @@ public sealed partial class ExcelWorkbookRuntime
     private static bool TryReadMacroProcedure(object workbook, string componentName, string procedureName, out MacroProcedureSnapshot? snapshot, out TaskCheck check)
     {
         snapshot = null;
+        // Each step reports its own reason so an operator can tell a Trust Center block apart
+        // from a missing module, a locked project, or an oversized procedure.
+        var reason = "Excel did not permit programmatic access to the workbook's VBA project. Enable Trust Center > Macro Settings > Trust access to the VBA project object model.";
         try
         {
             using var references = new ComReferenceScope();
             var project = references.Add(Get(workbook, "VBProject"));
+
+            reason = "The workbook's VBA project is locked or password-protected and cannot be inspected.";
             if (Convert.ToInt32(Get(project, "Protection"), CultureInfo.InvariantCulture) != VbextPpNone) throw new InvalidOperationException();
+
+            reason = "The requested VBA component does not exist in the workbook.";
             var components = references.Add(Get(project, "VBComponents"));
-            var component = references.Add(Get(components, "Item", componentName));
+            var component = references.Add(VbeItem(components, componentName));
+
+            reason = "The requested VBA component is not a standard module; only standard modules can be inspected or edited.";
             if (Convert.ToInt32(Get(component, "Type"), CultureInfo.InvariantCulture) != VbextCtStdModule) throw new InvalidOperationException();
+
+            reason = "The requested procedure does not exist as a Sub or Function in that component.";
             var module = references.Add(Get(component, "CodeModule"));
-            var startLine = Convert.ToInt32(Invoke(module, "ProcStartLine", procedureName, VbextPkProc), CultureInfo.InvariantCulture);
-            var lineCount = Convert.ToInt32(Invoke(module, "ProcCountLines", procedureName, VbextPkProc), CultureInfo.InvariantCulture);
-            var source = MacroProcedureText.NormalizeLineEndings((string)Invoke(module, "Lines", startLine, lineCount)!);
+            // ProcStartLine, ProcCountLines and Lines are parameterized properties on the VBIDE
+            // CodeModule interface, not methods; InvokeMethod binding raises DISP_E_MEMBERNOTFOUND.
+            var startLine = Convert.ToInt32(Get(module, "ProcStartLine", procedureName, VbextPkProc), CultureInfo.InvariantCulture);
+            var lineCount = Convert.ToInt32(Get(module, "ProcCountLines", procedureName, VbextPkProc), CultureInfo.InvariantCulture);
+            var source = MacroProcedureText.NormalizeLineEndings((string)Get(module, "Lines", startLine, lineCount));
+
+            reason = $"The requested procedure exceeds the bounded limits of {MacroProcedureText.MaxSourceCharacters:N0} characters and {MacroProcedureText.MaxLineCount} lines.";
             if (source.Length > MacroProcedureText.MaxSourceCharacters || CountLines(source) > MacroProcedureText.MaxLineCount) throw new InvalidOperationException();
+
             snapshot = new MacroProcedureSnapshot(startLine, lineCount, source, MacroProcedureText.ComputeSha256(source));
             check = new TaskCheck("macro-procedure-access", true, "The selected standard-module macro procedure is available.");
             return true;
@@ -235,19 +255,27 @@ public sealed partial class ExcelWorkbookRuntime
         catch (Exception exception) when (IsExpectedMacroAccessFailure(exception))
         {
             snapshot = null;
-            check = new TaskCheck("macro-procedure-access", false, "The selected macro procedure cannot be safely accessed.");
+            check = new TaskCheck("macro-procedure-access", false, reason);
             return false;
         }
     }
 
     private static int CountLines(string source) => source.Length == 0 ? 0 : source.Count(character => character == '\n') + 1;
 
+    /// <summary>
+    /// Resolves one VBIDE collection entry. The VBA extensibility model exposes Item as a method,
+    /// unlike Excel's own collections where Item is a parameterized property, so the property
+    /// binding used elsewhere in this runtime raises DISP_E_MEMBERNOTFOUND here.
+    /// </summary>
+    private static object VbeItem(object collection, string name) =>
+        Invoke(collection, "Item", name) ?? throw new InvalidOperationException("The VBA collection entry was not returned.");
+
     private static void ReplaceMacroProcedure(object workbook, string componentName, MacroProcedureSnapshot existing, string replacementSource)
     {
         using var references = new ComReferenceScope();
         var project = references.Add(Get(workbook, "VBProject"));
         var components = references.Add(Get(project, "VBComponents"));
-        var component = references.Add(Get(components, "Item", componentName));
+        var component = references.Add(VbeItem(components, componentName));
         var module = references.Add(Get(component, "CodeModule"));
         Invoke(module, "DeleteLines", existing.StartLine, existing.LineCount);
         Invoke(module, "InsertLines", existing.StartLine, MacroProcedureText.NormalizeLineEndings(replacementSource).Replace("\n", "\r\n", StringComparison.Ordinal));

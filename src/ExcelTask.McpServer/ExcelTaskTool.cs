@@ -105,7 +105,10 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         ? value
         : value[..MaxMacroMetadataLength];
 
+    // Omitted rather than truncated, for the same reason as the engine boundary guard: partial VBA is
+    // more dangerous to return than none, because a replacement written from it would destroy the
+    // part the caller never saw.
     private static string? BoundMacroSource(string? source) => source is { Length: > MacroProcedureText.MaxSourceCharacters }
-        ? source[..MacroProcedureText.MaxSourceCharacters]
+        ? null
         : source;
 }

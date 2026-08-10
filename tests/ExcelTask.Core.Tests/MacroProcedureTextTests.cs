@@ -40,6 +40,31 @@ public sealed class MacroProcedureTextTests
         Assert.DoesNotContain(source, error, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("Public Sub RefreshModel(ByRef values() As Variant)\n    values(0) = 1\nEnd Sub")]
+    [InlineData("Public Function RefreshModel(rows() As Double) As Double\n    RefreshModel = 0\nEnd Function")]
+    public void AcceptsArrayParametersWhichAreOrdinaryInAnalystMacros(string source)
+    {
+        var valid = MacroProcedureText.TryNormalizeProcedureSource(source, "RefreshModel", requireZeroParameters: false, out var normalized, out var error);
+
+        Assert.True(valid, error);
+        Assert.Equal(source, normalized);
+    }
+
+    [Fact]
+    public void ArrayParameterProcedureStillCountsAsHavingParameters()
+    {
+        var valid = MacroProcedureText.TryNormalizeProcedureSource(
+            "Public Sub RefreshModel(values() As Variant)\nEnd Sub",
+            "RefreshModel",
+            requireZeroParameters: true,
+            out _,
+            out var error);
+
+        Assert.False(valid);
+        Assert.NotNull(error);
+    }
+
     [Fact]
     public void RunValidationRejectsParametersAndSourceBounds()
     {

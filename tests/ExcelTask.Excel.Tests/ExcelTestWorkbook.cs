@@ -77,11 +77,13 @@ internal static class ExcelTestWorkbook
             finally { Release(workbooks); }
             var project = Get(workbook, "VBProject");
             var components = Get(project, "VBComponents");
-            var component = Get(components, "Item", componentName);
+            // VBIDE exposes Item as a method, unlike Excel's own collections.
+            var component = Invoke(components, "Item", componentName);
             var module = Get(component, "CodeModule");
-            var start = Convert.ToInt32(Invoke(module, "ProcStartLine", procedureName, 0), CultureInfo.InvariantCulture);
-            var count = Convert.ToInt32(Invoke(module, "ProcCountLines", procedureName, 0), CultureInfo.InvariantCulture);
-            var source = (string)Invoke(module, "Lines", start, count);
+            // Parameterized VBIDE properties; they are not callable with InvokeMethod binding.
+            var start = Convert.ToInt32(Get(module, "ProcStartLine", procedureName, 0), CultureInfo.InvariantCulture);
+            var count = Convert.ToInt32(Get(module, "ProcCountLines", procedureName, 0), CultureInfo.InvariantCulture);
+            var source = (string)Get(module, "Lines", start, count);
             Release(module);
             Release(component);
             Release(components);

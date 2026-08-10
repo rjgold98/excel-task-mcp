@@ -1,12 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-08-10
 
-- v0.4 macro-editing work is in progress. The proposed one-tool
-  `EditMacroProcedure` boundary is isolated `.xlsm` + save-copy only, plans a
-  bounded selected procedure source/hash, and applies complete hash-guarded
-  replacement without returning source. It is not yet a stable or
-  desktop-Excel-verified release.
+- Added bounded macro editing to the existing operation union: `Plan` returns one
+  selected standard-module procedure with its hash, and `Apply` replaces exactly
+  that procedure only while the hash still matches, then saves, reopens, and
+  verifies an `.xlsm` copy. Signed and locked VBA projects are refused, automatic-entry
+  procedures cannot be edited, and Trust Center settings are never changed.
+- Fixed VBA object-model binding. The extensibility model exposes `VBComponents.Item`
+  as a method and `CodeModule.ProcStartLine`/`ProcCountLines`/`Lines` as parameterized
+  properties, which is the opposite of Excel's own collections; the previous binding
+  raised `DISP_E_MEMBERNOTFOUND` and made every macro operation fail preflight.
+- Fixed optional post-edit macro execution. Owned Excel force-disables macros, so
+  `Application.Run` could never succeed; macros are now enabled only when a request
+  explicitly asks to run the edited procedure, with workbook events still suppressed.
+- Replaced the single generic macro-access failure with distinct reasons for a Trust
+  Center block, a locked project, a missing component, a non-standard module, a missing
+  procedure, and an oversized procedure.
+- Accepted array parameters such as `values() As Variant` in procedure signatures.
+- Stopped re-checking plan source against the replacement grammar, which silently
+  returned a successful plan with no source for valid but unparseable procedures.
+  Oversized source is still omitted rather than truncated.
+- Verified through the real one-tool MCP path against desktop Excel, including
+  plan, hash-guarded replacement, post-edit run, save/reopen, and process cleanup.
 
 ## 0.3.0 - 2026-08-09
 

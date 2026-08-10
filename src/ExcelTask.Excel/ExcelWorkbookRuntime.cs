@@ -689,7 +689,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         public bool HasExternalTargetOpen(string targetPath) =>
             RotWorkbookLocator.HasExternalWorkbookAtPath(targetPath, GetApplicationHwnd(Application));
 
-        public static ExcelSession Open(NormalizedExcelTaskRequest request, IExcelWorkbookRuntimeObserver observer, bool readOnlyTarget = false)
+        public static ExcelSession Open(NormalizedExcelTaskRequest request, IExcelWorkbookRuntimeObserver observer, bool readOnlyTarget = false, bool enableMacros = false)
         {
             var needsReference = NeedsReferenceWorkbook(request);
             var referencePath = request.Operation.CopyExhibit?.ReferenceWorkbookPath;
@@ -774,7 +774,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             {
                 var ownedProcess = OwnedExcelProcess.CaptureNew(app, beforeStart);
                 observer.OnOwnedProcessCaptured(ownedProcess.Identity);
-                ConfigureOwnedApplication(app);
+                ConfigureOwnedApplication(app, enableMacros);
                 var workbooks = Get(app, "Workbooks");
                 try
                 {
@@ -879,12 +879,18 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return Activator.CreateInstance(excelType) ?? throw new InvalidOperationException("Microsoft Excel could not be started.");
         }
 
-        private static void ConfigureOwnedApplication(object application)
+        private static void ConfigureOwnedApplication(object application, bool enableMacros = false)
         {
             Set(application, "Visible", false);
             Set(application, "DisplayAlerts", false);
             Set(application, "EnableEvents", false);
-            Set(application, "AutomationSecurity", WorkbookRuntimeHelpers.AutomationSecurityForceDisable);
+            // Macros stay force-disabled unless the request explicitly asked to run one. Even then
+            // EnableEvents stays false, so Workbook_Open cannot fire, and a programmatic Open never
+            // executes Auto_Open. AutomationSecurity only takes effect for workbooks opened after it
+            // is set, so this must happen before Workbooks.Open.
+            Set(application, "AutomationSecurity", enableMacros
+                ? WorkbookRuntimeHelpers.AutomationSecurityLow
+                : WorkbookRuntimeHelpers.AutomationSecurityForceDisable);
         }
 
         private static object OpenWorkbook(object workbooks, string path, bool readOnly) => Invoke(
@@ -922,6 +928,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
 internal static class WorkbookRuntimeHelpers
 {
+    public const int AutomationSecurityLow = 1;
     public const int AutomationSecurityForceDisable = 3;
 
     private static readonly HashSet<string> SupportedWorkbookExtensions = new(StringComparer.OrdinalIgnoreCase) { ".xlsx", ".xlsm" };

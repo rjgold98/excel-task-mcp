@@ -166,7 +166,10 @@ public static partial class MacroProcedureText
 
     private readonly record struct ParsedProcedure(string Kind, string Name, bool HasParameters);
 
-    [GeneratedRegex(@"^(?:(?:Public|Private|Friend|Static)\s+)*(?<kind>Sub|Function)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?<parameters>\([^()]*\))?\s*(?:As\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\([^()]*\))?)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    // The parameter list admits empty () pairs so that array parameters such as
+    // "ByRef values() As Variant" parse; the alternatives are disjoint on their first
+    // character, so this cannot backtrack pathologically.
+    [GeneratedRegex(@"^(?:(?:Public|Private|Friend|Static)\s+)*(?<kind>Sub|Function)\s+(?<name>[A-Za-z_][A-Za-z0-9_]*)\s*(?<parameters>\((?:[^()]|\(\s*\))*\))?\s*(?:As\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*\(\s*\))?)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ProcedureStartRegex();
 
     [GeneratedRegex(@"^End\s+(?<kind>Sub|Function)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]

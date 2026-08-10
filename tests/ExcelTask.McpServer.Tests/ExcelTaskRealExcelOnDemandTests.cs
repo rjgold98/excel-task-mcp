@@ -1,3 +1,4 @@
+using System.Text.Json;
 using ExcelTask.Core;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -78,4 +79,91 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         }
     }
 
+    [Fact]
+    public async Task MacroPlanAndApplyRunThroughTheRealToolBoundaryAndReleaseOwnedExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        var output = Path.Combine(directory, "macro-output.xlsm");
+        const string component = "SafeModule";
+        const string procedure = "WriteMarker";
+        const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        const string replacementSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"ran\"\nEnd Sub";
+        var existingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+        var fixtureProcesses = new List<ExcelProcessIdentity>();
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            ExcelFixtureWorkbook.CreateMacroTarget(target, component, originalSource, fixtureProcesses);
+
+            var environment = StdioClientTransportOptions.GetDefaultEnvironmentVariables();
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "ExcelTask-real-macro-test",
+                Command = Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe"),
+                WorkingDirectory = directory,
+                InheritEnvironmentVariables = false,
+                EnvironmentVariables = environment,
+                ShutdownTimeout = TimeSpan.FromSeconds(2)
+            });
+            await using var client = await McpClient.CreateAsync(
+                transport,
+                new McpClientOptions { ClientInfo = new() { Name = "ExcelTask-RealMacro-TestClient", Version = "1.0.0" } });
+
+            var planned = await client.CallToolAsync("excel_task", MacroArguments(target, output, component, procedure, ExcelTaskMode.Plan));
+            Assert.False(planned.IsError);
+            var planReceipt = planned.StructuredContent!.Value;
+            Assert.Equal(nameof(ExcelTaskStatus.Planned), planReceipt.GetProperty("status").GetString());
+            var macro = planReceipt.GetProperty("macroProcedure");
+            Assert.Equal(originalSource, macro.GetProperty("source").GetString());
+            var hash = macro.GetProperty("sha256").GetString()!;
+            Assert.False(File.Exists(output));
+
+            var applied = await client.CallToolAsync(
+                "excel_task",
+                MacroArguments(target, output, component, procedure, ExcelTaskMode.Apply, hash, replacementSource, runAfterEdit: true));
+            Assert.False(applied.IsError);
+            var applyReceipt = applied.StructuredContent!.Value;
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), applyReceipt.GetProperty("status").GetString());
+            var appliedMacro = applyReceipt.GetProperty("macroProcedure");
+            Assert.True(appliedMacro.GetProperty("runCompleted").GetBoolean());
+            // Apply must never echo VBA source back through the tool boundary.
+            Assert.Equal(JsonValueKind.Null, appliedMacro.GetProperty("source").ValueKind);
+
+            Assert.True(File.Exists(output));
+            Assert.Equal(originalSource, ExcelFixtureWorkbook.ReadMacroProcedure(target, component, procedure, fixtureProcesses));
+            Assert.Equal(replacementSource, ExcelFixtureWorkbook.ReadMacroProcedure(output, component, procedure, fixtureProcesses));
+            using (new FileStream(output, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+        }
+        finally
+        {
+            Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
+            var remainingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+            Assert.DoesNotContain(remainingExcel, process => !existingExcel.Contains(process));
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static Dictionary<string, object?> MacroArguments(
+        string target,
+        string output,
+        string component,
+        string procedure,
+        ExcelTaskMode mode,
+        string? expectedHash = null,
+        string? replacementSource = null,
+        bool runAfterEdit = false) => new()
+    {
+        ["request"] = new ExcelTaskRequest(
+            target,
+            new ExcelOperation(
+                ExcelOperationKind.EditMacroProcedure,
+                EditMacroProcedure: new EditMacroProcedureOperation(component, procedure, expectedHash, replacementSource, runAfterEdit)),
+            mode,
+            WorkbookBinding.Isolated,
+            SaveMode.Copy,
+            output,
+            OverwriteConfirmed: mode == ExcelTaskMode.Apply)
+    };
 }

@@ -1,4 +1,4 @@
-# ExcelTask 0.3.0
+# ExcelTask 0.4.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -20,10 +20,12 @@ One request can perform exactly one operation:
 2. repair blank cells on an existing worksheet only when matching neighboring
    patterns make the intended formula unambiguous; or
 3. extend a proven formula series right or down from two adjacent evidence
-   periods into an immediately adjacent blank destination; then
-4. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-   the worksheet and repairs; and
-5. return a compact, structured receipt without workbook values or formula
+   periods into an immediately adjacent blank destination; or
+4. replace one named standard-module VBA procedure in an `.xlsm`, guarded by the
+   expected current hash, optionally running it afterwards; then
+5. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+   the worksheet, repairs, or procedure; and
+6. return a compact, structured receipt without workbook values or formula
    text.
 
 Every inspection and execution runs in a short-lived private worker. The MCP
@@ -31,9 +33,9 @@ host enforces a two-minute deadline, reports interrupted mutations as
 `Unknown`, and never kills Excel based on worker-reported process data.
 
 The MVP accepts `.xlsx` and `.xlsm`. Copy output must keep the target file's
-extension. Macro execution is disabled when ExcelTask opens a workbook.
-
-Version 0.4 macro editing is in progress; 0.3 remains the stable release.
+extension. Macros stay disabled when ExcelTask opens a workbook unless the
+request explicitly asks to run the procedure it just edited; workbook events are
+suppressed either way.
 
 ## Safe choices
 
@@ -47,13 +49,17 @@ Version 0.4 macro editing is in progress; 0.3 remains the stable release.
 - Use `mode: "Plan"` for a non-mutating preview. Normal execution uses
   `mode: "Apply"`.
 - The request has one `operation` union: `CopyExhibit`,
-  `RepairExistingWorksheet`, or `ExtendFormulaSeries`. Supply exactly the one
-  matching payload. It never accepts formula text or `FormulaR1C1`.
-- The upcoming `EditMacroProcedure` operation is deliberately narrow: only an
-  isolated `.xlsm` saved as a `Copy`, one named procedure, full replacement
-  guarded by the expected current hash, and an optional no-argument run. Plan
-  returns only that requested procedure's bounded source and hash; Apply never
-  returns source. Excel Trust access remains user-controlled.
+  `RepairExistingWorksheet`, `ExtendFormulaSeries`, or `EditMacroProcedure`.
+  Supply exactly the one matching payload. It never accepts formula text or
+  `FormulaR1C1`.
+- The `EditMacroProcedure` operation is deliberately narrow: only an isolated
+  `.xlsm` saved as a `Copy`, one named standard-module procedure, full
+  replacement guarded by the expected current hash, and an optional no-argument
+  run. Plan returns only that requested procedure's bounded source and hash;
+  Apply never returns source. Signed or locked VBA projects and automatic-entry
+  procedures such as `Auto_Open` are refused. Reading or editing VBA requires
+  "Trust access to the VBA project object model"; ExcelTask reports when that is
+  blocked and never changes the setting itself.
 - Repair and copy-exhibit operations accept at most 16 non-overlapping A1
   ranges and scan at most 10,000 cells. Series extension accepts two evidence
   periods, 1–24 adjacent destination periods, and no more than 2,000 planned
@@ -122,8 +128,12 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.3.0 is the current stable formula/exhibit release. Version 0.4 macro
-editing is in progress and is not yet a stable claim. It does not yet refresh
-Power Query or data models, attach to unsaved workbooks, or expose a general
-automation surface. Authentication or IRM can still require a person; a macro
-dialog or timeout is `Unknown` and must be reconciled before retrying.
+Version 0.4.0 is the current stable formula, exhibit, and macro-editing release.
+It does not yet refresh Power Query or data models, attach to unsaved workbooks,
+edit sheet or class modules, or expose a general automation surface.
+Authentication or IRM can still require a person; a macro dialog or timeout is
+`Unknown` and must be reconciled before retrying.
+
+Macro editing is verified against desktop Excel on a machine where VBA project
+access is trusted. On a managed computer that policy is set by the organization,
+so the first work-computer run should be treated as the real gate.
