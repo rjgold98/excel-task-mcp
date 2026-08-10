@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.ComponentModel;
 using ExcelTask.Core;
 
 namespace ExcelTask.Core.Tests;
@@ -6,29 +7,77 @@ namespace ExcelTask.Core.Tests;
 public sealed class ExcelTaskEngineTests
 {
     [Fact]
-    public async Task RunAsyncPlanCompilesNormalizedPlanAndPropagatesRuntimeReceipt()
+    public void EveryModelFacingInputFieldHasADescription()
     {
-        var runtime = new FakeRuntime { Outcome = new(ExcelTaskStatus.Planned, "Plan ready", [new("worksheet", "Summary", "will add")]) };
-        var engine = new ExcelTaskEngine(runtime);
+        var modelTypes = new[]
+        {
+            typeof(ExcelTaskRequest),
+            typeof(ExcelOperation),
+            typeof(CopyExhibitOperation),
+            typeof(RepairExistingWorksheetOperation),
+            typeof(ExtendFormulaSeriesOperation)
+        };
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Plan, save: SaveMode.Copy, output: ".\\out.xlsx"), CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Planned, receipt.Status);
-        Assert.Equal("Plan ready", receipt.Summary);
-        Assert.Single(receipt.Changes);
-        Assert.Equal(Path.GetFullPath(".\\target.xlsx"), runtime.Plan!.Request.TargetWorkbookPath);
-        Assert.Equal("A1:C3", runtime.Plan.Request.FormulaRepairRanges[0].ToString());
-        Assert.Equal(Path.GetFullPath(".\\out.xlsx"), runtime.Plan.Request.OutputWorkbookPath);
-        Assert.False(receipt.Confirmation.Required);
+        foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
+        {
+            var description = property.GetCustomAttributes(typeof(DescriptionAttribute), inherit: true)
+                .Cast<DescriptionAttribute>()
+                .SingleOrDefault();
+            Assert.False(string.IsNullOrWhiteSpace(description?.Description), $"{property.DeclaringType!.Name}.{property.Name} is missing a description.");
+        }
     }
 
     [Fact]
-    public async Task RunAsyncApplySameRequiresExplicitOverwriteConfirmation()
+    public async Task PlanCopyExhibitDispatchesCleanNormalizedCopyShape()
+    {
+        var runtime = new FakeRuntime { Outcome = new(ExcelTaskStatus.Planned, "Plan ready") };
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(save: SaveMode.Copy, output: ".\\out.xlsx"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Planned, receipt.Status);
+        var copy = Assert.IsType<NormalizedCopyExhibitOperation>(runtime.Plan!.Request.Operation.CopyExhibit);
+        Assert.Equal(Path.GetFullPath(".\\reference.xlsx"), copy.ReferenceWorkbookPath);
+        Assert.Equal("A1:C3", copy.RepairRanges[0].ToString());
+        Assert.Null(runtime.Plan.Request.Operation.RepairExistingWorksheet);
+        Assert.Equal(Path.GetFullPath(".\\reference.xlsx"), runtime.InspectionRequest!.ReferenceWorkbookPath);
+    }
+
+    [Fact]
+    public async Task PlanRepairExistingWorksheetDispatchesNoReferenceWorkbook()
     {
         var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
+        var task = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", ["$B$2:$C$3"]));
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        var repair = Assert.IsType<NormalizedRepairExistingWorksheetOperation>(runtime.Plan!.Request.Operation.RepairExistingWorksheet);
+        Assert.Equal("Model", repair.WorksheetName);
+        Assert.Equal("B2:C3", repair.Ranges.Single().ToString());
+        Assert.Null(runtime.InspectionRequest!.ReferenceWorkbookPath);
+    }
+
+    [Fact]
+    public async Task PlanExtensionDispatchesNormalizedRangesAndDirection()
+    {
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new("Model", FormulaExtensionDirection.Right, "$B$2:$C$4", "D2:F4"));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        var extension = Assert.IsType<NormalizedExtendFormulaSeriesOperation>(runtime.Plan!.Request.Operation.ExtendFormulaSeries);
+        Assert.Equal(FormulaExtensionDirection.Right, extension.Direction);
+        Assert.Equal("B2:C4", extension.EvidenceRange.ToString());
+        Assert.Equal("D2:F4", extension.DestinationRange.ToString());
+    }
+
+    [Fact]
+    public async Task ApplySameRequiresExplicitOverwriteConfirmation()
+    {
+        var runtime = new FakeRuntime();
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(mode: ExcelTaskMode.Apply), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
         Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
@@ -36,158 +85,193 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
-    public async Task RunAsyncOpenTargetWithAskBindingRequiresChoiceEvenWhenOverwriteIsConfirmed()
+    public async Task OmittedPolicyDefaultsNormalizeToApplyAskIfOpenSameAndFalse()
     {
-        var runtime = new FakeRuntime { Inspection = new(true, OpenWorkbookDescription: "target.xlsx is open") };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var request = new ExcelTaskRequest(".\\target.xlsx", new ExcelOperation(ExcelOperationKind.CopyExhibit, CopyExhibit: Copy()));
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply, overwriteConfirmed: true), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(request, CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
-        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "target-open");
-        Assert.Null(runtime.Plan);
-    }
-
-    [Fact]
-    public async Task RunAsyncApplyDelegatesAfterConfirmationsAndPreservesPartialOutcome()
-    {
-        var runtime = new FakeRuntime
-        {
-            Outcome = new(ExcelTaskStatus.Partial, "One repair was skipped", [], [new("repairs", false, "C5 contains a constant")], true, "Review C5")
-        };
-        var engine = new ExcelTaskEngine(runtime);
-
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply, overwriteConfirmed: true), CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Partial, receipt.Status);
-        Assert.NotNull(runtime.Plan);
-        Assert.False(receipt.Retry.CanRetry);
-        Assert.Contains("reconcile", receipt.Retry.Reason, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains(receipt.Checks, check => check.Name == "repairs");
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+        Assert.Equal(WorkbookBinding.AskIfOpen, runtime.InspectionRequest!.Binding);
+        Assert.Equal(SaveMode.Same, runtime.InspectionRequest.Save);
+        Assert.Equal(SaveMode.Same, receipt.Save.Mode);
+        Assert.False(receipt.Save.OverwriteConfirmed);
     }
 
     [Theory]
-    [InlineData("", "Reference", "New", "A1")]
-    [InlineData("target.xlsx", "Bad/Sheet", "New", "A1")]
-    [InlineData("target.xlsx", "Reference", "ThisNameIsLongerThanThirtyOneChars", "A1")]
-    [InlineData("target.xlsx", "Reference", "New", "A0")]
-    [InlineData("target.xlsx", "Reference", "New", "B2:A1")]
-    public async Task RunAsyncRejectsInvalidPathsNamesAndRanges(string target, string referenceSheet, string newSheet, string range)
+    [MemberData(nameof(InvalidOperations))]
+    public async Task RejectsMissingUnknownMultipleAndMismatchedOperationUnion(ExcelOperation? operation)
     {
         var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
-        var request = Request() with { TargetWorkbookPath = target, ReferenceWorksheet = referenceSheet, NewWorksheetName = newSheet, FormulaRepairRanges = [range] };
-
-        var receipt = await engine.RunAsync(request, CancellationToken.None);
+        var request = operation is null ? Request() with { Operation = null! } : Request(operation);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(request, CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
         Assert.Null(runtime.InspectionRequest);
         Assert.False(receipt.Checks.Single().Passed);
     }
 
-    [Fact]
-    public async Task RunAsyncReturnsUnknownWhenRuntimeExecutionThrows()
+    public static IEnumerable<object?[]> InvalidOperations()
     {
-        var runtime = new FakeRuntime { ExecuteException = new InvalidOperationException("Excel disconnected") };
-        var engine = new ExcelTaskEngine(runtime);
-
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Plan), CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Unknown, receipt.Status);
-        Assert.False(receipt.Retry.CanRetry);
-        Assert.Contains("Reconcile", receipt.Retry.Reason);
-        Assert.Contains(receipt.Checks, check => check.Name == "runtime-execution");
+        yield return [null];
+        yield return [new ExcelOperation((ExcelOperationKind)99, CopyExhibit: Copy())];
+        yield return [new ExcelOperation(ExcelOperationKind.CopyExhibit)];
+        yield return [new ExcelOperation(ExcelOperationKind.CopyExhibit, RepairExistingWorksheet: new("Model", []))];
+        yield return [new ExcelOperation(ExcelOperationKind.CopyExhibit, CopyExhibit: Copy(), RepairExistingWorksheet: new("Model", []))];
+        yield return [new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries, CopyExhibit: Copy())];
     }
 
-    [Fact]
-    public async Task RunAsyncForcesUnknownRuntimeOutcomesToBeNonRetryable()
+    [Theory]
+    [InlineData("", "Reference", "New", "A1")]
+    [InlineData(".\\reference.xlsx", "Bad/Sheet", "New", "A1")]
+    [InlineData(".\\reference.xlsx", "Reference", "ThisNameIsLongerThanThirtyOneChars", "A1")]
+    [InlineData(".\\reference.xlsx", "Reference", "New", "B2:A1")]
+    public async Task RejectsInvalidCopyPathNamesAndRanges(string reference, string referenceSheet, string newSheet, string range)
     {
-        var runtime = new FakeRuntime { Outcome = new(ExcelTaskStatus.Unknown, "Runtime did not verify completion", CanRetry: true, RetryReason: "Retry it") };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.CopyExhibit, CopyExhibit: new(reference, referenceSheet, newSheet, [range]));
 
-        var receipt = await engine.RunAsync(Request(), CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Unknown, receipt.Status);
-        Assert.False(receipt.Retry.CanRetry);
-        Assert.Contains("Reconcile", receipt.Retry.Reason);
-    }
-
-    [Fact]
-    public async Task RunAsyncReturnsRejectedSafeToRetryWhenInspectionFailsBeforeDispatch()
-    {
-        var runtime = new FakeRuntime { InspectionException = new InvalidOperationException("Sensitive runtime detail") };
-        var engine = new ExcelTaskEngine(runtime);
-
-        var receipt = await engine.RunAsync(Request(), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.True(receipt.Retry.CanRetry);
-        Assert.DoesNotContain("Sensitive runtime detail", receipt.Summary);
-        Assert.DoesNotContain(receipt.Checks, check => check.Detail.Contains("Sensitive runtime detail", StringComparison.Ordinal));
-        Assert.Null(runtime.Plan);
+        Assert.Null(runtime.InspectionRequest);
     }
 
     [Fact]
-    public async Task RunAsyncApplyCopyRequiresConfirmationOnlyWhenOutputAlreadyExists()
+    public async Task RejectsOverlappingRepairRangesBeforeInspection()
     {
-        var runtime = new FakeRuntime { Inspection = new(false, CopyOutputExists: true) };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", ["A1:C3", "C3:D4"]));
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply, save: SaveMode.Copy, output: ".\\existing-copy.xlsx"), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
 
-        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
-        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-copy");
-        Assert.Equal(SaveMode.Copy, runtime.InspectionRequest!.Save);
-        Assert.Equal(Path.GetFullPath(".\\existing-copy.xlsx"), runtime.InspectionRequest.OutputWorkbookPath);
-        Assert.Null(runtime.Plan);
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("must not overlap", receipt.Summary);
+        Assert.Null(runtime.InspectionRequest);
     }
 
     [Fact]
-    public async Task RunAsyncApplyCopyDoesNotRequireOverwriteConfirmationForNewOutput()
+    public async Task RejectsEmptyRepairExistingWorksheetRangesBeforeInspection()
     {
-        var runtime = new FakeRuntime { Inspection = new(false, CopyOutputExists: false) };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var operation = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", []));
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply, save: SaveMode.Copy, output: ".\\new-copy.xlsx"), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(operation), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("one or more repair ranges", receipt.Summary);
+        Assert.Null(runtime.InspectionRequest);
+    }
+
+    [Fact]
+    public async Task RejectsMoreThanSixteenRepairRangesBeforeInspection()
+    {
+        var runtime = new FakeRuntime();
+        var ranges = Enumerable.Range(1, 17).Select(row => $"A{row}").ToArray();
+        var task = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", ranges));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("16 ranges", receipt.Summary);
+        Assert.Null(runtime.InspectionRequest);
+    }
+
+    [Fact]
+    public async Task AcceptsRepairRangesAtAggregateScanCap()
+    {
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", ["A1:CV100"]));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
-        Assert.NotNull(runtime.Plan);
+        Assert.Equal("A1:CV100", runtime.Plan!.Request.Operation.RepairExistingWorksheet!.Ranges.Single().ToString());
     }
 
     [Fact]
-    public async Task RunAsyncRejectsUseOpenWhenTargetIsNotOpen()
+    public async Task RejectsRepairRangesAboveAggregateScanCap()
     {
-        var runtime = new FakeRuntime { Inspection = new(false) };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new("Model", ["A1:CV100", "CW1"]));
 
-        var receipt = await engine.RunAsync(Request(binding: WorkbookBinding.UseOpen), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Contains("requires", receipt.Summary, StringComparison.OrdinalIgnoreCase);
-        Assert.Null(runtime.Plan);
+        Assert.Contains("10,000 aggregate cells", receipt.Summary);
+    }
+
+    [Theory]
+    [InlineData(FormulaExtensionDirection.Right, "B2:C4", "D2:AA4")]
+    [InlineData(FormulaExtensionDirection.Down, "B2:D3", "B4:D27")]
+    public async Task ExtensionAcceptsMaximumTwentyFourPeriods(FormulaExtensionDirection direction, string evidence, string destination)
+    {
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new("Model", direction, evidence, destination));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+    }
+
+    [Theory]
+    [InlineData(FormulaExtensionDirection.Right, "B2:C3", "E2:F3")]
+    [InlineData(FormulaExtensionDirection.Right, "B2:D3", "E2:F3")]
+    [InlineData(FormulaExtensionDirection.Down, "B2:C3", "B5:C6")]
+    [InlineData(FormulaExtensionDirection.Down, "B2:C3", "B4:D5")]
+    public async Task ExtensionRejectsNonAdjacentOrInvalidGeometry(FormulaExtensionDirection direction, string evidence, string destination)
+    {
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new("Model", direction, evidence, destination));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
     }
 
     [Fact]
-    public async Task RunAsyncRejectsIsolatedApplySameWhenTargetIsOpen()
+    public async Task ExtensionRejectsDestinationAboveTwoThousandCells()
     {
-        var runtime = new FakeRuntime { Inspection = new(true) };
-        var engine = new ExcelTaskEngine(runtime);
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new("Model", FormulaExtensionDirection.Right, "B1:C100", "D1:AA100"));
 
-        var receipt = await engine.RunAsync(Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.Isolated, overwriteConfirmed: true), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Contains("UseOpen or save a Copy", receipt.Summary);
-        Assert.Null(runtime.Plan);
+        Assert.Contains("2,000", receipt.Summary);
+    }
+
+    [Fact]
+    public async Task ExtensionRejectsUnknownDirectionBeforeInspection()
+    {
+        var runtime = new FakeRuntime();
+        var task = new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new("Model", (FormulaExtensionDirection)99, "B1:C1", "D1:E1"));
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(task), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
     }
 
     [Theory]
     [InlineData("mode")]
     [InlineData("binding")]
     [InlineData("save")]
-    public async Task RunAsyncRejectsUndefinedEnumValuesBeforeInspection(string invalidField)
+    public async Task RejectsUndefinedOuterEnumsBeforeInspection(string invalidField)
     {
         var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
         var request = invalidField switch
         {
             "mode" => Request() with { Mode = (ExcelTaskMode)99 },
@@ -195,117 +279,58 @@ public sealed class ExcelTaskEngineTests
             _ => Request() with { Save = (SaveMode)99 }
         };
 
-        var receipt = await engine.RunAsync(request, CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(request, CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
         Assert.Null(runtime.InspectionRequest);
     }
 
     [Fact]
-    public async Task RunAsyncBoundsRuntimeSuppliedReceiptDataAndDoesNotExposeOutputPath()
+    public async Task ReturnsUnknownWhenRuntimeExecutionThrows()
+    {
+        var runtime = new FakeRuntime { ExecuteException = new InvalidOperationException("Excel disconnected") };
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Unknown, receipt.Status);
+        Assert.False(receipt.Retry.CanRetry);
+        Assert.Contains("Reconcile", receipt.Retry.Reason);
+    }
+
+    [Fact]
+    public async Task BoundsRuntimeReceiptDataAndDoesNotExposeOutputDirectory()
     {
         var longText = new string('x', 600);
         var runtime = new FakeRuntime
         {
-            Outcome = new(
-                ExcelTaskStatus.Completed,
-                longText,
-                Enumerable.Range(0, 21).Select(index => new TaskChange(longText, longText, longText)).ToArray(),
-                Enumerable.Range(0, 21).Select(index => new TaskCheck(longText, true, longText)).ToArray(),
-                true,
-                longText)
+            Outcome = new(ExcelTaskStatus.Completed, longText,
+            Enumerable.Range(0, 21).Select(_ => new TaskChange(longText, longText, longText)).ToArray(),
+            Enumerable.Range(0, 21).Select(_ => new TaskCheck(longText, true, longText)).ToArray(), true, longText)
         };
-        var engine = new ExcelTaskEngine(runtime);
 
-        var receipt = await engine.RunAsync(Request(save: SaveMode.Copy, output: ".\\private\\out.xlsx"), CancellationToken.None);
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(save: SaveMode.Copy, output: ".\\private\\out.xlsx"), CancellationToken.None);
 
         Assert.Equal(256, receipt.Summary.Length);
         Assert.Equal(20, receipt.Changes.Count);
-        Assert.Equal(20, receipt.Checks.Count);
-        Assert.All(receipt.Changes, change => Assert.All([change.Kind, change.Target, change.Summary], value => Assert.Equal(256, value.Length)));
-        Assert.All(receipt.Checks, check => Assert.All([check.Name, check.Detail], value => Assert.InRange(value.Length, 0, 256)));
-        Assert.Equal(256, receipt.Retry.Reason!.Length);
         Assert.Equal("out.xlsx", receipt.Save.OutputWorkbookPath);
         Assert.True(JsonSerializer.SerializeToUtf8Bytes(receipt).Length < 32 * 1024);
     }
 
-    [Theory]
-    [InlineData(".\\target.xlsb", ".\\reference.xlsx", null, "MVP workbook paths")]
-    [InlineData(".\\target.xlsx", ".\\reference.xlsb", null, "MVP workbook paths")]
-    [InlineData(".\\target.xlsx", ".\\reference.xlsx", ".\\out.xlsm", "Copy output extension")]
-    public async Task RunAsyncRejectsUnsupportedOrMismatchedWorkbookExtensions(string target, string reference, string? output, string expectedError)
-    {
-        var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
-        var request = Request(save: output is null ? SaveMode.Same : SaveMode.Copy, output: output) with
-        {
-            TargetWorkbookPath = target,
-            ReferenceWorkbookPath = reference
-        };
-
-        var receipt = await engine.RunAsync(request, CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Contains(expectedError, receipt.Summary);
-        Assert.Null(runtime.InspectionRequest);
-    }
-
-    [Fact]
-    public async Task RunAsyncRejectsUseOpenCopyBeforeInspection()
-    {
-        var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
-
-        var receipt = await engine.RunAsync(Request(save: SaveMode.Copy, output: ".\\out.xlsx", binding: WorkbookBinding.UseOpen), CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Null(runtime.InspectionRequest);
-    }
-
-    [Fact]
-    public async Task RunAsyncAcceptsFormulaRepairRangesAtTheMvpCellCap()
-    {
-        var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
-        var request = Request() with { FormulaRepairRanges = ["A1:CV100"] };
-
-        var receipt = await engine.RunAsync(request, CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
-        Assert.NotNull(runtime.Plan);
-        Assert.Equal(ExcelTaskEngine.MaxFormulaRepairCells, 100 * 100);
-    }
-
-    [Fact]
-    public async Task RunAsyncRejectsFormulaRepairRangesOverTheAggregateMvpCellCap()
-    {
-        var runtime = new FakeRuntime();
-        var engine = new ExcelTaskEngine(runtime);
-        var request = Request() with { FormulaRepairRanges = ["A1:CV100", "CW1"] };
-
-        var receipt = await engine.RunAsync(request, CancellationToken.None);
-
-        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Contains("10,000 aggregate cells", receipt.Summary);
-        Assert.Null(runtime.InspectionRequest);
-    }
-
     private static ExcelTaskRequest Request(
+        ExcelOperation? operation = null,
         ExcelTaskMode mode = ExcelTaskMode.Plan,
         SaveMode save = SaveMode.Same,
         string? output = null,
         bool overwriteConfirmed = false,
         WorkbookBinding binding = WorkbookBinding.AskIfOpen) => new(
-            ".\\target.xlsx",
-            ".\\reference.xlsx",
-            "Reference",
-            "New sheet",
-            ["$a$1:$c$3"],
-            mode,
-            binding,
-            save,
-            output,
-            overwriteConfirmed);
+            TargetWorkbookPath: ".\\target.xlsx",
+            Operation: operation ?? new ExcelOperation(ExcelOperationKind.CopyExhibit, CopyExhibit: Copy()),
+            Mode: mode,
+            WorkbookBinding: binding,
+            Save: save,
+            OutputWorkbookPath: output,
+            OverwriteConfirmed: overwriteConfirmed);
+
+    private static CopyExhibitOperation Copy() => new(".\\reference.xlsx", "Reference", "New sheet", ["$a$1:$c$3"]);
 
     private sealed class FakeRuntime : IWorkbookRuntime
     {

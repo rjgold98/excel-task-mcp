@@ -19,10 +19,12 @@ perform and verify it. The server never delegates planning to a hidden model.
 
 ### Task Engine
 
-The external module interface is `IExcelTaskEngine.RunAsync`. It hides request
-normalization, overwrite and live-workbook confirmation, plan compilation,
-outcome classification, and receipt construction. Tests use an in-memory
-workbook runtime adapter through the same interface.
+The external module interface is `IExcelTaskEngine.RunAsync`. Its request has a
+manual closed operation union—copy exhibit, repair existing worksheet, or
+extend formula series—so the MCP schema stays small without generic action
+language. It hides normalization, overwrite and live-workbook confirmation,
+plan compilation, outcome classification, and receipt construction. Tests use
+an in-memory workbook runtime adapter through the same interface.
 
 ### Excel adapter
 
@@ -69,4 +71,7 @@ Only `Rejected` is automatically safe to retry after correction. A repeated
 - Create isolated Excel only for a task, then prove process exit; do not add
   warm-process reuse until work-computer measurements justify it.
 - Bound every task and return changed ranges/checks rather than workbook data.
+- Limit formula work to 16 requested ranges, 10,000 scanned cells, 2,000
+  planned mutations, and 24 extension periods; never put formula text on the
+  MCP wire.
 - Measure actual Copilot tokens and turns separately from server/COM timing.

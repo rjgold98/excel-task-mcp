@@ -11,7 +11,7 @@ internal static class WorkbookWorkerProtocol
     internal const int MaxRequestBytes = 1024 * 1024;
     internal const int MaxFrameBytes = 16 * 1024;
     internal const int MaxTextLength = 128;
-    internal const int MaxResultItems = 12;
+    internal const int MaxResultItems = 20;
 
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {

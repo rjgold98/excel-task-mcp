@@ -2,19 +2,22 @@
 
 ## User outcome
 
-From one `excel_task` request, create a new worksheet in an existing target
-workbook using an explicitly named reference worksheet, optionally from a
-different workbook. Repair only safely inferable blank formulas, verify the
-saved result after reopening it, and report exactly what happened.
+From one `excel_task` request, perform one formula/exhibit operation in an
+existing target workbook: copy an explicitly named reference worksheet,
+repair safely inferable blank formulas on an existing worksheet, or extend a
+proven formula series right or down. Verify an applied saved result after
+reopening it, and report exactly what happened.
 
 ## Model-facing interface
 
 The single tool accepts:
 
 - target workbook path;
-- reference workbook path and worksheet name;
-- new worksheet name;
-- zero or more bounded formula-repair ranges;
+- one manual `operation` union: `CopyExhibit`, `RepairExistingWorksheet`, or
+  `ExtendFormulaSeries`; exactly one matching payload is required;
+- A1 ranges only; repair/copy ranges are capped at 16 ranges and 10,000 scanned
+  cells, while extension is capped at two evidence periods, 1–24 destination
+  periods, and 2,000 planned mutations;
 - `plan` or `apply` mode;
 - `ask`, `use_open`, or `isolated` workbook binding;
 - save-in-place or save-copy policy;
@@ -24,15 +27,19 @@ The single tool accepts:
 
 The tool does not expose sessions, COM objects, low-level command names,
 checkpoint switches, idempotency keys, model selection, or CLI behavior.
+It also never accepts or returns formula text, `FormulaR1C1`, source text, or
+cell values.
 
 ## Acceptance evidence
 
 1. `tools/list` returns exactly one ExcelTask tool with a bounded schema.
-2. A model-free MCP call completes the cross-workbook exhibit task.
-3. The copied worksheet exists after save and reopen.
-4. Every reported formula repair is verified against the intended FormulaR1C1
-   value without returning formula text or cell contents in the receipt.
-5. Plan mode makes no workbook change.
+2. Model-free MCP calls normalize each operation payload and reject a mismatched
+   union before inspection.
+3. A copied worksheet or in-place formula mutation is verified after save and
+   reopen.
+4. Every reported formula repair or extension is verified without returning
+   formula text or cell contents in the receipt.
+5. Plan mode analyzes but makes no workbook change, save, or recalculation.
 6. An open workbook with `ask` returns `NeedsConfirmation` without mutation.
 7. Save-in-place without explicit authorization is rejected before Excel
    mutation.

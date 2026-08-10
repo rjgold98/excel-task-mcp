@@ -1,4 +1,4 @@
-# ExcelTask 0.2.0
+# ExcelTask 0.3.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -13,15 +13,17 @@ See the [changelog](CHANGELOG.md), [roadmap](ROADMAP.md), and
 
 ## What works
 
-One request can:
+One request can perform exactly one operation:
 
 1. copy an explicitly named reference worksheet, including from another
    workbook, into an existing target workbook;
-2. repair blank cells only when matching neighboring FormulaR1C1 patterns make
-   the intended formula unambiguous;
-3. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+2. repair blank cells on an existing worksheet only when matching neighboring
+   patterns make the intended formula unambiguous; or
+3. extend a proven formula series right or down from two adjacent evidence
+   periods into an immediately adjacent blank destination; then
+4. recalculate, save, close owned Excel, reopen the saved workbook, and verify
    the worksheet and repairs; and
-4. return a compact, structured receipt without workbook values or formula
+5. return a compact, structured receipt without workbook values or formula
    text.
 
 Every inspection and execution runs in a short-lived private worker. The MCP
@@ -42,9 +44,15 @@ extension. Macro execution is disabled when ExcelTask opens a workbook.
   mutation.
 - Use `mode: "Plan"` for a non-mutating preview. Normal execution uses
   `mode: "Apply"`.
-- Use `formulaRepairRanges: []` when only the worksheet copy is needed. A repair
-  range must include the neighboring formula evidence and all ranges together
-  are capped at 10,000 cells.
+- The request has one `operation` union: `CopyExhibit`,
+  `RepairExistingWorksheet`, or `ExtendFormulaSeries`. Supply exactly the one
+  matching payload. It never accepts formula text or `FormulaR1C1`.
+- Repair and copy-exhibit operations accept at most 16 non-overlapping A1
+  ranges and scan at most 10,000 cells. Series extension accepts two evidence
+  periods, 1–24 adjacent destination periods, and no more than 2,000 planned
+  mutations.
+- `mode: "Plan"` analyzes only; it never changes, saves, or recalculates a
+  workbook.
 
 Example tool arguments for a new copy:
 
@@ -52,10 +60,15 @@ Example tool arguments for a new copy:
 {
   "request": {
     "targetWorkbookPath": "C:\\Work\\Target.xlsx",
-    "referenceWorkbookPath": "C:\\Work\\Reference.xlsx",
-    "referenceWorksheet": "Template",
-    "newWorksheetName": "Exhibit A",
-    "formulaRepairRanges": ["A1:A20"],
+    "operation": {
+      "kind": "CopyExhibit",
+      "copyExhibit": {
+        "referenceWorkbookPath": "C:\\Work\\Reference.xlsx",
+        "referenceWorksheet": "Template",
+        "newWorksheetName": "Exhibit A",
+        "repairRanges": ["A1:A20"]
+      }
+    },
     "mode": "Apply",
     "workbookBinding": "AskIfOpen",
     "save": "Copy",
@@ -102,8 +115,8 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.2.0 proves the formula/exhibit vertical slice through a supervised
-private Excel worker. It does not yet edit VBA, refresh Power Query or data
-models, attach to unsaved workbooks, or expose a general automation surface.
-Authentication or IRM can still require a person; an interrupted mutation is
-reported as `Unknown` and must be reconciled before retrying.
+Version 0.3.0 is the current stable formula/exhibit release. It does not yet
+edit VBA, refresh Power Query or data models, attach to unsaved workbooks, or
+expose a general automation surface. Authentication or IRM can still require a
+person; an interrupted mutation is reported as `Unknown` and must be
+reconciled before retrying.

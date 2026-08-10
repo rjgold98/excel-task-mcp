@@ -5,6 +5,8 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
+using System.Text;
 using ExcelTask.Core;
 
 namespace ExcelTask.Excel;
@@ -47,9 +49,9 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
     {
         observer.OnPhase("inspection");
         var targetPath = WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath);
-        var referencePath = WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
+        var referencePath = string.IsNullOrWhiteSpace(request.ReferenceWorkbookPath) ? null : WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
         WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
-        WorkbookRuntimeHelpers.EnsureReadableWorkbook(referencePath, "Reference workbook");
+        if (referencePath is not null) WorkbookRuntimeHelpers.EnsureReadableWorkbook(referencePath, "Reference workbook");
         var copyOutputExists = request.Save == SaveMode.Copy &&
                                !string.IsNullOrWhiteSpace(request.OutputWorkbookPath) &&
                                File.Exists(WorkbookRuntimeHelpers.NormalizePath(request.OutputWorkbookPath));
@@ -70,7 +72,8 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         try
         {
             WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");
-            WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.ReferenceWorkbookPath), "Reference workbook");
+            if (NeedsReferenceWorkbook(plan.Request))
+                WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.Operation.CopyExhibit!.ReferenceWorkbookPath), "Reference workbook");
             if (plan.Request.Save == SaveMode.Copy) WorkbookRuntimeHelpers.EnsureWritableCopyOutput(plan.Request.OutputWorkbookPath);
         }
         catch (InvalidOperationException)
@@ -89,12 +92,20 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 Checks: [new TaskCheck("live-copy-save", false, "Use the confirmed same-file save mode or isolated copy mode.")]);
         }
 
+        if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.Save == SaveMode.Same && !plan.Request.OverwriteConfirmed)
+        {
+            return new WorkbookExecutionOutcome(
+                ExcelTaskStatus.Rejected,
+                "Same-file saves require explicit overwrite confirmation.",
+                Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
+        }
+
         ExcelSession? session = null;
         var mutationAttempted = false;
         var verified = false;
         var changes = new List<TaskChange>();
         var checks = new List<TaskCheck>();
-        var repairs = new RepairApplication([], []);
+        FormulaExecutionPlan? formulaPlan = null;
         var phase = "input-validation";
         void SetPhase(string value)
         {
@@ -109,7 +120,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         try
         {
-            if (plan.Request.Save == SaveMode.Copy && File.Exists(savedPath) && !plan.Request.OverwriteConfirmed)
+            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.Save == SaveMode.Copy && File.Exists(savedPath) && !plan.Request.OverwriteConfirmed)
             {
                 return new WorkbookExecutionOutcome(
                     ExcelTaskStatus.Rejected,
@@ -117,7 +128,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     Checks: [new TaskCheck("copy-output", false, "Existing output requires overwrite confirmation.")]);
             }
 
-            if (plan.Request.WorkbookBinding == WorkbookBinding.Isolated && plan.Request.Save == SaveMode.Same)
+            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.WorkbookBinding == WorkbookBinding.Isolated && plan.Request.Save == SaveMode.Same)
             {
                 using var openTarget = RotWorkbookLocator.Find(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath));
                 if (openTarget is not null)
@@ -132,7 +143,12 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             SetPhase("session-open");
             session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
             SetPhase("preflight");
-            var preflight = PreflightWorksheetCopy(session, plan.Request.ReferenceWorksheet, plan.Request.NewWorksheetName);
+            var preflight = plan.Request.Operation.Kind switch
+            {
+                ExcelOperationKind.RepairExistingWorksheet => PreflightWorksheetExists(session, plan.Request.Operation.RepairExistingWorksheet!.WorksheetName),
+                ExcelOperationKind.ExtendFormulaSeries => PreflightWorksheetExists(session, plan.Request.Operation.ExtendFormulaSeries!.WorksheetName),
+                _ => PreflightWorksheetCopy(session, plan.Request.Operation.CopyExhibit!.ReferenceWorksheet, plan.Request.Operation.CopyExhibit.NewWorksheetName)
+            };
             checks.AddRange(preflight.Checks);
             if (!preflight.IsFeasible)
             {
@@ -144,8 +160,13 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook preflight could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
                 }
 
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook preflight did not permit the requested worksheet copy.", Checks: checks);
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook preflight did not permit the requested formula operation.", Checks: checks);
             }
+
+            SetPhase("formula-analysis");
+            formulaPlan = AnalyzeFormulaPlan(session, plan.Request.Operation);
+            checks.Add(new TaskCheck("formula-plan", true,
+                $"Planned {formulaPlan.Repairs.Count} formula changes across {formulaPlan.RangeResults.Count} requested range targets; fingerprint {formulaPlan.Fingerprint}."));
 
             if (plan.Request.Mode == ExcelTaskMode.Plan)
             {
@@ -165,26 +186,97 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 return new WorkbookExecutionOutcome(
                     ExcelTaskStatus.Planned,
                     "Workbook plan is feasible; no Excel changes were made.",
-                    [new TaskChange("plan", "workbook", "Reference worksheet copy and bounded formula repair are feasible.")],
+                    CreateFormulaChanges(formulaPlan, planning: true),
                     checks);
             }
 
-            mutationAttempted = true;
-            SetPhase("worksheet-copy");
-            CopyReferenceWorksheet(session, plan.Request.ReferenceWorksheet, plan.Request.NewWorksheetName, SetPhase);
-            changes.Add(new TaskChange("worksheet-copy", "workbook", "Copied the requested reference worksheet."));
+            SetPhase("formula-revalidation");
+            var revalidatedPreflight = plan.Request.Operation.Kind switch
+            {
+                ExcelOperationKind.RepairExistingWorksheet => PreflightWorksheetExists(session, plan.Request.Operation.RepairExistingWorksheet!.WorksheetName),
+                ExcelOperationKind.ExtendFormulaSeries => PreflightWorksheetExists(session, plan.Request.Operation.ExtendFormulaSeries!.WorksheetName),
+                _ => PreflightWorksheetCopy(session, plan.Request.Operation.CopyExhibit!.ReferenceWorksheet, plan.Request.Operation.CopyExhibit.NewWorksheetName)
+            };
+            if (!revalidatedPreflight.IsFeasible || !FormulaPlansEqual(formulaPlan, AnalyzeFormulaPlan(session, plan.Request.Operation)))
+            {
+                checks.Add(new TaskCheck("formula-revalidation", false, "Workbook formula evidence changed before mutation; no changes were made."));
+                var cleanupVerified = session.Close();
+                session = null;
+                if (!cleanupVerified)
+                {
+                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned revalidation Excel process did not exit."));
+                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook revalidation could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
+                }
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook evidence changed before mutation; no changes were made.", Checks: checks);
+            }
 
-            SetPhase("formula-repair");
-            repairs = ApplyFormulaRepairs(session, plan.Request.NewWorksheetName, plan.Request.FormulaRepairRanges);
-            changes.AddRange(repairs.RangeResults.Select(result => new TaskChange(
-                "formula-repair",
-                result.Range.ToString(),
-                $"Applied {result.RepairCount} safely inferred blank repairs in the requested range.")));
-            checks.Add(new TaskCheck("formula-repair-count", true, $"Applied {repairs.Repairs.Count} repairs across {repairs.RangeResults.Count} requested ranges."));
+            if (RotWorkbookLocator.RequiresPreMutationIsolatedSameApplyRevalidation(
+                    plan.Request.Mode,
+                    plan.Request.WorkbookBinding,
+                    plan.Request.Save) &&
+                session.HasExternalTargetOpen(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath)))
+            {
+                checks.Add(new TaskCheck("isolated-target-revalidation", false,
+                    "The exact target workbook was opened in another Excel application before mutation; no changes were made."));
+                var cleanupVerified = session.Close();
+                session = null;
+                if (!cleanupVerified)
+                {
+                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit after isolated target revalidation."));
+                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook target revalidation could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
+                }
 
-            SetPhase("recalculate");
-            Invoke(session.Application, "CalculateFull");
+                return new WorkbookExecutionOutcome(
+                    ExcelTaskStatus.Rejected,
+                    "The target workbook was opened before isolated same-file apply could begin; no changes were made.",
+                    Checks: checks);
+            }
+
+            var operation = plan.Request.Operation;
+            var worksheetName = formulaPlan.WorksheetName;
+            if (operation.Kind == ExcelOperationKind.CopyExhibit)
+            {
+                SetPhase("worksheet-copy");
+                mutationAttempted = true;
+                CopyReferenceWorksheet(session, operation.CopyExhibit!.ReferenceWorksheet, operation.CopyExhibit.NewWorksheetName, SetPhase);
+                changes.Add(new TaskChange("worksheet-copy", worksheetName, "Copied the requested reference worksheet."));
+            }
+
+            SetPhase(operation.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair");
+            ApplyFormulaWrites(session, formulaPlan, () => mutationAttempted = true);
+            changes.AddRange(CreateFormulaChanges(formulaPlan, planning: false));
+            checks.Add(new TaskCheck("formula-change-count", true,
+                $"Applied {formulaPlan.Repairs.Count} planned formula changes; fingerprint {formulaPlan.Fingerprint}."));
+
+            var noFormulaChanges = operation.Kind != ExcelOperationKind.CopyExhibit && formulaPlan.Repairs.Count == 0;
+            if (noFormulaChanges && plan.Request.Save == SaveMode.Same)
+            {
+                SetPhase("no-change-cleanup");
+                var noChangeCleanupVerified = session.Close();
+                session = null;
+                if (!noChangeCleanupVerified)
+                {
+                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned no-change Excel process did not exit."));
+                    return new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Unknown,
+                        "Workbook analysis found no changes, but owned Excel cleanup could not be verified.",
+                        changes,
+                        checks,
+                        CanRetry: false,
+                        RetryReason: "Inspect the owned Excel process before retrying.");
+                }
+
+                checks.Add(new TaskCheck("no-formula-changes", true, "No formula changes were required; Excel was not recalculated or saved."));
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook analysis found no formula changes; no Excel changes were made.", changes, checks);
+            }
+
+            if (!noFormulaChanges)
+            {
+                SetPhase("recalculate");
+                Invoke(session.Application, "CalculateFull");
+            }
             SetPhase("save");
+            mutationAttempted = true;
             if (plan.Request.Save == SaveMode.Copy)
             {
                 stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(savedPath, plan.TaskId);
@@ -222,7 +314,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
             var verificationPath = stagingPath ?? savedPath;
             SetPhase("reopen-verification");
-            if (!VerifySavedWorkbook(verificationPath, plan.Request.NewWorksheetName, repairs.Repairs, observer, out var verificationCheck))
+            if (!VerifySavedWorkbook(verificationPath, worksheetName, formulaPlan.Repairs, observer, out var verificationCheck))
             {
                 checks.Add(verificationCheck);
                 AddStagingCleanupCheck(stagingPath, checks);
@@ -236,6 +328,10 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             checks.Add(verificationCheck);
+            if (noFormulaChanges)
+            {
+                checks.Add(new TaskCheck("no-formula-changes", true, "No formula changes were required; Excel was not recalculated."));
+            }
             verified = true;
             if (stagingPath is not null)
             {
@@ -288,6 +384,9 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         }
     }
 
+    private static bool NeedsReferenceWorkbook(NormalizedExcelTaskRequest request) =>
+        request.Operation.Kind == ExcelOperationKind.CopyExhibit;
+
     private static WorksheetCopyPreflight PreflightWorksheetCopy(ExcelSession session, string referenceSheetName, string newSheetName)
     {
         using var references = new ComReferenceScope();
@@ -307,6 +406,23 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
         {
             return new WorksheetCopyPreflight(false, [new TaskCheck("worksheet-preflight", false, "Workbook worksheet feasibility could not be read.")]);
+        }
+    }
+
+    private static WorksheetCopyPreflight PreflightWorksheetExists(ExcelSession session, string worksheetName)
+    {
+        using var references = new ComReferenceScope();
+        try
+        {
+            var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+            var exists = WorksheetExists(sheets, worksheetName, references);
+            return new WorksheetCopyPreflight(exists,
+                [new TaskCheck("target-worksheet", exists,
+                    exists ? "The requested target worksheet is available." : "The requested target worksheet is unavailable.")]);
+        }
+        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
+        {
+            return new WorksheetCopyPreflight(false, [new TaskCheck("target-worksheet", false, "Target worksheet feasibility could not be read.")]);
         }
     }
 
@@ -343,14 +459,34 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         Set(copiedSheet, "Name", newSheetName);
     }
 
-    private static RepairApplication ApplyFormulaRepairs(
-        ExcelSession session,
-        string worksheetName,
-        IReadOnlyList<FormulaRepairRange> ranges)
+    private static FormulaExecutionPlan AnalyzeFormulaPlan(ExcelSession session, NormalizedExcelOperation operation) => operation.Kind switch
+    {
+        ExcelOperationKind.CopyExhibit => AnalyzeFormulaRepairs(
+            session.ReferenceWorkbook,
+            operation.CopyExhibit!.ReferenceWorksheet,
+            operation.CopyExhibit.RepairRanges,
+            operation.Kind,
+            operation.CopyExhibit.NewWorksheetName),
+        ExcelOperationKind.RepairExistingWorksheet => AnalyzeFormulaRepairs(
+            session.TargetWorkbook,
+            operation.RepairExistingWorksheet!.WorksheetName,
+            operation.RepairExistingWorksheet.Ranges,
+            operation.Kind,
+            operation.RepairExistingWorksheet.WorksheetName),
+        ExcelOperationKind.ExtendFormulaSeries => AnalyzeFormulaExtension(session.TargetWorkbook, operation.ExtendFormulaSeries!),
+        _ => throw new InvalidOperationException("The requested operation kind is unsupported.")
+    };
+
+    private static FormulaExecutionPlan AnalyzeFormulaRepairs(
+        object workbook,
+        string sourceWorksheetName,
+        IReadOnlyList<FormulaRepairRange> ranges,
+        ExcelOperationKind kind,
+        string targetWorksheetName)
     {
         using var references = new ComReferenceScope();
-        var worksheetCollection = references.Add(Get(session.TargetWorkbook, "Worksheets"));
-        var worksheet = references.Add(Get(worksheetCollection, "Item", worksheetName));
+        var worksheetCollection = references.Add(Get(workbook, "Worksheets"));
+        var worksheet = references.Add(Get(worksheetCollection, "Item", sourceWorksheetName));
         var repairs = new List<ExpectedFormula>();
         var rangeResults = new List<RepairRangeResult>();
 
@@ -361,27 +497,70 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             var formulaGrid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"), bounds.RowCount, bounds.ColumnCount);
             var inferred = FormulaPatternAnalyzer.InferRepairs(formulaGrid);
             rangeResults.Add(new RepairRangeResult(requestedRange, inferred.Count));
-            if (inferred.Count == 0) continue;
-
             foreach (var repair in inferred)
             {
                 repairs.Add(new ExpectedFormula(bounds.StartRow + repair.RowIndex, bounds.StartColumn + repair.ColumnIndex, repair.FormulaR1C1));
             }
-
-            foreach (var formulaGroup in inferred.GroupBy(repair => repair.FormulaR1C1, StringComparer.Ordinal))
-            {
-                foreach (var repairBatch in formulaGroup.Chunk(64))
-                {
-                    var targetAddress = string.Join(",", repairBatch.Select(repair => WorkbookRuntimeHelpers.ToA1Address(
-                        bounds.StartRow + repair.RowIndex,
-                        bounds.StartColumn + repair.ColumnIndex)));
-                    var repairRange = references.Add(Get(worksheet, "Range", targetAddress));
-                    Set(repairRange, "FormulaR1C1", formulaGroup.Key);
-                }
-            }
         }
 
-        return new RepairApplication(repairs, rangeResults);
+        return FormulaExecutionPlan.Create(kind, targetWorksheetName, repairs, rangeResults);
+    }
+
+    private static FormulaExecutionPlan AnalyzeFormulaExtension(object workbook, NormalizedExtendFormulaSeriesOperation task)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(workbook, "Worksheets"));
+        var sheet = references.Add(Get(sheets, "Item", task.WorksheetName));
+        var evidence = WorkbookRuntimeHelpers.GetBounds(task.EvidenceRange);
+        var destination = WorkbookRuntimeHelpers.GetBounds(task.DestinationRange);
+        var combinedAddress = $"{WorkbookRuntimeHelpers.ToA1Address(Math.Min(evidence.StartRow, destination.StartRow), Math.Min(evidence.StartColumn, destination.StartColumn))}:{WorkbookRuntimeHelpers.ToA1Address(Math.Max(evidence.EndRow, destination.EndRow), Math.Max(evidence.EndColumn, destination.EndColumn))}";
+        var range = references.Add(Get(sheet, "Range", combinedAddress));
+        var grid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"),
+            destination.EndRow - evidence.StartRow + 1,
+            destination.EndColumn - evidence.StartColumn + 1);
+        var periods = task.Direction == FormulaExtensionDirection.Right
+            ? destination.EndColumn - destination.StartColumn + 1
+            : destination.EndRow - destination.StartRow + 1;
+        var planned = FormulaMutationPlanner.Plan(grid, task.Direction, periods);
+        var repairs = planned.Mutations.Select(m => new ExpectedFormula(
+            evidence.StartRow + m.RowIndex, evidence.StartColumn + m.ColumnIndex, m.FormulaR1C1)).ToList();
+        return FormulaExecutionPlan.Create(ExcelOperationKind.ExtendFormulaSeries, task.WorksheetName, repairs,
+            [new RepairRangeResult(task.DestinationRange, repairs.Count)]);
+    }
+
+    private static void ApplyFormulaWrites(ExcelSession session, FormulaExecutionPlan plan, Action markMutationAttempted)
+    {
+        if (plan.Repairs.Count == 0) return;
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Get(sheets, "Item", plan.WorksheetName));
+        foreach (var group in plan.Repairs.GroupBy(repair => repair.FormulaR1C1, StringComparer.Ordinal))
+        {
+            foreach (var batch in group.Chunk(64))
+            {
+                var address = string.Join(",", batch.Select(repair => WorkbookRuntimeHelpers.ToA1Address(repair.Row, repair.Column)));
+                var target = references.Add(Get(sheet, "Range", address));
+                markMutationAttempted();
+                Set(target, "FormulaR1C1", group.Key);
+            }
+        }
+    }
+
+    private static bool FormulaPlansEqual(FormulaExecutionPlan left, FormulaExecutionPlan right) =>
+        left.Kind == right.Kind &&
+        string.Equals(left.WorksheetName, right.WorksheetName, StringComparison.Ordinal) &&
+        left.Fingerprint == right.Fingerprint &&
+        left.Repairs.SequenceEqual(right.Repairs) &&
+        left.RangeResults.SequenceEqual(right.RangeResults);
+
+    private static TaskChange[] CreateFormulaChanges(FormulaExecutionPlan plan, bool planning)
+    {
+        var kind = plan.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair";
+        var verb = planning ? "Planned" : "Applied";
+        return plan.RangeResults.Select(result => new TaskChange(
+            kind,
+            $"{plan.WorksheetName}!{result.Range}",
+            $"{verb} {result.RepairCount} formula changes.")).ToArray();
     }
 
     private static bool VerifySavedWorkbook(
@@ -412,7 +591,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             contentVerified = true;
-            check = new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the copied worksheet and {expectedRepairs.Count} expected repairs.");
+            check = new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas.");
         }
         finally
         {
@@ -454,7 +633,25 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
     private sealed record RepairRangeResult(FormulaRepairRange Range, int RepairCount);
 
-    private sealed record RepairApplication(List<ExpectedFormula> Repairs, List<RepairRangeResult> RangeResults);
+    private sealed record FormulaExecutionPlan(
+        ExcelOperationKind Kind,
+        string WorksheetName,
+        IReadOnlyList<ExpectedFormula> Repairs,
+        IReadOnlyList<RepairRangeResult> RangeResults,
+        string Fingerprint)
+    {
+        public static FormulaExecutionPlan Create(ExcelOperationKind kind, string worksheetName, IReadOnlyList<ExpectedFormula> repairs, IReadOnlyList<RepairRangeResult> rangeResults)
+        {
+            var orderedRepairs = repairs.OrderBy(repair => repair.Row).ThenBy(repair => repair.Column).ToArray();
+            var orderedRanges = rangeResults.OrderBy(result => result.Range.StartCell, StringComparer.Ordinal).ThenBy(result => result.Range.EndCell, StringComparer.Ordinal).ToArray();
+            var material = new StringBuilder()
+                .Append(kind).Append('|').Append(worksheetName).Append('|');
+            foreach (var result in orderedRanges) material.Append(result.Range).Append(':').Append(result.RepairCount).Append('|');
+            foreach (var repair in orderedRepairs) material.Append(repair.Row).Append(',').Append(repair.Column).Append(':').Append(repair.FormulaR1C1).Append('|');
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
+            return new FormulaExecutionPlan(kind, worksheetName, Array.AsReadOnly(orderedRepairs), Array.AsReadOnly(orderedRanges), fingerprint);
+        }
+    }
 
     private sealed record WorksheetCopyPreflight(bool IsFeasible, IReadOnlyList<TaskCheck> Checks);
 
@@ -484,8 +681,13 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         public object ReferenceWorkbook { get; }
 
+        public bool HasExternalTargetOpen(string targetPath) =>
+            RotWorkbookLocator.HasExternalWorkbookAtPath(targetPath, GetApplicationHwnd(Application));
+
         public static ExcelSession Open(NormalizedExcelTaskRequest request, IExcelWorkbookRuntimeObserver observer, bool readOnlyTarget = false)
         {
+            var needsReference = NeedsReferenceWorkbook(request);
+            var referencePath = request.Operation.CopyExhibit?.ReferenceWorkbookPath;
             if (request.WorkbookBinding == WorkbookBinding.UseOpen)
             {
                 using var found = RotWorkbookLocator.Find(WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath));
@@ -496,7 +698,12 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 var closeReference = false;
                 try
                 {
-                    using var openReference = RotWorkbookLocator.Find(WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath));
+                    if (!needsReference)
+                    {
+                        return new ExcelSession(application, target, target, ownsApplication: false, closeTarget: false, closeReference: false, ownedProcess: null);
+                    }
+
+                    using var openReference = RotWorkbookLocator.Find(WorkbookRuntimeHelpers.NormalizePath(referencePath!));
                     if (openReference is not null)
                     {
                         var openReferenceApplication = Get(openReference.Workbook, "Application");
@@ -517,7 +724,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                         }
                     }
 
-                    if (reference is null && WorkbookRuntimeHelpers.PathsEqual(request.TargetWorkbookPath, request.ReferenceWorkbookPath))
+                    if (reference is null && WorkbookRuntimeHelpers.PathsEqual(request.TargetWorkbookPath, referencePath!))
                     {
                         reference = target;
                     }
@@ -531,7 +738,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                             try
                             {
                                 Set(application, "AutomationSecurity", WorkbookRuntimeHelpers.AutomationSecurityForceDisable);
-                                reference = OpenWorkbook(workbooks, request.ReferenceWorkbookPath, readOnly: true);
+                                reference = OpenWorkbook(workbooks, referencePath!, readOnly: true);
                             }
                             finally
                             {
@@ -570,9 +777,9 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     object? reference = null;
                     try
                     {
-                        reference = WorkbookRuntimeHelpers.PathsEqual(request.TargetWorkbookPath, request.ReferenceWorkbookPath)
+                        reference = !needsReference || WorkbookRuntimeHelpers.PathsEqual(request.TargetWorkbookPath, referencePath!)
                             ? target
-                            : OpenWorkbook(workbooks, request.ReferenceWorkbookPath, readOnly: true);
+                            : OpenWorkbook(workbooks, referencePath!, readOnly: true);
                         return new ExcelSession(app, target, reference, ownsApplication: true, closeTarget: true, closeReference: !ReferenceEquals(target, reference), ownedProcess);
                     }
                     catch
@@ -694,8 +901,10 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             0) ?? throw new InvalidOperationException("Excel did not open the workbook.");
 
         private static bool AreSameApplication(object left, object right) =>
-            Convert.ToInt64(Get(left, "Hwnd"), CultureInfo.InvariantCulture) ==
-            Convert.ToInt64(Get(right, "Hwnd"), CultureInfo.InvariantCulture);
+            GetApplicationHwnd(left) == GetApplicationHwnd(right);
+
+        private static long GetApplicationHwnd(object application) =>
+            Convert.ToInt64(Get(application, "Hwnd"), CultureInfo.InvariantCulture);
 
         private static void TryQuit(object application)
         {
@@ -860,7 +1069,8 @@ internal static class WorkbookRuntimeHelpers
             index++;
         }
 
-        if (index == 0 || !int.TryParse(text[index..], CultureInfo.InvariantCulture, out var row) || row < 1 || column < 1)
+        if (index == 0 || !int.TryParse(text[index..], CultureInfo.InvariantCulture, out var row) ||
+            row is < 1 or > 1_048_576 || column is < 1 or > 16_384)
         {
             throw new InvalidOperationException("Formula repair range contains an invalid cell address.");
         }
@@ -968,9 +1178,83 @@ internal sealed class RotWorkbookLocator : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// Detects an exact target workbook in the ROT that belongs to a different Excel application.
+    /// The caller's application RCWs are intentionally never released here: ROT can return the
+    /// same RCW instance used by the active session, and final-releasing it would invalidate that session.
+    /// </summary>
+    public static bool HasExternalWorkbookAtPath(string targetPath, long sessionApplicationHwnd)
+    {
+        var result = GetRunningObjectTable(0, out var table);
+        if (result < 0 || table is null) Marshal.ThrowExceptionForHR(result);
+        var runningTable = table ?? throw new InvalidOperationException("The running object table was unavailable.");
+        try
+        {
+            runningTable.EnumRunning(out var enumerator);
+            try
+            {
+                var monikers = new IMoniker[1];
+                while (enumerator.Next(1, monikers, IntPtr.Zero) == 0)
+                {
+                    var moniker = monikers[0];
+                    try
+                    {
+                        var bindResult = CreateBindCtx(0, out var bindContext);
+                        if (bindResult < 0 || bindContext is null) continue;
+                        try
+                        {
+                            moniker.GetDisplayName(bindContext, null, out var displayName);
+                            if (!MatchesDisplayName(displayName, targetPath)) continue;
+
+                            object? candidate = null;
+                            object? candidateApplication = null;
+                            var unrelatedCandidate = false;
+                            try
+                            {
+                                moniker.BindToObject(bindContext, null, ref WorkbookInterfaceId, out candidate);
+                                if (candidate is null || !HasMatchingFullName(candidate, targetPath)) continue;
+
+                                candidateApplication = GetApplication(candidate);
+                                var candidateApplicationHwnd = GetApplicationHwnd(candidateApplication);
+                                unrelatedCandidate = IsExternalApplicationHwnd(sessionApplicationHwnd, candidateApplicationHwnd);
+                                if (unrelatedCandidate) return true;
+                            }
+                            catch (Exception exception) when (IsExpectedBindingNonmatch(exception)) { }
+                            finally
+                            {
+                                if (unrelatedCandidate)
+                                {
+                                    ComReferences.Release(candidateApplication);
+                                    ComReferences.Release(candidate);
+                                }
+                            }
+                        }
+                        finally { ComReferences.Release(bindContext); }
+                    }
+                    finally { ComReferences.Release(moniker); }
+                }
+            }
+            finally { ComReferences.Release(enumerator); }
+        }
+        finally { ComReferences.Release(runningTable); }
+
+        return false;
+    }
+
     public void Dispose() => ComReferences.Release(_workbook);
 
     internal static bool IsExpectedBindingNonmatch(Exception exception) => exception is COMException or ArgumentException;
+
+    internal static bool RequiresPreMutationIsolatedSameApplyRevalidation(
+        ExcelTaskMode mode,
+        WorkbookBinding binding,
+        SaveMode save) =>
+        mode == ExcelTaskMode.Apply &&
+        binding == WorkbookBinding.Isolated &&
+        save == SaveMode.Same;
+
+    internal static bool IsExternalApplicationHwnd(long sessionApplicationHwnd, long candidateApplicationHwnd) =>
+        sessionApplicationHwnd != candidateApplicationHwnd;
 
     internal static bool MatchesDisplayName(string? displayName, string targetPath)
     {
@@ -991,6 +1275,22 @@ internal sealed class RotWorkbookLocator : IDisposable
             return false;
         }
     }
+
+    private static object GetApplication(object workbook) => workbook.GetType().InvokeMember(
+        "Application",
+        BindingFlags.GetProperty,
+        null,
+        workbook,
+        null,
+        CultureInfo.InvariantCulture) ?? throw new InvalidOperationException("Excel workbook did not return its application.");
+
+    private static long GetApplicationHwnd(object application) => Convert.ToInt64(application.GetType().InvokeMember(
+        "Hwnd",
+        BindingFlags.GetProperty,
+        null,
+        application,
+        null,
+        CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
 
     private static Guid WorkbookInterfaceId = new("00000000-0000-0000-C000-000000000046");
 

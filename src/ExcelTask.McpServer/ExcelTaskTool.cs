@@ -11,8 +11,8 @@ namespace ExcelTask.McpServer;
 public sealed class ExcelTaskTool(IExcelTaskEngine engine)
 {
     private const int MaxReceiptStringLength = 96;
-    private const int MaxReceiptChanges = 6;
-    private const int MaxReceiptChecks = 6;
+    private const int MaxReceiptChanges = 20;
+    private const int MaxReceiptChecks = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -25,7 +25,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Destructive = true,
         UseStructuredContent = true,
         OutputSchemaType = typeof(ExcelTaskReceipt))]
-    [Description("Copy a named reference worksheet into an existing .xlsx or .xlsm workbook, optionally repair safely inferable blank formulas, then plan or apply, save, reopen, and verify the result. Start with AskIfOpen.")]
+    [Description("Perform one bounded formula or exhibit operation in an existing .xlsx or .xlsm workbook: copy a named exhibit, repair safely inferable blank formulas, or extend a proven formula series right or down. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen.")]
     public async Task<CallToolResult> RunAsync(
         [Description("The complete Excel task request.")] ExcelTaskRequest request,
         CancellationToken cancellationToken = default)

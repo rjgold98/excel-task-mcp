@@ -84,22 +84,39 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.DoesNotContain("workbookData", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("model", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("confirmationToken", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("formulaR1C1", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("formulaText", schema, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("sourceText", schema, StringComparison.OrdinalIgnoreCase);
 
         var request = ResolveReference(tool.InputSchema.GetProperty("properties").GetProperty("request"), tool.InputSchema);
         var properties = request.GetProperty("properties");
+        Assert.Equal(
+            ["targetWorkbookPath", "operation"],
+            request.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
         AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path.");
-        AssertDescription(properties, "referenceWorkbookPath", "Workbook containing the named reference worksheet.");
-        AssertDescription(properties, "referenceWorksheet", "Reference worksheet name to copy from.");
-        AssertDescription(properties, "newWorksheetName", "Name for the new worksheet in the target workbook.");
-        AssertDescription(properties, "formulaRepairRanges", "Bounded A1 ranges for blank-formula repair; use [] when no repairs are needed.");
+        AssertDescription(properties, "operation", "The required manual operation union. Supply exactly one payload matching kind.");
         AssertDescription(properties, "mode", "Plan previews without mutation; Apply performs the task after required confirmations.");
         AssertDescription(properties, "workbookBinding", "Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated.");
         AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same.");
         AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
 
-        var ranges = properties.GetProperty("formulaRepairRanges");
-        Assert.Equal("array", ranges.GetProperty("type").GetString());
+        var operation = ResolveReference(properties.GetProperty("operation"), tool.InputSchema);
+        var operationProperties = operation.GetProperty("properties");
+        AssertDescription(operationProperties, "kind", "Selects which one operation payload is supplied.");
+        AssertDescription(operationProperties, "copyExhibit", "Required only when kind is CopyExhibit; all other payloads must be null.");
+        AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
+        AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
+
+        var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
+        AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed.");
+
+        var repairExisting = ResolveReference(operationProperties.GetProperty("repairExistingWorksheet"), tool.InputSchema);
+        AssertDescription(repairExisting.GetProperty("properties"), "ranges", "One or more bounded A1 ranges where blank formulas may be repaired.");
+
+        var extendSeries = ResolveReference(operationProperties.GetProperty("extendFormulaSeries"), tool.InputSchema);
+        AssertDescription(extendSeries.GetProperty("properties"), "evidenceRange", "Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.");
+        AssertDescription(extendSeries.GetProperty("properties"), "destinationRange", "Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.");
     }
 
     [Fact]
@@ -141,6 +158,55 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
     }
 
     [Fact]
+    public async Task CallToolPlanRepairExistingWorksheetRoundTripsOperation()
+    {
+        _runtime!.Outcome = new WorkbookExecutionOutcome(ExcelTaskStatus.Planned, "Repair plan ready");
+        var operation = new ExcelOperation(
+            ExcelOperationKind.RepairExistingWorksheet,
+            RepairExistingWorksheet: new RepairExistingWorksheetOperation("Model", ["B2:C3"]));
+
+        var result = await CallAsync(Request(ExcelTaskMode.Plan, operation));
+
+        Assert.False(result.IsError);
+        var repaired = Assert.IsType<NormalizedRepairExistingWorksheetOperation>(_runtime.Plan!.Request.Operation.RepairExistingWorksheet);
+        Assert.Equal("Model", repaired.WorksheetName);
+        Assert.Equal("B2:C3", repaired.Ranges.Single().ToString());
+        Assert.Null(_runtime.InspectionRequest!.ReferenceWorkbookPath);
+    }
+
+    [Fact]
+    public async Task CallToolPlanExtendFormulaSeriesRoundTripsOperation()
+    {
+        _runtime!.Outcome = new WorkbookExecutionOutcome(ExcelTaskStatus.Planned, "Extension plan ready");
+        var operation = new ExcelOperation(
+            ExcelOperationKind.ExtendFormulaSeries,
+            ExtendFormulaSeries: new ExtendFormulaSeriesOperation(
+                "Model", FormulaExtensionDirection.Right, "B2:C4", "D2:F4"));
+
+        var result = await CallAsync(Request(ExcelTaskMode.Plan, operation));
+
+        Assert.False(result.IsError);
+        var extension = Assert.IsType<NormalizedExtendFormulaSeriesOperation>(_runtime.Plan!.Request.Operation.ExtendFormulaSeries);
+        Assert.Equal(FormulaExtensionDirection.Right, extension.Direction);
+        Assert.Equal("B2:C4", extension.EvidenceRange.ToString());
+        Assert.Equal("D2:F4", extension.DestinationRange.ToString());
+    }
+
+    [Fact]
+    public async Task CallToolRejectsMismatchedOperationUnionBeforeInspection()
+    {
+        var mismatch = new ExcelOperation(
+            ExcelOperationKind.CopyExhibit,
+            RepairExistingWorksheet: new RepairExistingWorksheetOperation("Model", ["B2:C3"]));
+
+        var result = await CallAsync(Request(ExcelTaskMode.Plan, mismatch));
+
+        Assert.True(result.IsError);
+        Assert.Equal(nameof(ExcelTaskStatus.Rejected), result.StructuredContent!.Value.GetProperty("status").GetString());
+        Assert.Null(_runtime!.InspectionRequest);
+    }
+
+    [Fact]
     public async Task CallToolLimitsFinalJsonRpcEnvelopeTo32KiB()
     {
         const int maxEnvelopeBytes = 32 * 1024;
@@ -157,8 +223,33 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var envelope = JsonSerializer.SerializeToUtf8Bytes(new { jsonrpc = "2.0", id = 1, result });
 
         Assert.InRange(envelope.Length, 1, maxEnvelopeBytes);
-        Assert.Equal(6, result.StructuredContent!.Value.GetProperty("changes").GetArrayLength());
-        Assert.Equal(6, result.StructuredContent.Value.GetProperty("checks").GetArrayLength());
+        Assert.Equal(20, result.StructuredContent!.Value.GetProperty("changes").GetArrayLength());
+        Assert.Equal(20, result.StructuredContent.Value.GetProperty("checks").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task CallToolPreservesTerminalReopenVerificationCheck()
+    {
+        _runtime!.Outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Completed,
+            "Completed",
+            Checks:
+            [
+                new TaskCheck("target-path", true, "Target is readable."),
+                new TaskCheck("reference-worksheet", true, "Reference exists."),
+                new TaskCheck("destination-worksheet", true, "Destination is available."),
+                new TaskCheck("formula-plan", true, "Formula plan is valid."),
+                new TaskCheck("formula-change-count", true, "Formula changes were applied."),
+                new TaskCheck("save", true, "Workbook was saved."),
+                new TaskCheck("reopen-verification", true, "Saved workbook was reopened and verified.")
+            ]);
+
+        var result = await CallAsync(Request(ExcelTaskMode.Apply, overwriteConfirmed: true));
+        var checks = result.StructuredContent!.Value.GetProperty("checks");
+
+        Assert.Equal(7, checks.GetArrayLength());
+        Assert.Equal("reopen-verification", checks[6].GetProperty("name").GetString());
+        Assert.True(checks[6].GetProperty("passed").GetBoolean());
     }
 
     private async Task<CallToolResult> CallAsync(ExcelTaskRequest request) => await _client!.CallToolAsync(
@@ -166,12 +257,14 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         new Dictionary<string, object?> { ["request"] = request },
         cancellationToken: _cancellation.Token);
 
-    private static ExcelTaskRequest Request(ExcelTaskMode mode, bool overwriteConfirmed = false) => new(
+    private static ExcelTaskRequest Request(
+        ExcelTaskMode mode,
+        ExcelOperation? operation = null,
+        bool overwriteConfirmed = false) => new(
         "target.xlsx",
-        "reference.xlsx",
-        "Reference",
-        "New sheet",
-        ["A1:C3"],
+        operation ?? new ExcelOperation(
+            ExcelOperationKind.CopyExhibit,
+            CopyExhibit: new CopyExhibitOperation("reference.xlsx", "Reference", "New sheet", ["A1:C3"])),
         mode,
         WorkbookBinding.AskIfOpen,
         SaveMode.Same,

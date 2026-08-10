@@ -111,6 +111,27 @@ public sealed class WorkbookRuntimeHelpersTests
     }
 
     [Fact]
+    public void RotIdentityTreatsOnlyDifferentApplicationWindowsAsExternal()
+    {
+        Assert.False(RotWorkbookLocator.IsExternalApplicationHwnd(101, 101));
+        Assert.True(RotWorkbookLocator.IsExternalApplicationHwnd(101, 202));
+    }
+
+    [Theory]
+    [InlineData(ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, true)]
+    [InlineData(ExcelTaskMode.Plan, WorkbookBinding.Isolated, SaveMode.Same, false)]
+    [InlineData(ExcelTaskMode.Apply, WorkbookBinding.UseOpen, SaveMode.Same, false)]
+    [InlineData(ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Copy, false)]
+    public void PreMutationPolicyRequiresRotRevalidationOnlyForIsolatedSameApply(
+        ExcelTaskMode mode,
+        WorkbookBinding binding,
+        SaveMode save,
+        bool expected)
+    {
+        Assert.Equal(expected, RotWorkbookLocator.RequiresPreMutationIsolatedSameApplyRevalidation(mode, binding, save));
+    }
+
+    [Fact]
     public async Task ExecuteRejectsExistingCopyOutputBeforeStartingExcel()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -124,17 +145,9 @@ public sealed class WorkbookRuntimeHelpersTests
         try
         {
             using var runtime = new ExcelWorkbookRuntime();
-            var plan = new ExcelTaskPlan("test", new NormalizedExcelTaskRequest(
-                target,
-                reference,
-                "Reference",
-                "Imported",
-                [],
-                ExcelTaskMode.Apply,
-                WorkbookBinding.Isolated,
-                SaveMode.Copy,
-                output,
-                OverwriteConfirmed: false));
+            var plan = new ExcelTaskPlan("test", ExcelTaskPlans.Copy(
+                target, reference, "Reference", "Imported", [],
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Copy, output, overwrite: false));
 
             var outcome = await runtime.ExecuteAsync(plan, CancellationToken.None);
 
@@ -143,6 +156,38 @@ public sealed class WorkbookRuntimeHelpersTests
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteRejectsUnconfirmedSameFileApplyBeforeStartingExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "target.xlsx");
+        File.WriteAllText(target, string.Empty);
+        try
+        {
+            var request = new NormalizedExcelTaskRequest(
+                target,
+                ExcelTaskMode.Apply,
+                WorkbookBinding.Isolated,
+                SaveMode.Same,
+                null,
+                OverwriteConfirmed: false,
+                new NormalizedExcelOperation(
+                    ExcelOperationKind.RepairExistingWorksheet,
+                    RepairExistingWorksheet: new NormalizedRepairExistingWorksheetOperation("Sheet1", [])));
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("test", request), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "same-file-overwrite" && !check.Passed);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
 
@@ -192,6 +237,13 @@ public sealed class WorkbookRuntimeHelpersTests
         Assert.Equal(2, bounds.StartColumn);
         Assert.Equal(3, bounds.RowCount);
         Assert.Equal(3, bounds.ColumnCount);
+    }
+
+    [Fact]
+    public void GetBoundsRejectsAddressesOutsideExcelLimits()
+    {
+        Assert.Throws<InvalidOperationException>(() => WorkbookRuntimeHelpers.GetBounds(new FormulaRepairRange("XFE1", "XFE1")));
+        Assert.Throws<InvalidOperationException>(() => WorkbookRuntimeHelpers.GetBounds(new FormulaRepairRange("A1048577", "A1048577")));
     }
 
     [Fact]

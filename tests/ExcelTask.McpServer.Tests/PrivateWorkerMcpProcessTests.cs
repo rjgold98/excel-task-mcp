@@ -103,10 +103,9 @@ public sealed class PrivateWorkerMcpProcessTests
                 new McpClientOptions { ClientInfo = new() { Name = "ExcelTask-TestClient", Version = "1.0.0" } });
             var request = new ExcelTaskRequest(
                 target,
-                reference,
-                "Reference",
-                "Imported",
-                [],
+                new ExcelOperation(
+                    ExcelOperationKind.CopyExhibit,
+                    CopyExhibit: new CopyExhibitOperation(reference, "Reference", "Imported", [])),
                 ExcelTaskMode.Apply,
                 WorkbookBinding.AskIfOpen,
                 SaveMode.Same,

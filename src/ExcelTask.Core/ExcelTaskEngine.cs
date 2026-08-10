@@ -7,6 +7,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 {
     /// <summary>Maximum aggregate number of cells requested for formula repair in the MVP.</summary>
     public const int MaxFormulaRepairCells = 10_000;
+    public const int MaxFormulaRepairRanges = 16;
 
     private const int MaxReceiptItems = 20;
     private const int MaxReceiptStringLength = 256;
@@ -50,7 +51,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             inspection = await _runtime.InspectAsync(
                 new WorkbookInspectionRequest(
                     normalizedRequest.TargetWorkbookPath,
-                    normalizedRequest.ReferenceWorkbookPath,
+                    normalizedRequest.Operation.CopyExhibit?.ReferenceWorkbookPath,
                     normalizedRequest.WorkbookBinding,
                     normalizedRequest.Save,
                     normalizedRequest.OutputWorkbookPath),
@@ -296,20 +297,16 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
-        if (!TryNormalizeWorkbookPath(request.TargetWorkbookPath, "Target workbook path", out var target, out error) ||
-            !TryNormalizeWorkbookPath(request.ReferenceWorkbookPath, "Reference workbook path", out var reference, out error) ||
-            !TryNormalizeWorksheetName(request.ReferenceWorksheet, "Reference worksheet", out var referenceSheet, out error) ||
-            !TryNormalizeWorksheetName(request.NewWorksheetName, "New worksheet name", out var newSheet, out error) ||
-            !TryNormalizeRanges(request.FormulaRepairRanges, out var ranges, out error))
+        if (!TryNormalizeWorkbookPath(request.TargetWorkbookPath, "Target workbook path", out var target, out error))
         {
             return false;
         }
-
-        if (!IsSupportedWorkbookPath(target!) || !IsSupportedWorkbookPath(reference!))
+        if (!IsSupportedWorkbookPath(target!))
         {
             error = "MVP workbook paths must use a .xlsx or .xlsm extension.";
             return false;
         }
+        if (!TryNormalizeOperation(request.Operation, out var operation, out error)) return false;
 
         if (request.WorkbookBinding == WorkbookBinding.UseOpen && request.Save == SaveMode.Copy)
         {
@@ -344,8 +341,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
 
         normalized = new NormalizedExcelTaskRequest(
-            target!, reference!, referenceSheet!, newSheet!, ranges!, request.Mode, request.WorkbookBinding,
-            request.Save, output, request.OverwriteConfirmed);
+            target!, request.Mode, request.WorkbookBinding, request.Save, output, request.OverwriteConfirmed, operation!);
         error = null;
         return true;
     }
@@ -400,46 +396,205 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         return true;
     }
 
-    private static bool TryNormalizeRanges(IReadOnlyList<string>? values, out IReadOnlyList<FormulaRepairRange>? ranges, out string? error)
+    private static bool TryNormalizeRanges(IReadOnlyList<string>? values, string name, out IReadOnlyList<FormulaRepairRange>? ranges, out string? error)
     {
         ranges = null;
         error = null;
         if (values is null)
         {
-            error = "Formula repair ranges are required; supply an empty list when no repair range is needed.";
+            error = $"{name} are required; supply an empty list when none are needed.";
+            return false;
+        }
+        if (values.Count > MaxFormulaRepairRanges)
+        {
+            error = $"{name} exceed the MVP limit of {MaxFormulaRepairRanges} ranges.";
             return false;
         }
 
+        var parsed = new List<ParsedA1Range>(values.Count);
         var normalized = new List<FormulaRepairRange>(values.Count);
         long aggregateCellCount = 0;
         foreach (var value in values)
         {
-            var match = A1RangeRegex().Match(value?.Trim() ?? string.Empty);
-            var endColumnText = match.Success && match.Groups[3].Success ? match.Groups[3].Value : match.Groups[1].Value;
-            var endRowText = match.Success && match.Groups[4].Success ? match.Groups[4].Value : match.Groups[2].Value;
-            if (!match.Success ||
-                !TryParseCell(match.Groups[1].Value, match.Groups[2].Value, out var startColumn, out var startRow) ||
-                !TryParseCell(endColumnText, endRowText, out var endColumn, out var endRow) ||
-                startColumn > endColumn || startRow > endRow)
+            if (!TryNormalizeA1Range(value, out var range))
             {
-                error = $"Formula repair range '{value}' is invalid. Use a rectangular A1 range such as A1:C10.";
+                error = $"{name} contains invalid range '{value}'. Use a rectangular A1 range such as A1:C10.";
+                return false;
+            }
+            if (parsed.Any(existing => Overlaps(existing, range)))
+            {
+                error = $"{name} must not overlap.";
                 return false;
             }
 
-            aggregateCellCount += (long)(endColumn - startColumn + 1) * (endRow - startRow + 1);
+            aggregateCellCount += CellCount(range);
             if (aggregateCellCount > MaxFormulaRepairCells)
             {
-                error = $"Formula repair ranges exceed the MVP limit of {MaxFormulaRepairCells:N0} aggregate cells.";
+                error = $"{name} exceed the MVP limit of {MaxFormulaRepairCells:N0} aggregate cells.";
                 return false;
             }
-
-            normalized.Add(new FormulaRepairRange(
-                $"{match.Groups[1].Value.ToUpperInvariant()}{startRow}",
-                $"{endColumnText.ToUpperInvariant()}{endRow}"));
+            parsed.Add(range);
+            normalized.Add(ToFormulaRepairRange(range));
         }
 
-        ranges = normalized;
+        ranges = normalized.AsReadOnly();
         return true;
+    }
+
+    private static bool TryNormalizeOperation(ExcelOperation? operation, out NormalizedExcelOperation? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (operation is null)
+        {
+            error = "Operation is required.";
+            return false;
+        }
+
+        var payloadCount = (operation.CopyExhibit is null ? 0 : 1) +
+                           (operation.RepairExistingWorksheet is null ? 0 : 1) +
+                           (operation.ExtendFormulaSeries is null ? 0 : 1);
+        if (!Enum.IsDefined(operation.Kind))
+        {
+            error = "Operation kind must be a defined value.";
+            return false;
+        }
+        if (payloadCount != 1)
+        {
+            error = "Operation must specify exactly one payload.";
+            return false;
+        }
+
+        switch (operation.Kind)
+        {
+            case ExcelOperationKind.CopyExhibit when operation.CopyExhibit is not null:
+                var copy = operation.CopyExhibit;
+                if (!TryNormalizeWorkbookPath(copy.ReferenceWorkbookPath, "Reference workbook path", out var referencePath, out error) ||
+                    !IsSupportedWorkbookPath(referencePath!))
+                {
+                    error ??= "MVP workbook paths must use a .xlsx or .xlsm extension.";
+                    return false;
+                }
+                if (!TryNormalizeWorksheetName(copy.ReferenceWorksheet, "Reference worksheet", out var referenceSheet, out error) ||
+                    !TryNormalizeWorksheetName(copy.NewWorksheetName, "New worksheet name", out var newSheet, out error) ||
+                    !TryNormalizeRanges(copy.RepairRanges, "Copy exhibit repair ranges", out var repairRanges, out error))
+                {
+                    return false;
+                }
+                normalized = new NormalizedExcelOperation(operation.Kind,
+                    new NormalizedCopyExhibitOperation(referencePath!, referenceSheet!, newSheet!, repairRanges!));
+                return true;
+
+            case ExcelOperationKind.RepairExistingWorksheet when operation.RepairExistingWorksheet is not null:
+                var repair = operation.RepairExistingWorksheet;
+                if (!TryNormalizeWorksheetName(repair.WorksheetName, "Worksheet name", out var worksheetName, out error) ||
+                    !TryNormalizeRanges(repair.Ranges, "Repair ranges", out var ranges, out error))
+                {
+                    return false;
+                }
+                if (ranges!.Count == 0)
+                {
+                    error = "RepairExistingWorksheet requires one or more repair ranges.";
+                    return false;
+                }
+                normalized = new NormalizedExcelOperation(operation.Kind,
+                    RepairExistingWorksheet: new NormalizedRepairExistingWorksheetOperation(worksheetName!, ranges!));
+                return true;
+
+            case ExcelOperationKind.ExtendFormulaSeries when operation.ExtendFormulaSeries is not null:
+                return TryNormalizeExtension(operation, out normalized, out error);
+
+            default:
+                error = "Operation payload does not match its kind.";
+                return false;
+        }
+    }
+
+    private static bool TryNormalizeExtension(ExcelOperation operation, out NormalizedExcelOperation? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        var extension = operation.ExtendFormulaSeries!;
+        if (!Enum.IsDefined(extension.Direction))
+        {
+            error = "Formula extension direction must be a defined value.";
+            return false;
+        }
+        if (!TryNormalizeWorksheetName(extension.WorksheetName, "Worksheet name", out var worksheetName, out error) ||
+            !TryNormalizeA1Range(extension.EvidenceRange, out var evidence) ||
+            !TryNormalizeA1Range(extension.DestinationRange, out var destination))
+        {
+            error ??= "ExtendFormulaSeries ranges must be valid rectangular A1 ranges.";
+            return false;
+        }
+
+        var evidencePeriods = extension.Direction == FormulaExtensionDirection.Right ? evidence.Width : evidence.Height;
+        var destinationPeriods = extension.Direction == FormulaExtensionDirection.Right ? destination.Width : destination.Height;
+        var samePerpendicular = extension.Direction == FormulaExtensionDirection.Right
+            ? evidence.StartRow == destination.StartRow && evidence.EndRow == destination.EndRow
+            : evidence.StartColumn == destination.StartColumn && evidence.EndColumn == destination.EndColumn;
+        var adjacent = extension.Direction == FormulaExtensionDirection.Right
+            ? destination.StartColumn == evidence.EndColumn + 1
+            : destination.StartRow == evidence.EndRow + 1;
+        if (evidencePeriods != 2 || destinationPeriods is < 1 or > FormulaMutationPlanner.MaxPeriods || !samePerpendicular || !adjacent)
+        {
+            error = "ExtendFormulaSeries requires exactly 2 evidence columns/rows and 1-24 immediately adjacent destination periods with matching perpendicular geometry.";
+            return false;
+        }
+        if (CellCount(destination) > FormulaMutationPlanner.MaxMutations)
+        {
+            error = $"ExtendFormulaSeries destination exceeds the MVP limit of {FormulaMutationPlanner.MaxMutations:N0} cells.";
+            return false;
+        }
+        if (CellCount(evidence) + CellCount(destination) > MaxFormulaRepairCells)
+        {
+            error = $"ExtendFormulaSeries ranges exceed the MVP limit of {MaxFormulaRepairCells:N0} aggregate cells.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(operation.Kind,
+            ExtendFormulaSeries: new NormalizedExtendFormulaSeriesOperation(worksheetName!, extension.Direction, ToFormulaRepairRange(evidence), ToFormulaRepairRange(destination)));
+        return true;
+    }
+
+    private readonly record struct ParsedA1Range(int StartColumn, int StartRow, int EndColumn, int EndRow)
+    {
+        public int Width => EndColumn - StartColumn + 1;
+        public int Height => EndRow - StartRow + 1;
+    }
+
+    private static bool TryNormalizeA1Range(string? value, out ParsedA1Range range)
+    {
+        range = default;
+        var match = A1RangeRegex().Match(value?.Trim() ?? string.Empty);
+        if (!match.Success || !TryParseCell(match.Groups[1].Value, match.Groups[2].Value, out var sc, out var sr)) return false;
+        var ecText = match.Groups[3].Success ? match.Groups[3].Value : match.Groups[1].Value;
+        var erText = match.Groups[4].Success ? match.Groups[4].Value : match.Groups[2].Value;
+        if (!TryParseCell(ecText, erText, out var ec, out var er) || sc > ec || sr > er) return false;
+        range = new ParsedA1Range(sc, sr, ec, er);
+        return true;
+    }
+
+    private static FormulaRepairRange ToFormulaRepairRange(ParsedA1Range range) =>
+        new($"{ColumnName(range.StartColumn)}{range.StartRow}", $"{ColumnName(range.EndColumn)}{range.EndRow}");
+
+    private static long CellCount(ParsedA1Range range) => (long)range.Width * range.Height;
+
+    private static bool Overlaps(ParsedA1Range left, ParsedA1Range right) =>
+        left.StartColumn <= right.EndColumn && right.StartColumn <= left.EndColumn &&
+        left.StartRow <= right.EndRow && right.StartRow <= left.EndRow;
+
+    private static string ColumnName(int column)
+    {
+        Span<char> buffer = stackalloc char[3];
+        var position = buffer.Length;
+        while (column > 0)
+        {
+            column--;
+            buffer[--position] = (char)('A' + (column % 26));
+            column /= 26;
+        }
+        return new string(buffer[position..]);
     }
 
     private static bool TryParseCell(string columnText, string rowText, out int column, out int row)

@@ -7,9 +7,10 @@ promise.
    worker, hard deadline, truthful interruption handling, and process cleanup.
    Remaining gate: three controlled Copilot tasks save correctly with measured
    time/tokens and no orphaned Excel process.
-2. **Formula/exhibit depth** - improve the existing worksheet-copy and safe
-   formula-repair workflow only where real use requires it. Gate: three
-   representative user tasks finish with verified outputs and no new tool.
+2. **Formula/exhibit depth** - v0.3.0 delivered bounded in-place gap repair and
+   stable right/down formula-series extension through the existing one-tool
+   operation union. Remaining field gate: three controlled Copilot tasks finish
+   with verified outputs and no new tool.
 3. **Macro editing** - add one narrow macro-editing workflow. Gate: a
    disposable `.xlsm` edit, run, save, and reopen test fails closed on dialogs
    and leaves no owned Excel process.

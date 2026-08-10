@@ -21,7 +21,7 @@ builder.Services
     .AddMcpServer(options => options.ServerInfo = new()
     {
         Name = "ExcelTask",
-        Version = typeof(ExcelTaskTool).Assembly.GetName().Version?.ToString(3) ?? "0.2.0"
+        Version = typeof(ExcelTaskTool).Assembly.GetName().Version?.ToString(3) ?? "0.3.0"
     })
     .WithStdioServerTransport()
     .WithTools<ExcelTaskTool>();

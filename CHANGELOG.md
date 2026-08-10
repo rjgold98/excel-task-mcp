@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.0 - 2026-08-09
+
+- Added one closed operation union for copy-exhibit, existing-sheet formula
+  repair, and stable right/down formula-series extension without adding a tool.
+- Added bounded pre-mutation formula planning and revalidation, exact
+  save/reopen verification, and a final isolated same-file live-binding check.
+- Preserved all valid range changes and terminal verification checks across the
+  private-worker and MCP receipt boundaries.
+- Fixed the acceptance script to propagate failed test exit codes.
+- Verified six serial desktop-Excel workflows and the real one-tool MCP path
+  from an empty Excel baseline with no process left afterward.
+
 ## 0.2.0 - 2026-08-09
 
 - Moved every Excel operation into a short-lived private worker so blocked COM

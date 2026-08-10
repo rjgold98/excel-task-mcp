@@ -359,7 +359,7 @@ public sealed class SupervisedWorkbookRuntimeTests
 
     private static ExcelTaskPlan CreatePlan(string? output = null, WorkbookBinding binding = WorkbookBinding.Isolated) => new(
         "task",
-        new NormalizedExcelTaskRequest(
+        ExcelTaskPlans.Copy(
             "target.xlsx",
             "reference.xlsx",
             "Reference",
@@ -369,7 +369,7 @@ public sealed class SupervisedWorkbookRuntimeTests
             binding,
             output is null ? SaveMode.Same : SaveMode.Copy,
             output,
-            OverwriteConfirmed: false));
+            overwrite: false));
 
     private sealed class ThrowingWorkerClient : IWorkbookWorkerClient
     {

@@ -118,6 +118,36 @@ public sealed class WorkbookWorkerProtocolTests
     }
 
     [Fact]
+    public async Task HostPreservesTwentyBoundedChangesWithinFrameLimit()
+    {
+        const string taskId = "worker_test_4";
+        var changes = Enumerable.Range(1, WorkbookWorkerProtocol.MaxResultItems)
+            .Select(index => new TaskChange("formula-repaired", $"Sheet1!A{index}", $"Repaired range {index}"))
+            .ToArray();
+        var request = JsonSerializer.Serialize(new
+        {
+            version = WorkbookWorkerProtocol.Version,
+            taskId,
+            operation = "execute",
+            plan = Plan(taskId)
+        }, WorkbookWorkerProtocol.JsonOptions);
+        using var input = new StringReader(request);
+        using var output = new StringWriter();
+
+        var exitCode = await WorkbookWorkerHost.RunAsync(input, output, _ => new BoundedChangeFakeRuntime(changes));
+
+        Assert.Equal(0, exitCode);
+        var resultLine = output.ToString().Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries).Last();
+        Assert.True(Encoding.UTF8.GetByteCount(resultLine) <= WorkbookWorkerProtocol.MaxFrameBytes);
+        using var frame = JsonDocument.Parse(resultLine);
+        var outcome = JsonSerializer.Deserialize<WorkbookExecutionOutcome>(
+            frame.RootElement.GetProperty("result").GetRawText(),
+            WorkbookWorkerProtocol.JsonOptions);
+        Assert.NotNull(outcome);
+        Assert.Equal(changes, outcome.Changes);
+    }
+
+    [Fact]
     public async Task WorkerWatchdogRecoversOnlyTheIdentityCapturedInsideTheWorker()
     {
         var identity = new ProcessIdentity(1234, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");
@@ -150,7 +180,7 @@ public sealed class WorkbookWorkerProtocolTests
         Assert.Empty(terminator.Identities);
     }
 
-    private static ExcelTaskPlan Plan(string taskId) => new(taskId, new NormalizedExcelTaskRequest(
+    private static ExcelTaskPlan Plan(string taskId) => new(taskId, ExcelTaskPlans.Copy(
         "target.xlsx", "reference.xlsx", "Reference", "New Sheet", [], ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, true));
 
     private static List<JsonElement> ReadFrames(StringWriter output) => output.ToString()
@@ -196,6 +226,16 @@ public sealed class WorkbookWorkerProtocolTests
             Enumerable.Range(0, WorkbookWorkerProtocol.MaxResultItems * 3)
                 .Select(index => new TaskCheck(new string('n', 600), true, new string('d', 600)))
                 .ToArray()));
+    }
+
+    private sealed class BoundedChangeFakeRuntime(IReadOnlyList<TaskChange> changes) : IWorkbookRuntime
+    {
+        public Task<WorkbookInspection> InspectAsync(WorkbookInspectionRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<WorkbookExecutionOutcome> ExecuteAsync(ExcelTaskPlan plan, CancellationToken cancellationToken) => Task.FromResult(new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Completed,
+            "Completed",
+            changes));
     }
 
     private sealed class RecordingTerminator : IWorkerOwnedProcessTerminator

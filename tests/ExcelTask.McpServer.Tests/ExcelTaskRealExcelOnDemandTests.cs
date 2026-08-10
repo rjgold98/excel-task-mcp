@@ -50,10 +50,9 @@ public sealed class ExcelTaskRealExcelOnDemandTests
                 {
                     ["request"] = new ExcelTaskRequest(
                         target,
-                        reference,
-                        "Reference",
-                        "Imported",
-                        ["A1:A3"],
+                        new ExcelOperation(
+                            ExcelOperationKind.CopyExhibit,
+                            CopyExhibit: new CopyExhibitOperation(reference, "Reference", "Imported", ["A1:A3"])),
                         ExcelTaskMode.Apply,
                         WorkbookBinding.Isolated,
                         SaveMode.Copy,

@@ -8,6 +8,23 @@ internal static class ExcelTestWorkbook
 {
     public static void CreateTarget(string path) => Create(path, null);
 
+    public static void CreateFormulaTarget(string path, string range, object?[,] formulas, string? constantCell = null, object? constantValue = null) => Create(path, workbook =>
+    {
+        var sheets = Get(workbook, "Worksheets");
+        var sheet = Get(sheets, "Item", 1);
+        var target = Get(sheet, "Range", range);
+        Set(target, "FormulaR1C1", formulas);
+        if (constantCell is not null)
+        {
+            var constant = Get(sheet, "Range", constantCell);
+            Set(constant, "Value2", constantValue);
+            Release(constant);
+        }
+        Release(target);
+        Release(sheet);
+        Release(sheets);
+    });
+
     public static void CreateReference(string path) => Create(path, workbook =>
     {
         var sheets = Get(workbook, "Worksheets");
@@ -55,6 +72,110 @@ internal static class ExcelTestWorkbook
             Release(sheet);
             Release(sheets);
             return expected;
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
+    public static bool HasFormula(string path, string range, string expected)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var sheets = Get(workbook, "Worksheets");
+            var sheet = Get(sheets, "Item", 1);
+            var target = Get(sheet, "Range", range);
+            var actual = Get(target, "FormulaR1C1") as string;
+            Release(target);
+            Release(sheet);
+            Release(sheets);
+            return string.Equals(actual, expected, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
+    public static bool HasValue(string path, string range, object expected)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var sheets = Get(workbook, "Worksheets");
+            var sheet = Get(sheets, "Item", 1);
+            var target = Get(sheet, "Range", range);
+            var actual = Get(target, "Value2");
+            Release(target);
+            Release(sheet);
+            Release(sheets);
+            return Equals(actual, expected);
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
+    public static bool HasExpectedCells(
+        string path,
+        IReadOnlyDictionary<string, string> expectedFormulas,
+        IReadOnlyDictionary<string, object>? expectedValues = null)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var sheets = Get(workbook, "Worksheets");
+            var sheet = Get(sheets, "Item", 1);
+            try
+            {
+                foreach (var (range, expectedFormula) in expectedFormulas)
+                {
+                    var target = Get(sheet, "Range", range);
+                    try
+                    {
+                        if (!string.Equals(Get(target, "FormulaR1C1") as string, expectedFormula, StringComparison.Ordinal)) return false;
+                    }
+                    finally { Release(target); }
+                }
+
+                if (expectedValues is not null)
+                {
+                    foreach (var (range, expectedValue) in expectedValues)
+                    {
+                        var target = Get(sheet, "Range", range);
+                        try
+                        {
+                            if (!Equals(Get(target, "Value2"), expectedValue)) return false;
+                        }
+                        finally { Release(target); }
+                    }
+                }
+
+                return true;
+            }
+            finally
+            {
+                Release(sheet);
+                Release(sheets);
+            }
         }
         finally
         {
