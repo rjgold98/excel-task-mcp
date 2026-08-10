@@ -19,13 +19,11 @@ internal static class MakeFixture
 
     public static int Run(string[] args)
     {
-        if (args.Length < 2)
-        {
-            Console.Error.WriteLine("Usage: excel-task-mcp --make-fixture <directory>");
-            return 2;
-        }
-
-        var directory = Path.GetFullPath(args[1]);
+        // Defaulting rather than refusing: the first field use of this spent a cycle on a usage
+        // error, and there is an obvious right answer for where disposable workbooks should go.
+        var directory = Path.GetFullPath(args.Length >= 2 && !string.IsNullOrWhiteSpace(args[1])
+            ? args[1]
+            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "ExcelTaskDemo"));
         Directory.CreateDirectory(directory);
         var target = Path.Combine(directory, "target.xlsx");
         var reference = Path.Combine(directory, "reference.xlsx");

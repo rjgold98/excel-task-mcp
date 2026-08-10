@@ -49,6 +49,47 @@ computer with security tooling, four live Excel instances, and synced folders.
 This is a baseline, not a regression: there is no earlier work-computer figure
 to compare against.
 
+## Task B - six client runs, later the same day
+
+Run through a real client on disposable workbooks with v0.6.3, fresh session each
+time.
+
+| Workflow | Server | Seconds | Calls | Retries | Correct on reopen | Excel pre/post |
+|---|---|---|---|---|---|---|
+| Copy exhibit | ExcelTask | 11.7 | 1 | 0 | yes | 3 / 3 |
+| Copy exhibit | Original | 34.0 | 7 | 0 | yes | 4 / 4 |
+| Extend formula | ExcelTask | 11.6 | 1 | 0 | yes | 3 / 4 |
+| Extend formula | Original | 24.8 | 6 | 0 | yes | 4 / 4 |
+| Edit and run macro | ExcelTask | 28.1 | 2 | 0 | yes | 4 / 4 |
+| Edit and run macro | Original | 26.4 | 8 | 0 | yes | 4 / 4 |
+
+The one-call shape holds: one call against seven, one against six, two against
+eight. Formula work finished about two to three times sooner.
+
+**Macro editing was slightly slower** - 28.1s against 26.4s - despite needing a
+quarter of the calls. Two ExcelTask calls each open, verify, save, close and
+reopen Excel, where the original spends eight cheaper calls inside one session.
+Nothing here supports calling ExcelTask faster at macro work.
+
+No token comparison was attempted: the client exposed no model-token data.
+
+### Open question: a stray Excel process on the extend runs
+
+The ExcelTask extend run went from three Excel processes to four, with stray
+PID 3116. That would contradict the product's central safety claim, so it is
+being treated as a defect until shown otherwise.
+
+Twenty operations across four rounds on the development machine, with three user
+Excel instances live to mimic the field, produced no leak. Against that, **the
+original server's extend run also reported a stray process** (PID 45532), and a
+defect in ExcelTask's process ownership could not affect the other server. The
+most likely explanation is therefore the measurement: confirming "correct on
+reopen" opens the workbook, which starts an Excel process of its own.
+
+Pending evidence: whether PID 3116 started during the server call or afterwards
+during reopen verification, and what the `owned-process-exit` check said on that
+run.
+
 ## What was not measured
 
 The six owner-run prompt-to-completion comparisons were not performed. Verbatim
