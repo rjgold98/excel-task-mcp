@@ -11,6 +11,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     private const int MaxReceiptItems = 20;
     private const int MaxReceiptStringLength = 256;
+    private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
+    };
 
     private readonly IWorkbookRuntime _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
 
@@ -152,13 +156,17 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 validation.Elapsed,
                 inspectionTimer.Elapsed,
                 executionTimer.Elapsed,
-                total.Elapsed);
+                total.Elapsed,
+                outcome.MacroProcedure,
+                normalizedRequest.Mode == ExcelTaskMode.Plan &&
+                normalizedRequest.Operation.EditMacroProcedure is not null &&
+                outcome.Status == ExcelTaskStatus.Planned);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             executionTimer.Stop();
             return CreateReceipt(
@@ -166,7 +174,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 ExcelTaskStatus.Unknown,
                 "Workbook execution did not complete.",
                 [],
-                CombineChecks(inspection.Checks, [new TaskCheck("runtime-execution", false, exception.Message)]),
+                CombineChecks(inspection.Checks, [new TaskCheck("runtime-execution", false, "Execution failed after dispatch.")]),
                 normalizedRequest.Save,
                 normalizedRequest.OutputWorkbookPath,
                 normalizedRequest.OverwriteConfirmed,
@@ -245,7 +253,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         TimeSpan validation,
         TimeSpan inspection,
         TimeSpan execution,
-        TimeSpan total)
+        TimeSpan total,
+        MacroProcedureReceipt? macroProcedure = null,
+        bool includeMacroSource = false)
     {
         if (status == ExcelTaskStatus.Rejected)
         {
@@ -272,7 +282,32 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             new SaveReceipt(save, Bound(DisplayOutputPath(outputPath)), overwriteConfirmed),
             new RetryReceipt(canRetry, Bound(retryReason)),
             new ConfirmationReceipt(confirmationRequired, BoundRequirements(requirements)),
-            new PhaseTimings(validation, inspection, execution, total));
+            new PhaseTimings(validation, inspection, execution, total),
+            BoundMacroProcedure(macroProcedure, includeMacroSource));
+    }
+
+    private static MacroProcedureReceipt? BoundMacroProcedure(MacroProcedureReceipt? macroProcedure, bool includeSource)
+    {
+        if (macroProcedure is null) return null;
+
+        string? source = null;
+        if (includeSource && MacroProcedureText.TryNormalizeProcedureSource(
+                macroProcedure.Source,
+                macroProcedure.ProcedureName,
+                requireZeroParameters: false,
+                out var normalizedSource,
+                out _))
+        {
+            source = normalizedSource;
+        }
+
+        return new MacroProcedureReceipt(
+            Bound(macroProcedure.ComponentName) ?? string.Empty,
+            Bound(macroProcedure.ProcedureName) ?? string.Empty,
+            Bound(macroProcedure.Sha256) ?? string.Empty,
+            source,
+            macroProcedure.RunRequested,
+            macroProcedure.RunCompleted);
     }
 
     private static IReadOnlyList<TaskCheck> CombineChecks(IReadOnlyList<TaskCheck>? first, IReadOnlyList<TaskCheck>? second)
@@ -306,7 +341,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             error = "MVP workbook paths must use a .xlsx or .xlsm extension.";
             return false;
         }
-        if (!TryNormalizeOperation(request.Operation, out var operation, out error)) return false;
+        if (!TryNormalizeOperation(request.Operation, request.Mode, out var operation, out error)) return false;
 
         if (request.WorkbookBinding == WorkbookBinding.UseOpen && request.Save == SaveMode.Copy)
         {
@@ -337,6 +372,12 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         else if (!string.IsNullOrWhiteSpace(request.OutputWorkbookPath))
         {
             error = "Output workbook path is only valid with save mode Copy.";
+            return false;
+        }
+
+        if (operation!.EditMacroProcedure is not null &&
+            !TryValidateMacroRequestPolicy(target!, request.WorkbookBinding, request.Save, output, out error))
+        {
             return false;
         }
 
@@ -441,7 +482,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         return true;
     }
 
-    private static bool TryNormalizeOperation(ExcelOperation? operation, out NormalizedExcelOperation? normalized, out string? error)
+    private static bool TryNormalizeOperation(ExcelOperation? operation, ExcelTaskMode mode, out NormalizedExcelOperation? normalized, out string? error)
     {
         normalized = null;
         error = null;
@@ -453,7 +494,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
         var payloadCount = (operation.CopyExhibit is null ? 0 : 1) +
                            (operation.RepairExistingWorksheet is null ? 0 : 1) +
-                           (operation.ExtendFormulaSeries is null ? 0 : 1);
+                           (operation.ExtendFormulaSeries is null ? 0 : 1) +
+                           (operation.EditMacroProcedure is null ? 0 : 1);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";
@@ -504,10 +546,119 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.ExtendFormulaSeries when operation.ExtendFormulaSeries is not null:
                 return TryNormalizeExtension(operation, out normalized, out error);
 
+            case ExcelOperationKind.EditMacroProcedure when operation.EditMacroProcedure is not null:
+                return TryNormalizeMacroOperation(operation.EditMacroProcedure, mode, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
         }
+    }
+
+    private static bool TryNormalizeMacroOperation(
+        EditMacroProcedureOperation macro,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeVbaIdentifier(macro.ComponentName, "Component name", out var componentName, out error) ||
+            !TryNormalizeVbaIdentifier(macro.ProcedureName, "Procedure name", out var procedureName, out error))
+        {
+            return false;
+        }
+        if (AutoEntryProcedureNames.Contains(procedureName!))
+        {
+            error = "Automatic-entry VBA procedures cannot be edited.";
+            return false;
+        }
+
+        string? expectedHash = null;
+        string? replacementSource = null;
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (macro.ExpectedProcedureSha256 is not null || macro.ReplacementSource is not null || macro.RunAfterEdit)
+            {
+                error = "Macro Plan is inspect-only and must omit the expected hash, replacement source, and run request.";
+                return false;
+            }
+        }
+        else
+        {
+            var suppliedHash = macro.ExpectedProcedureSha256?.Trim();
+            if (suppliedHash is null || !Sha256Regex().IsMatch(suppliedHash))
+            {
+                error = "Macro Apply requires a 64-character hexadecimal expected procedure SHA-256.";
+                return false;
+            }
+            if (!MacroProcedureText.TryNormalizeProcedureSource(
+                    macro.ReplacementSource,
+                    procedureName!,
+                    macro.RunAfterEdit,
+                    out replacementSource,
+                    out error))
+            {
+                return false;
+            }
+
+            expectedHash = suppliedHash.ToLowerInvariant();
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            EditMacroProcedure: new NormalizedEditMacroProcedureOperation(
+                componentName!, procedureName!, expectedHash, replacementSource, macro.RunAfterEdit));
+        error = null;
+        return true;
+    }
+
+    private static bool TryValidateMacroRequestPolicy(
+        string targetWorkbookPath,
+        WorkbookBinding workbookBinding,
+        SaveMode save,
+        string? outputWorkbookPath,
+        out string? error)
+    {
+        error = null;
+        if (!string.Equals(Path.GetExtension(targetWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Path.GetExtension(outputWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "Macro editing requires .xlsm target and copy output workbook paths.";
+            return false;
+        }
+        if (workbookBinding != WorkbookBinding.Isolated)
+        {
+            error = "Macro editing requires workbook binding Isolated.";
+            return false;
+        }
+        if (save != SaveMode.Copy)
+        {
+            error = "Macro editing requires save mode Copy.";
+            return false;
+        }
+        return true;
+    }
+
+    private static bool TryNormalizeVbaIdentifier(string? value, string name, out string? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            error = $"{name} is required.";
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > 31 || !VbaIdentifierRegex().IsMatch(trimmed))
+        {
+            error = $"{name} must be a VBA identifier of at most 31 characters.";
+            return false;
+        }
+
+        normalized = trimmed;
+        return true;
     }
 
     private static bool TryNormalizeExtension(ExcelOperation operation, out NormalizedExcelOperation? normalized, out string? error)
@@ -636,4 +787,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     [GeneratedRegex(@"^\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6})(?::\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6}))?$", RegexOptions.CultureInvariant)]
     private static partial Regex A1RangeRegex();
+
+    [GeneratedRegex(@"^[A-Za-z_][A-Za-z0-9_]*$", RegexOptions.CultureInvariant)]
+    private static partial Regex VbaIdentifierRegex();
+
+    [GeneratedRegex(@"^[0-9A-Fa-f]{64}$", RegexOptions.CultureInvariant)]
+    private static partial Regex Sha256Regex();
 }

@@ -186,4 +186,64 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task MacroPlanAndApplyReplaceOnlyTheRequestedProcedureAndSaveAVerifiedCopy()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        var output = Path.Combine(directory, "macro-output.xlsm");
+        const string component = "SafeModule";
+        const string procedure = "WriteMarker";
+        const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        const string replacementSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"ran\"\nEnd Sub";
+
+        try
+        {
+            try { ExcelTestWorkbook.CreateMacroTarget(target, component, originalSource); }
+            catch (Exception exception) when (IsAccessVbomUnavailable(exception))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("Excel Trust Center does not permit programmatic VBA project access on this machine.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-plan", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Plan)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+            Assert.NotNull(planned.MacroProcedure);
+            Assert.Equal(originalSource, planned.MacroProcedure.Source);
+            Assert.False(File.Exists(output));
+            Assert.Equal(originalSource, ExcelTestWorkbook.ReadMacroProcedure(target, component, procedure));
+
+            var applied = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-apply", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Apply,
+                planned.MacroProcedure.Sha256, replacementSource, runAfterEdit: true)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Completed, applied.Status);
+            Assert.NotNull(applied.MacroProcedure);
+            Assert.Null(applied.MacroProcedure.Source);
+            Assert.True(applied.MacroProcedure.RunCompleted);
+            Assert.Equal(originalSource, ExcelTestWorkbook.ReadMacroProcedure(target, component, procedure));
+            Assert.Equal(replacementSource, ExcelTestWorkbook.ReadMacroProcedure(output, component, procedure));
+            Assert.True(ExcelTestWorkbook.HasValue(output, "A1", "ran"));
+            using var stream = new FileStream(output, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static bool IsAccessVbomUnavailable(Exception exception)
+    {
+        for (Exception? current = exception; current is not null; current = current.InnerException)
+        {
+            if (current.Message.Contains("programmatic access", StringComparison.OrdinalIgnoreCase) ||
+                current.Message.Contains("trust", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+
+        return false;
+    }
 }

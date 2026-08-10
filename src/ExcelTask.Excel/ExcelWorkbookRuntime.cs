@@ -13,7 +13,7 @@ namespace ExcelTask.Excel;
 
 /// <summary>Runs all desktop Excel automation on one message-pumping STA thread.</summary>
 [SupportedOSPlatform("windows")]
-public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
+public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 {
     private readonly StaComDispatcher _dispatcher = new();
     private readonly IExcelWorkbookRuntimeObserver _observer;
@@ -69,6 +69,11 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
     private static WorkbookExecutionOutcome ExecuteCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
     {
+        if (plan.Request.Operation.Kind == ExcelOperationKind.EditMacroProcedure)
+        {
+            return ExecuteMacroCore(plan, observer);
+        }
+
         try
         {
             WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");
@@ -878,6 +883,7 @@ public sealed class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         {
             Set(application, "Visible", false);
             Set(application, "DisplayAlerts", false);
+            Set(application, "EnableEvents", false);
             Set(application, "AutomationSecurity", WorkbookRuntimeHelpers.AutomationSecurityForceDisable);
         }
 

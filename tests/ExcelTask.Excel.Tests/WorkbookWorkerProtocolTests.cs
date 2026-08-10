@@ -148,6 +148,31 @@ public sealed class WorkbookWorkerProtocolTests
     }
 
     [Fact]
+    public void BoundMacroReceiptStaysWithinTheWorkerFrameLimit()
+    {
+        var outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Planned,
+            new string('s', WorkbookWorkerProtocol.MaxTextLength * 2),
+            MacroProcedure: new MacroProcedureReceipt(
+                new string('m', WorkbookWorkerProtocol.MaxTextLength * 2),
+                new string('p', WorkbookWorkerProtocol.MaxTextLength * 2),
+                new string('h', WorkbookWorkerProtocol.MaxTextLength * 2),
+                new string('x', MacroProcedureText.MaxSourceCharacters * 2),
+                RunRequested: false,
+                RunCompleted: false));
+
+        var bounded = WorkbookWorkerProtocol.Bound(outcome);
+        var frame = JsonSerializer.Serialize(new { version = WorkbookWorkerProtocol.Version, type = "result", taskId = "worker_test_5", operation = "execute", result = bounded }, WorkbookWorkerProtocol.JsonOptions);
+
+        Assert.True(Encoding.UTF8.GetByteCount(frame) <= WorkbookWorkerProtocol.MaxFrameBytes);
+        Assert.NotNull(bounded.MacroProcedure);
+        Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.ComponentName.Length);
+        Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.ProcedureName.Length);
+        Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.Sha256.Length);
+        Assert.Equal(MacroProcedureText.MaxSourceCharacters, bounded.MacroProcedure.Source!.Length);
+    }
+
+    [Fact]
     public async Task WorkerWatchdogRecoversOnlyTheIdentityCapturedInsideTheWorker()
     {
         var identity = new ProcessIdentity(1234, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");

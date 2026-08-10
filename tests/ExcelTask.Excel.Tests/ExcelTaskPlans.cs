@@ -64,6 +64,30 @@ internal static class ExcelTaskPlans
                 ToRange(evidence),
                 ToRange(destination))));
 
+    public static NormalizedExcelTaskRequest Macro(
+        string target,
+        string output,
+        string component,
+        string procedure,
+        ExcelTaskMode mode,
+        string? expectedHash = null,
+        string? replacementSource = null,
+        bool runAfterEdit = false) => new(
+        target,
+        mode,
+        WorkbookBinding.Isolated,
+        SaveMode.Copy,
+        output,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.EditMacroProcedure,
+            EditMacroProcedure: new NormalizedEditMacroProcedureOperation(
+                component,
+                procedure,
+                expectedHash,
+                replacementSource,
+                runAfterEdit)));
+
     private static FormulaRepairRange ToRange(string value)
     {
         var pieces = value.Split(':', StringSplitOptions.TrimEntries);

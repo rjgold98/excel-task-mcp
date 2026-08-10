@@ -15,7 +15,8 @@ public sealed class ExcelTaskEngineTests
             typeof(ExcelOperation),
             typeof(CopyExhibitOperation),
             typeof(RepairExistingWorksheetOperation),
-            typeof(ExtendFormulaSeriesOperation)
+            typeof(ExtendFormulaSeriesOperation),
+            typeof(EditMacroProcedureOperation)
         };
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
@@ -74,6 +75,41 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
+    public async Task PlanMacroProcedureDispatchesCleanInspectOnlyNormalizedShape()
+    {
+        var runtime = new FakeRuntime { Outcome = new(ExcelTaskStatus.Planned, "Macro plan ready") };
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(MacroRequest(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Planned, receipt.Status);
+        var macro = Assert.IsType<NormalizedEditMacroProcedureOperation>(runtime.Plan!.Request.Operation.EditMacroProcedure);
+        Assert.Equal("StandardModule", macro.ComponentName);
+        Assert.Equal("RefreshModel", macro.ProcedureName);
+        Assert.Null(macro.ExpectedProcedureSha256);
+        Assert.Null(macro.ReplacementSource);
+        Assert.False(macro.RunAfterEdit);
+        Assert.Null(runtime.InspectionRequest!.ReferenceWorkbookPath);
+        Assert.Equal(WorkbookBinding.Isolated, runtime.InspectionRequest.Binding);
+        Assert.Equal(SaveMode.Copy, runtime.InspectionRequest.Save);
+    }
+
+    [Fact]
+    public async Task ApplyMacroProcedureNormalizesHashAndReplacementSource()
+    {
+        const string source = "Public Sub RefreshModel()\r\nEnd Sub\r\n";
+        var runtime = new FakeRuntime();
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            MacroRequest(
+                mode: ExcelTaskMode.Apply,
+                operation: Macro(expectedHash: new string('A', 64), replacementSource: source)),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        var macro = Assert.IsType<NormalizedEditMacroProcedureOperation>(runtime.Plan!.Request.Operation.EditMacroProcedure);
+        Assert.Equal(new string('a', 64), macro.ExpectedProcedureSha256);
+        Assert.Equal("Public Sub RefreshModel()\nEnd Sub", macro.ReplacementSource);
+    }
+
+    [Fact]
     public async Task ApplySameRequiresExplicitOverwriteConfirmation()
     {
         var runtime = new FakeRuntime();
@@ -121,6 +157,72 @@ public sealed class ExcelTaskEngineTests
         yield return [new ExcelOperation(ExcelOperationKind.CopyExhibit, RepairExistingWorksheet: new("Model", []))];
         yield return [new ExcelOperation(ExcelOperationKind.CopyExhibit, CopyExhibit: Copy(), RepairExistingWorksheet: new("Model", []))];
         yield return [new ExcelOperation(ExcelOperationKind.ExtendFormulaSeries, CopyExhibit: Copy())];
+        yield return [new ExcelOperation(ExcelOperationKind.EditMacroProcedure, CopyExhibit: Copy())];
+        yield return [new ExcelOperation(ExcelOperationKind.EditMacroProcedure, EditMacroProcedure: Macro().EditMacroProcedure, ExtendFormulaSeries: new("Model", FormulaExtensionDirection.Right, "A1:B1", "C1:D1"))];
+    }
+
+    [Theory]
+    [InlineData(true, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(false, false, true)]
+    public async Task MacroPlanRejectsAnyMutationInputsBeforeInspection(bool expectedHash, bool replacementSource, bool runAfterEdit)
+    {
+        var operation = Macro(
+            expectedHash: expectedHash ? new string('a', 64) : null,
+            replacementSource: replacementSource ? "Sub RefreshModel()\nEnd Sub" : null,
+            runAfterEdit: runAfterEdit);
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(MacroRequest(operation: operation), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
+    }
+
+    [Theory]
+    [InlineData(".\\target.xlsx", WorkbookBinding.Isolated, SaveMode.Copy)]
+    [InlineData(".\\target.xlsm", WorkbookBinding.AskIfOpen, SaveMode.Copy)]
+    [InlineData(".\\target.xlsm", WorkbookBinding.Isolated, SaveMode.Same)]
+    public async Task MacroPolicyRejectsWorkbookFormatBindingAndSaveBeforeInspection(string target, WorkbookBinding binding, SaveMode save)
+    {
+        var runtime = new FakeRuntime();
+        var request = MacroRequest(
+            mode: ExcelTaskMode.Apply,
+            operation: Macro(expectedHash: new string('a', 64), replacementSource: "Sub RefreshModel()\nEnd Sub"),
+            binding: binding,
+            save: save) with
+        {
+            TargetWorkbookPath = target,
+            OutputWorkbookPath = save == SaveMode.Copy ? ".\\out.xlsm" : null
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(request, CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
+    }
+
+    [Fact]
+    public async Task MacroApplyRejectsAutomaticEntryProcedureAndParameterizedRunBeforeInspection()
+    {
+        var autoRuntime = new FakeRuntime();
+        var auto = await new ExcelTaskEngine(autoRuntime).RunAsync(
+            MacroRequest(mode: ExcelTaskMode.Apply, operation: new ExcelOperation(
+                ExcelOperationKind.EditMacroProcedure,
+                EditMacroProcedure: new("Module1", "Auto_Open", new string('a', 64), "Sub Auto_Open()\nEnd Sub"))),
+            CancellationToken.None);
+        var parametersRuntime = new FakeRuntime();
+        var parameters = await new ExcelTaskEngine(parametersRuntime).RunAsync(
+            MacroRequest(mode: ExcelTaskMode.Apply, operation: Macro(
+                expectedHash: new string('a', 64),
+                replacementSource: "Sub RefreshModel(value As Long)\nEnd Sub",
+                runAfterEdit: true)),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, auto.Status);
+        Assert.Null(autoRuntime.InspectionRequest);
+        Assert.Equal(ExcelTaskStatus.Rejected, parameters.Status);
+        Assert.Null(parametersRuntime.InspectionRequest);
     }
 
     [Theory]
@@ -286,14 +388,16 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
-    public async Task ReturnsUnknownWhenRuntimeExecutionThrows()
+    public async Task ReturnsUnknownWithoutEchoingRuntimeExceptionText()
     {
-        var runtime = new FakeRuntime { ExecuteException = new InvalidOperationException("Excel disconnected") };
+        const string privateVbaAndPath = "Sub SecretProcedure() C:\\private\\workbook.xlsm";
+        var runtime = new FakeRuntime { ExecuteException = new InvalidOperationException(privateVbaAndPath) };
         var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(), CancellationToken.None);
 
         Assert.Equal(ExcelTaskStatus.Unknown, receipt.Status);
         Assert.False(receipt.Retry.CanRetry);
         Assert.Contains("Reconcile", receipt.Retry.Reason);
+        Assert.DoesNotContain(privateVbaAndPath, receipt.Checks.Single(check => check.Name == "runtime-execution").Detail, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -315,6 +419,41 @@ public sealed class ExcelTaskEngineTests
         Assert.True(JsonSerializer.SerializeToUtf8Bytes(receipt).Length < 32 * 1024);
     }
 
+    [Fact]
+    public async Task MacroReceiptPassesPlanEvidenceAndOmitsOversizedRuntimeSource()
+    {
+        const string source = "Sub RefreshModel()\nEnd Sub";
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(
+                ExcelTaskStatus.Planned,
+                "Macro plan ready",
+                MacroProcedure: new MacroProcedureReceipt("StandardModule", "RefreshModel", MacroProcedureText.ComputeSha256(source), source, false, false))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(MacroRequest(), CancellationToken.None);
+
+        Assert.NotNull(receipt.MacroProcedure);
+        Assert.Equal(source, receipt.MacroProcedure.Source);
+        Assert.Equal(MacroProcedureText.ComputeSha256(source), receipt.MacroProcedure.Sha256);
+
+        var oversizedSource = $"Sub RefreshModel()\n'{new string('x', MacroProcedureText.MaxSourceCharacters)}\nEnd Sub";
+        runtime = new FakeRuntime
+        {
+            Outcome = new(
+                ExcelTaskStatus.Planned,
+                "Macro plan ready",
+                MacroProcedure: new MacroProcedureReceipt(new string('c', 600), "RefreshModel", new string('a', 600), oversizedSource, false, false))
+        };
+
+        receipt = await new ExcelTaskEngine(runtime).RunAsync(MacroRequest(), CancellationToken.None);
+
+        Assert.NotNull(receipt.MacroProcedure);
+        Assert.Equal(256, receipt.MacroProcedure.ComponentName.Length);
+        Assert.Equal(256, receipt.MacroProcedure.Sha256.Length);
+        Assert.Null(receipt.MacroProcedure.Source);
+    }
+
     private static ExcelTaskRequest Request(
         ExcelOperation? operation = null,
         ExcelTaskMode mode = ExcelTaskMode.Plan,
@@ -331,6 +470,26 @@ public sealed class ExcelTaskEngineTests
             OverwriteConfirmed: overwriteConfirmed);
 
     private static CopyExhibitOperation Copy() => new(".\\reference.xlsx", "Reference", "New sheet", ["$a$1:$c$3"]);
+
+    private static ExcelOperation Macro(
+        string? expectedHash = null,
+        string? replacementSource = null,
+        bool runAfterEdit = false) => new(
+            ExcelOperationKind.EditMacroProcedure,
+            EditMacroProcedure: new EditMacroProcedureOperation("StandardModule", "RefreshModel", expectedHash, replacementSource, runAfterEdit));
+
+    private static ExcelTaskRequest MacroRequest(
+        ExcelOperation? operation = null,
+        ExcelTaskMode mode = ExcelTaskMode.Plan,
+        WorkbookBinding binding = WorkbookBinding.Isolated,
+        SaveMode save = SaveMode.Copy) => new(
+            TargetWorkbookPath: ".\\target.xlsm",
+            Operation: operation ?? Macro(),
+            Mode: mode,
+            WorkbookBinding: binding,
+            Save: save,
+            OutputWorkbookPath: save == SaveMode.Copy ? ".\\out.xlsm" : null,
+            OverwriteConfirmed: false);
 
     private sealed class FakeRuntime : IWorkbookRuntime
     {

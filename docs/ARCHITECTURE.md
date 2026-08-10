@@ -20,11 +20,19 @@ perform and verify it. The server never delegates planning to a hidden model.
 ### Task Engine
 
 The external module interface is `IExcelTaskEngine.RunAsync`. Its request has a
-manual closed operation union—copy exhibit, repair existing worksheet, or
-extend formula series—so the MCP schema stays small without generic action
-language. It hides normalization, overwrite and live-workbook confirmation,
-plan compilation, outcome classification, and receipt construction. Tests use
-an in-memory workbook runtime adapter through the same interface.
+manual closed operation union—copy exhibit, repair existing worksheet, extend
+formula series, and the in-progress `EditMacroProcedure`—so the MCP schema
+stays small without generic action language. It hides normalization, overwrite
+and live-workbook confirmation, plan compilation, outcome classification, and
+receipt construction. Tests use an in-memory workbook runtime adapter through
+the same interface.
+
+`EditMacroProcedure` has no generic VBE surface: it selects one procedure by
+name, Plan returns only that bounded source/hash, and Apply requires a complete
+replacement with the expected hash. It is isolated `.xlsm` + `Save=Copy` only;
+an optional no-argument run remains bounded by the existing worker deadline.
+Trust access is intentionally controlled by the user, while a dialog or timeout
+after dispatch is `Unknown` rather than retried.
 
 ### Excel adapter
 
@@ -73,5 +81,6 @@ Only `Rejected` is automatically safe to retry after correction. A repeated
 - Bound every task and return changed ranges/checks rather than workbook data.
 - Limit formula work to 16 requested ranges, 10,000 scanned cells, 2,000
   planned mutations, and 24 extension periods; never put formula text on the
-  MCP wire.
+  MCP wire. The in-progress macro operation bounds procedure names/hashes to
+  96 characters and Plan source to 8,192 characters; Apply returns no source.
 - Measure actual Copilot tokens and turns separately from server/COM timing.

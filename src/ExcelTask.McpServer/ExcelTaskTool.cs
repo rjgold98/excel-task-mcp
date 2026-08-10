@@ -14,6 +14,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
     private const int MaxReceiptChanges = 20;
     private const int MaxReceiptChecks = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
+    private const int MaxMacroMetadataLength = 96;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -25,12 +26,12 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Destructive = true,
         UseStructuredContent = true,
         OutputSchemaType = typeof(ExcelTaskReceipt))]
-    [Description("Perform one bounded formula or exhibit operation in an existing .xlsx or .xlsm workbook: copy a named exhibit, repair safely inferable blank formulas, or extend a proven formula series right or down. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen.")]
+    [Description("Perform one bounded formula, exhibit, or macro-procedure operation in an existing .xlsx or .xlsm workbook. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen.")]
     public async Task<CallToolResult> RunAsync(
         [Description("The complete Excel task request.")] ExcelTaskRequest request,
         CancellationToken cancellationToken = default)
     {
-        var receipt = BoundReceipt(await engine.RunAsync(request, cancellationToken));
+        var receipt = BoundReceipt(await engine.RunAsync(request, cancellationToken), request.Mode == ExcelTaskMode.Plan);
         var result = CreateResult(receipt);
 
         return JsonSerializer.SerializeToUtf8Bytes(result, ReceiptJsonOptions).Length <= MaxMcpResultBytes
@@ -52,10 +53,11 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Checks = [],
         Save = receipt.Save with { OutputWorkbookPath = Bound(receipt.Save.OutputWorkbookPath) },
         Retry = receipt.Retry with { Reason = Bound(receipt.Retry.Reason) },
-        Confirmation = receipt.Confirmation with { Requirements = [] }
+        Confirmation = receipt.Confirmation with { Requirements = [] },
+        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeSource: false)
     };
 
-    private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt) => receipt with
+    private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool includeMacroSource) => receipt with
     {
         TaskId = BoundRequired(receipt.TaskId),
         Summary = BoundRequired(receipt.Summary),
@@ -79,7 +81,8 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
                 Code = BoundRequired(requirement.Code),
                 Prompt = BoundRequired(requirement.Prompt)
             }).ToArray()
-        }
+        },
+        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeMacroSource)
     };
 
     private static string? Bound(string? value) => value is { Length: > MaxReceiptStringLength }
@@ -87,4 +90,22 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         : value;
 
     private static string BoundRequired(string value) => Bound(value) ?? string.Empty;
+
+    private static MacroProcedureReceipt? BoundMacroProcedure(MacroProcedureReceipt? receipt, bool includeSource) => receipt is null
+        ? null
+        : receipt with
+        {
+            ComponentName = BoundMacroMetadata(receipt.ComponentName),
+            ProcedureName = BoundMacroMetadata(receipt.ProcedureName),
+            Sha256 = BoundMacroMetadata(receipt.Sha256),
+            Source = includeSource ? BoundMacroSource(receipt.Source) : null
+        };
+
+    private static string BoundMacroMetadata(string value) => value.Length <= MaxMacroMetadataLength
+        ? value
+        : value[..MaxMacroMetadataLength];
+
+    private static string? BoundMacroSource(string? source) => source is { Length: > MacroProcedureText.MaxSourceCharacters }
+        ? source[..MacroProcedureText.MaxSourceCharacters]
+        : source;
 }

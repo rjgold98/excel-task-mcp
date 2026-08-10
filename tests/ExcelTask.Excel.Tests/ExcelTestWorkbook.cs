@@ -37,6 +37,64 @@ internal static class ExcelTestWorkbook
         Release(sheets);
     });
 
+    public static void CreateMacroTarget(string path, string componentName, string source)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Add"); }
+            finally { Release(workbooks); }
+            Invoke(workbook, "SaveAs", path, 52);
+            var project = Get(workbook, "VBProject");
+            var components = Get(project, "VBComponents");
+            var component = Invoke(components, "Add", 1);
+            var module = Get(component, "CodeModule");
+            Set(component, "Name", componentName);
+            Invoke(module, "AddFromString", source.Replace("\n", "\r\n", StringComparison.Ordinal));
+            Invoke(workbook, "Save");
+            Release(module);
+            Release(component);
+            Release(components);
+            Release(project);
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
+    public static string ReadMacroProcedure(string path, string componentName, string procedureName)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var project = Get(workbook, "VBProject");
+            var components = Get(project, "VBComponents");
+            var component = Get(components, "Item", componentName);
+            var module = Get(component, "CodeModule");
+            var start = Convert.ToInt32(Invoke(module, "ProcStartLine", procedureName, 0), CultureInfo.InvariantCulture);
+            var count = Convert.ToInt32(Invoke(module, "ProcCountLines", procedureName, 0), CultureInfo.InvariantCulture);
+            var source = (string)Invoke(module, "Lines", start, count);
+            Release(module);
+            Release(component);
+            Release(components);
+            Release(project);
+            return source.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').TrimEnd('\n');
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
     public static OpenUserWorkbook OpenAsUser(string path)
     {
         var application = TestExcelApplication.Start();

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- v0.4 macro-editing work is in progress. The proposed one-tool
+  `EditMacroProcedure` boundary is isolated `.xlsm` + save-copy only, plans a
+  bounded selected procedure source/hash, and applies complete hash-guarded
+  replacement without returning source. It is not yet a stable or
+  desktop-Excel-verified release.
+
 ## 0.3.0 - 2026-08-09
 
 - Added one closed operation union for copy-exhibit, existing-sheet formula

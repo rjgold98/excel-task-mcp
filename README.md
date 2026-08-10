@@ -33,6 +33,8 @@ host enforces a two-minute deadline, reports interrupted mutations as
 The MVP accepts `.xlsx` and `.xlsm`. Copy output must keep the target file's
 extension. Macro execution is disabled when ExcelTask opens a workbook.
 
+Version 0.4 macro editing is in progress; 0.3 remains the stable release.
+
 ## Safe choices
 
 - Begin with `workbookBinding: "AskIfOpen"`.
@@ -47,6 +49,11 @@ extension. Macro execution is disabled when ExcelTask opens a workbook.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, or `ExtendFormulaSeries`. Supply exactly the one
   matching payload. It never accepts formula text or `FormulaR1C1`.
+- The upcoming `EditMacroProcedure` operation is deliberately narrow: only an
+  isolated `.xlsm` saved as a `Copy`, one named procedure, full replacement
+  guarded by the expected current hash, and an optional no-argument run. Plan
+  returns only that requested procedure's bounded source and hash; Apply never
+  returns source. Excel Trust access remains user-controlled.
 - Repair and copy-exhibit operations accept at most 16 non-overlapping A1
   ranges and scan at most 10,000 cells. Series extension accepts two evidence
   periods, 1–24 adjacent destination periods, and no more than 2,000 planned
@@ -115,8 +122,8 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.3.0 is the current stable formula/exhibit release. It does not yet
-edit VBA, refresh Power Query or data models, attach to unsaved workbooks, or
-expose a general automation surface. Authentication or IRM can still require a
-person; an interrupted mutation is reported as `Unknown` and must be
-reconciled before retrying.
+Version 0.3.0 is the current stable formula/exhibit release. Version 0.4 macro
+editing is in progress and is not yet a stable claim. It does not yet refresh
+Power Query or data models, attach to unsaved workbooks, or expose a general
+automation surface. Authentication or IRM can still require a person; a macro
+dialog or timeout is `Unknown` and must be reconciled before retrying.

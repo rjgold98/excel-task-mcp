@@ -29,11 +29,13 @@ CLI, model selection, or model SDK dependencies.
 - Close only owned workbooks. Never quit or kill a user-owned Excel process.
 - For an owned process: save, close, quit, wait, verify process exit and file
   lock release, then use identity-checked termination only as recovery.
-- Logs never contain workbook values, formulas, prompts, credentials,
-  connection strings, or customer identifiers. Receipts may identify only the
-  request-supplied workbook filename, worksheet, and bounded repair ranges;
-  they contain counts, checks, and fingerprints rather than cell contents or
-  formula text.
+- Logs never contain workbook values, formulas, prompts, VBA source,
+  credentials, connection strings, or customer identifiers. Receipts may
+  identify only request-selected workbook filenames, worksheets, ranges, and
+  macro procedure names. A Plan receipt may include only the explicitly
+  requested, bounded macro procedure source; Apply receipts return its hash
+  and no source. Other receipts contain counts, checks, and fingerprints rather
+  than cell contents, formula text, or VBA source.
 
 ## Verification
 

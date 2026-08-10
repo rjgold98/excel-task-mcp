@@ -1,0 +1,64 @@
+using ExcelTask.Core;
+
+namespace ExcelTask.Core.Tests;
+
+public sealed class MacroProcedureTextTests
+{
+    [Fact]
+    public void NormalizeAndHashTreatLineEndingsAndTrailingNewlinesAsEquivalent()
+    {
+        const string lf = "Public Function RefreshModel() As Long\n    RefreshModel = 1\nEnd Function";
+        var crlfWithTrailingNewlines = lf.Replace("\n", "\r\n", StringComparison.Ordinal) + "\r\n\r\n";
+
+        Assert.Equal(lf, MacroProcedureText.NormalizeLineEndings(crlfWithTrailingNewlines));
+        Assert.Equal(MacroProcedureText.ComputeSha256(lf), MacroProcedureText.ComputeSha256(crlfWithTrailingNewlines));
+    }
+
+    [Fact]
+    public void NormalizesOneCompleteRequestedProcedureAndPreservesInteriorWhitespace()
+    {
+        const string source = "' replace model\r\nPublic Function RefreshModel() As Long\r\n    RefreshModel = 1\r\nEnd Function\r\n";
+
+        var valid = MacroProcedureText.TryNormalizeProcedureSource(source, "refreshmodel", requireZeroParameters: true, out var normalized, out var error);
+
+        Assert.True(valid, error);
+        Assert.Equal("' replace model\nPublic Function RefreshModel() As Long\n    RefreshModel = 1\nEnd Function", normalized);
+    }
+
+    [Theory]
+    [InlineData("Option Explicit\nSub RefreshModel()\nEnd Sub")]
+    [InlineData("Sub RefreshModel()\nEnd Sub\nSub AnotherProcedure()\nEnd Sub")]
+    [InlineData("Sub AnotherProcedure()\nEnd Sub")]
+    [InlineData("Sub RefreshModel()\nEnd Function")]
+    [InlineData("Sub RefreshModel()")]
+    public void RejectsModuleDeclarationsSecondProceduresAndIncompleteSourceWithoutEchoingVba(string source)
+    {
+        var valid = MacroProcedureText.TryNormalizeProcedureSource(source, "RefreshModel", requireZeroParameters: false, out var normalized, out var error);
+
+        Assert.False(valid);
+        Assert.Null(normalized);
+        Assert.DoesNotContain(source, error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RunValidationRejectsParametersAndSourceBounds()
+    {
+        var parameters = MacroProcedureText.TryNormalizeProcedureSource(
+            "Sub RefreshModel(value As Long)\nEnd Sub",
+            "RefreshModel",
+            requireZeroParameters: true,
+            out _,
+            out var parameterError);
+        var tooManyLines = string.Join("\n", Enumerable.Repeat("' comment", MacroProcedureText.MaxLineCount + 1));
+        var lineLimit = MacroProcedureText.TryNormalizeProcedureSource(tooManyLines, "RefreshModel", false, out _, out var lineError);
+        var oversized = new string('x', MacroProcedureText.MaxSourceCharacters + 1);
+        var characterLimit = MacroProcedureText.TryNormalizeProcedureSource(oversized, "RefreshModel", false, out _, out var characterError);
+
+        Assert.False(parameters);
+        Assert.NotNull(parameterError);
+        Assert.False(lineLimit);
+        Assert.NotNull(lineError);
+        Assert.False(characterLimit);
+        Assert.NotNull(characterError);
+    }
+}

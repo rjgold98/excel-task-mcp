@@ -95,7 +95,8 @@ internal static class WorkbookWorkerProtocol
             Summary = BoundRequired(change.Summary)
         }).ToArray(),
         Checks = BoundChecks(outcome.Checks),
-        RetryReason = Bound(outcome.RetryReason)
+        RetryReason = Bound(outcome.RetryReason),
+        MacroProcedure = Bound(outcome.MacroProcedure)
     };
 
     private static TaskCheck[] BoundChecks(IReadOnlyList<TaskCheck>? checks) => (checks ?? [])
@@ -106,6 +107,14 @@ internal static class WorkbookWorkerProtocol
     private static string? Bound(string? value) => value is { Length: > MaxTextLength } ? value[..MaxTextLength] : value;
 
     private static string BoundRequired(string? value) => Bound(value) ?? string.Empty;
+
+    private static MacroProcedureReceipt? Bound(MacroProcedureReceipt? receipt) => receipt is null ? null : receipt with
+    {
+        ComponentName = BoundRequired(receipt.ComponentName),
+        ProcedureName = BoundRequired(receipt.ProcedureName),
+        Sha256 = BoundRequired(receipt.Sha256),
+        Source = receipt.Source is { Length: > MacroProcedureText.MaxSourceCharacters } source ? source[..MacroProcedureText.MaxSourceCharacters] : receipt.Source
+    };
 
 }
 

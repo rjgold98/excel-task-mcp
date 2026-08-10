@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -25,12 +25,20 @@ public sealed record ExtendFormulaSeriesOperation(
     [property: Description("Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.")] string EvidenceRange,
     [property: Description("Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.")] string DestinationRange);
 
+public sealed record EditMacroProcedureOperation(
+    [property: Description("Existing VBA component name containing the procedure to inspect or replace.")] string ComponentName,
+    [property: Description("Existing VBA procedure name to inspect or replace.")] string ProcedureName,
+    [property: Description("Required for Apply: SHA-256 fingerprint of the existing normalized procedure source.")] string? ExpectedProcedureSha256 = null,
+    [property: Description("Required for Apply: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
+    [property: Description("When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.")] bool RunAfterEdit = false);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
     [property: Description("Required only when kind is CopyExhibit; all other payloads must be null.")] CopyExhibitOperation? CopyExhibit = null,
     [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
-    [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null);
+    [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
+    [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
@@ -80,12 +88,20 @@ public sealed record NormalizedExtendFormulaSeriesOperation(
     FormulaRepairRange EvidenceRange,
     FormulaRepairRange DestinationRange);
 
+public sealed record NormalizedEditMacroProcedureOperation(
+    string ComponentName,
+    string ProcedureName,
+    string? ExpectedProcedureSha256,
+    string? ReplacementSource,
+    bool RunAfterEdit);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
     NormalizedCopyExhibitOperation? CopyExhibit = null,
     NormalizedRepairExistingWorksheetOperation? RepairExistingWorksheet = null,
-    NormalizedExtendFormulaSeriesOperation? ExtendFormulaSeries = null);
+    NormalizedExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
+    NormalizedEditMacroProcedureOperation? EditMacroProcedure = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,
@@ -99,10 +115,11 @@ public sealed record NormalizedExcelTaskRequest(
 public sealed record ExcelTaskPlan(string TaskId, NormalizedExcelTaskRequest Request);
 public sealed record TaskChange(string Kind, string Target, string Summary);
 public sealed record TaskCheck(string Name, bool Passed, string Detail);
-public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null);
+public sealed record MacroProcedureReceipt(string ComponentName, string ProcedureName, string Sha256, string? Source, bool RunRequested, bool RunCompleted);
+public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
 public sealed record ConfirmationRequirement(string Code, string Prompt);
 public sealed record ConfirmationReceipt(bool Required, IReadOnlyList<ConfirmationRequirement> Requirements);
 public sealed record PhaseTimings(TimeSpan Validation, TimeSpan Inspection, TimeSpan Execution, TimeSpan Total);
-public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings);
+public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null);

@@ -107,6 +107,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "copyExhibit", "Required only when kind is CopyExhibit; all other payloads must be null.");
         AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
         AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
+        AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
 
         var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
         AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed.");
@@ -117,6 +118,14 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var extendSeries = ResolveReference(operationProperties.GetProperty("extendFormulaSeries"), tool.InputSchema);
         AssertDescription(extendSeries.GetProperty("properties"), "evidenceRange", "Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.");
         AssertDescription(extendSeries.GetProperty("properties"), "destinationRange", "Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.");
+
+        var editMacro = ResolveReference(operationProperties.GetProperty("editMacroProcedure"), tool.InputSchema);
+        var editMacroProperties = editMacro.GetProperty("properties");
+        AssertDescription(editMacroProperties, "componentName", "Existing VBA component name containing the procedure to inspect or replace.");
+        AssertDescription(editMacroProperties, "procedureName", "Existing VBA procedure name to inspect or replace.");
+        AssertDescription(editMacroProperties, "expectedProcedureSha256", "Required for Apply: SHA-256 fingerprint of the existing normalized procedure source.");
+        AssertDescription(editMacroProperties, "replacementSource", "Required for Apply: one complete replacement Sub or Function procedure with the requested name.");
+        AssertDescription(editMacroProperties, "runAfterEdit", "When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.");
     }
 
     [Fact]
@@ -193,6 +202,28 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
     }
 
     [Fact]
+    public async Task CallToolPlanMacroProcedureRoundTripsOperationAndReturnsRequestedSource()
+    {
+        const string source = "Public Sub RefreshModel()\nEnd Sub";
+        _runtime!.Outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Planned,
+            "Macro plan ready",
+            MacroProcedure: new("ModelCode", "RefreshModel", "a".PadLeft(64, 'a'), source, false, false));
+        var operation = new ExcelOperation(
+            ExcelOperationKind.EditMacroProcedure,
+            EditMacroProcedure: new EditMacroProcedureOperation("ModelCode", "RefreshModel"));
+
+        var result = await CallAsync(MacroRequest(ExcelTaskMode.Plan, operation));
+
+        Assert.False(result.IsError);
+        var macro = Assert.IsType<NormalizedEditMacroProcedureOperation>(_runtime.Plan!.Request.Operation.EditMacroProcedure);
+        Assert.Equal("ModelCode", macro.ComponentName);
+        Assert.Equal("RefreshModel", macro.ProcedureName);
+        Assert.Equal(source, result.StructuredContent!.Value.GetProperty("macroProcedure").GetProperty("source").GetString());
+        Assert.Equal("a".PadLeft(64, 'a'), result.StructuredContent.Value.GetProperty("macroProcedure").GetProperty("sha256").GetString());
+    }
+
+    [Fact]
     public async Task CallToolRejectsMismatchedOperationUnionBeforeInspection()
     {
         var mismatch = new ExcelOperation(
@@ -204,6 +235,62 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.True(result.IsError);
         Assert.Equal(nameof(ExcelTaskStatus.Rejected), result.StructuredContent!.Value.GetProperty("status").GetString());
         Assert.Null(_runtime!.InspectionRequest);
+    }
+
+    [Fact]
+    public async Task CallToolRejectsMismatchedMacroOperationUnionBeforeInspection()
+    {
+        var mismatch = new ExcelOperation(
+            ExcelOperationKind.EditMacroProcedure,
+            CopyExhibit: new CopyExhibitOperation("reference.xlsx", "Reference", "New sheet", []));
+
+        var result = await CallAsync(Request(ExcelTaskMode.Plan, mismatch));
+
+        Assert.True(result.IsError);
+        Assert.Equal(nameof(ExcelTaskStatus.Rejected), result.StructuredContent!.Value.GetProperty("status").GetString());
+        Assert.Null(_runtime!.InspectionRequest);
+    }
+
+    [Fact]
+    public async Task CallToolBoundsMacroReceiptAndSuppressesSourceForApply()
+    {
+        var longMetadata = new string('m', 160);
+        var boundedSource = CompleteProcedure(longMetadata, MacroProcedureText.MaxSourceCharacters);
+        _runtime!.Outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Planned,
+            "Macro planned",
+            MacroProcedure: new(longMetadata, longMetadata, longMetadata, boundedSource, true, true));
+        var planOperation = new ExcelOperation(
+            ExcelOperationKind.EditMacroProcedure,
+            EditMacroProcedure: new EditMacroProcedureOperation("ModelCode", "RefreshModel"));
+        var applyOperation = new ExcelOperation(
+            ExcelOperationKind.EditMacroProcedure,
+            EditMacroProcedure: new EditMacroProcedureOperation(
+                "ModelCode", "RefreshModel", new string('a', 64), "Public Sub RefreshModel()\nEnd Sub"));
+
+        var planResult = await CallAsync(MacroRequest(ExcelTaskMode.Plan, planOperation));
+        var plannedMacro = planResult.StructuredContent!.Value.GetProperty("macroProcedure");
+
+        Assert.Equal(96, plannedMacro.GetProperty("componentName").GetString()!.Length);
+        Assert.Equal(96, plannedMacro.GetProperty("procedureName").GetString()!.Length);
+        Assert.Equal(96, plannedMacro.GetProperty("sha256").GetString()!.Length);
+        Assert.Equal(MacroProcedureText.MaxSourceCharacters, plannedMacro.GetProperty("source").GetString()!.Length);
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(planResult).Length, 1, 30 * 1024);
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(new { jsonrpc = "2.0", id = 1, result = planResult }).Length, 1, 32 * 1024);
+
+        _runtime.Outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Completed,
+            "Macro applied",
+            MacroProcedure: new(longMetadata, longMetadata, longMetadata, boundedSource, true, true));
+        var result = await CallAsync(MacroRequest(ExcelTaskMode.Apply, applyOperation, overwriteConfirmed: true));
+        var macro = result.StructuredContent!.Value.GetProperty("macroProcedure");
+
+        Assert.Equal(96, macro.GetProperty("componentName").GetString()!.Length);
+        Assert.Equal(96, macro.GetProperty("procedureName").GetString()!.Length);
+        Assert.Equal(96, macro.GetProperty("sha256").GetString()!.Length);
+        Assert.Equal(JsonValueKind.Null, macro.GetProperty("source").ValueKind);
+        Assert.True(macro.GetProperty("runRequested").GetBoolean());
+        Assert.True(macro.GetProperty("runCompleted").GetBoolean());
     }
 
     [Fact]
@@ -269,6 +356,25 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         WorkbookBinding.AskIfOpen,
         SaveMode.Same,
         OverwriteConfirmed: overwriteConfirmed);
+
+    private static ExcelTaskRequest MacroRequest(
+        ExcelTaskMode mode,
+        ExcelOperation operation,
+        bool overwriteConfirmed = false) => new(
+            TargetWorkbookPath: "target.xlsm",
+            Operation: operation,
+            Mode: mode,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: SaveMode.Copy,
+            OutputWorkbookPath: "output.xlsm",
+            OverwriteConfirmed: overwriteConfirmed);
+
+    private static string CompleteProcedure(string procedureName, int totalLength)
+    {
+        var prefix = $"Public Sub {procedureName}()\n'";
+        const string suffix = "\nEnd Sub";
+        return prefix + new string('s', totalLength - prefix.Length - suffix.Length) + suffix;
+    }
 
     private static void AssertDescription(JsonElement properties, string propertyName, string expected) =>
         Assert.Equal(expected, properties.GetProperty(propertyName).GetProperty("description").GetString());
