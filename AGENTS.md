@@ -61,7 +61,9 @@ CLI, model selection, or model SDK dependencies.
 More than one AI agent works on this repository - a development agent on the
 owner's home computer and a validation agent (GitHub Copilot) on the managed
 work computer. They communicate through GitHub itself; the owner decides when
-each side looks for updates.
+each side looks for updates. Roles, channels, the field-task lifecycle, and
+the evidence standard are defined in [docs/AGENT-BRIDGE.md](docs/AGENT-BRIDGE.md);
+field tasks arrive as issues labeled `field-task`.
 
 - Findings, feedback, and proposals travel as pull requests, or as issues when
   no code change is attached. Responses are posted as pull request reviews,
