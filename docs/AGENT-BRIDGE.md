@@ -20,30 +20,51 @@ technical detail between them; the repository carries it.
 
 ## Channels
 
-- **Issues** - tasking. Each field task is one issue authored by the lead,
-  labeled `field-task`, self-contained: context, exact commands, expected
-  outputs, and the report format. The field agent works it and reports back on
-  that same issue.
-- **Pull requests** - anything with files: field reports committed under
-  `docs/field-reports/`, or proposed code changes. Always referenced back to
-  the issue that asked for them.
-- **Comments** - discussion. One thread per finding. Every response ends with a
-  question or a disposition: accepted, fixed in `<commit>`, or declined with the
-  reason.
+The channel is deliberately one-way. This repository is personal, and the field
+agent runs inside an enterprise that does not permit contributing to repositories
+outside it. So the field agent **reads** from GitHub and **never writes** to it:
+no pushes, no branches, no pull requests, no issue comments. Attempting one and
+reporting success without checking is the specific failure this section exists to
+prevent.
+
+- **Issues, outbound** - tasking. Each field task is one issue authored by the
+  lead, labeled `field-task`, self-contained: context, exact commands, expected
+  outputs, and the report format. The field agent reads it.
+- **Files, inbound** - reporting. The field agent writes its report as files on
+  the work computer and tells the owner where they are. The owner relays them to
+  the lead, who commits them under `docs/field-reports/` and answers on the
+  issue. A round trip is therefore: lead writes an issue, owner points the field
+  agent at it, field agent writes files, owner relays, lead responds.
+- **The owner is the only write path.** If something must reach GitHub from the
+  work computer, it goes through the owner as file contents, not as a git
+  operation.
 
 ## Field task lifecycle
 
 1. Lead opens an issue labeled `field-task` with numbered steps.
-2. Owner points the field agent at it.
+2. Owner points the field agent at it. If the field agent cannot read the
+   repository either, the owner pastes the issue text to it directly.
 3. Field agent executes the steps. If a step cannot be executed - blocked by
    policy, missing tool, unexpected state - it records exactly what happened
    and continues with the remaining steps rather than improvising a workaround.
-4. Field agent reports on the issue using the evidence standard below, and
-   commits any report files to a branch named `field/<issue-number>-<topic>`,
-   opening a pull request that references the issue. If pushing a branch is
-   blocked, it pastes full file contents into issue comments instead.
-5. Lead reads everything with the GitHub CLI, responds on the same threads,
-   fixes what needs fixing, and closes the issue with a disposition.
+4. Field agent writes its report to files on the work computer, using the
+   evidence standard below, and tells the owner the exact paths. It does not
+   attempt any git write operation.
+5. Owner relays those files to the lead.
+6. Lead commits them under `docs/field-reports/`, responds on the issue, fixes
+   what needs fixing, and closes the issue with a disposition.
+
+## Reporting format
+
+Everything the lead needs must survive being copied out of the work computer as
+plain files, so a report is:
+
+- the generated field-check files, unedited; plus
+- one `SUMMARY.md` containing anything the tooling could not capture: what was
+  run, what was observed, timings, and the exact text of any failure.
+
+Prefer a small number of complete files to many fragments. Never summarize an
+error; paste it.
 
 ## Evidence standard
 
@@ -67,6 +88,8 @@ These bind both agents:
 - Never uninstall, reconfigure, or interfere with the original Excel MCP
   installation; measuring it is fine.
 - Never force a specific model anywhere, including in tests.
-- The field agent does not push to `main`, merge, tag, or release.
-- Anything a task does not cover is a question on the issue, not an
+- Never attempt to bypass an employer control - Constrained Language Mode,
+  contribution restrictions, Trust Center policy. Report the block and stop.
+- The field agent performs no git write operation of any kind.
+- Anything a task does not cover is a question for the owner to relay, not an
   improvisation.
