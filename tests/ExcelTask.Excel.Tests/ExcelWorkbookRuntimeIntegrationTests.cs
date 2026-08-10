@@ -242,6 +242,64 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task MacroRunErrorIsTrappedAndReportedInsteadOfBlockingOnADialog()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        var output = Path.Combine(directory, "macro-output.xlsm");
+        const string component = "SafeModule";
+        const string procedure = "WriteMarker";
+        const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        // Raises VBA error 9 at run time. Called directly this opens a modal "Run-time error '9'"
+        // dialog inside the owned Excel instance and blocks until the watchdog kills the process.
+        const string failingSource = "Public Sub WriteMarker()\n    Dim values(1 To 2) As Long\n    values(99) = 1\nEnd Sub";
+        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+
+        try
+        {
+            try { ExcelTestWorkbook.CreateMacroTarget(target, component, originalSource); }
+            catch (Exception exception) when (IsAccessVbomUnavailable(exception))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("Excel Trust Center does not permit programmatic VBA project access on this machine.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-plan", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var applied = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-apply", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Apply,
+                planned.MacroProcedure!.Sha256, failingSource, runAfterEdit: true)), CancellationToken.None);
+            started.Stop();
+
+            // The whole point: a returned result, not a 110-second watchdog kill.
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(90), $"Run took {started.Elapsed}, which suggests it blocked on a dialog.");
+            Assert.Equal(ExcelTaskStatus.Partial, applied.Status);
+            Assert.False(applied.MacroProcedure!.RunCompleted);
+
+            var runCheck = Assert.Single(applied.Checks!, check => check.Name == "macro-run");
+            Assert.False(runCheck.Passed);
+            Assert.Contains("9", runCheck.Detail, StringComparison.Ordinal);
+
+            // The edit is still delivered and verified, and carries no trace of the generated helper.
+            Assert.True(File.Exists(output));
+            Assert.Equal(failingSource, ExcelTestWorkbook.ReadMacroProcedure(output, component, procedure));
+            Assert.DoesNotContain("ExcelTaskRun", ExcelTestWorkbook.ReadModuleText(output, component), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal(originalSource, ExcelTestWorkbook.ReadMacroProcedure(target, component, procedure));
+        }
+        finally
+        {
+            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Assert.Empty(leaked);
+        }
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)

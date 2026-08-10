@@ -65,6 +65,28 @@ public sealed class MacroProcedureTextTests
         Assert.NotNull(error);
     }
 
+    [Theory]
+    [InlineData("Public Sub RefreshModel()\n    MsgBox \"done\"\nEnd Sub", "MsgBox")]
+    [InlineData("Public Sub RefreshModel()\n    Dim answer\n    answer = InputBox(\"name?\")\nEnd Sub", "InputBox")]
+    [InlineData("Public Sub RefreshModel()\n    Stop\nEnd Sub", "Stop")]
+    [InlineData("Public Sub RefreshModel()\n    Dim f\n    f = Application.GetOpenFilename()\nEnd Sub", "GetOpenFilename")]
+    public void DetectsConstructsThatWaitForAPerson(string source, string expected)
+    {
+        Assert.True(MacroProcedureText.TryFindBlockingConstruct(source, out var construct));
+        Assert.Equal(expected, construct, ignoreCase: true);
+    }
+
+    [Theory]
+    [InlineData("Public Sub RefreshModel()\n    Range(\"A1\").Value2 = \"MsgBox is only text here\"\nEnd Sub")]
+    [InlineData("Public Sub RefreshModel()\n    ' MsgBox in a comment is not code\n    Range(\"A1\").Value2 = 1\nEnd Sub")]
+    [InlineData("Public Sub RefreshModel()\n    Debug.Print \"no dialog\"\nEnd Sub")]
+    [InlineData("Public Sub StopwatchTotal()\n    Range(\"A1\").Value2 = 1\nEnd Sub")]
+    public void DoesNotMistakeStringsCommentsOrSimilarNamesForBlockingCode(string source)
+    {
+        Assert.False(MacroProcedureText.TryFindBlockingConstruct(source, out var construct));
+        Assert.Null(construct);
+    }
+
     [Fact]
     public void RunValidationRejectsParametersAndSourceBounds()
     {

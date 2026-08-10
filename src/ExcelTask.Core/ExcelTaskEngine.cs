@@ -604,6 +604,13 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             {
                 return false;
             }
+            // Refused before Excel is opened: running this would stop on a modal dialog that only a
+            // person can clear. Editing such a procedure without running it stays permitted.
+            if (macro.RunAfterEdit && MacroProcedureText.TryFindBlockingConstruct(replacementSource!, out var blocking))
+            {
+                error = $"RunAfterEdit rejects a replacement containing {blocking}, which waits for a person.";
+                return false;
+            }
 
             expectedHash = suppliedHash.ToLowerInvariant();
         }

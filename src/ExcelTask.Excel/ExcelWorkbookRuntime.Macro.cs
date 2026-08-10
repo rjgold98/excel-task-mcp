@@ -7,6 +7,11 @@ namespace ExcelTask.Excel;
 
 public sealed partial class ExcelWorkbookRuntime
 {
+    private const string RunShimSuccess = "OK";
+    private const string RunShimFailure = "ERR";
+    private const char RunShimSeparator = '';
+    private const string RunShimFailurePrefix = RunShimFailure + "";
+    private const int MaxRunDetailLength = 160;
     private const int VbextCtStdModule = 1;
     private const int VbextPpNone = 0;
     private const int VbextPkProc = 0;
@@ -23,6 +28,7 @@ public sealed partial class ExcelWorkbookRuntime
         var mutationAttempted = false;
         var verified = false;
         var runCompleted = false;
+        string? runFailureDetail = null;
 
         if (!IsIsolatedMacroCopyRequest(plan.Request))
         {
@@ -124,9 +130,10 @@ public sealed partial class ExcelWorkbookRuntime
             if (operation.RunAfterEdit)
             {
                 observer.OnPhase("macro-run");
-                Invoke(session.Application, "Run", QualifiedProcedureName(session.TargetWorkbook, operation));
-                runCompleted = true;
-                checks.Add(new TaskCheck("macro-run", true, "The requested no-argument macro procedure completed."));
+                var run = RunProcedureWithErrorTrap(session, operation, plan.TaskId);
+                runCompleted = run.Ok;
+                runFailureDetail = run.Ok ? null : run.Detail;
+                checks.Add(new TaskCheck("macro-run", run.Ok, run.Detail));
             }
 
             observer.OnPhase("save");
@@ -166,7 +173,12 @@ public sealed partial class ExcelWorkbookRuntime
             WorkbookRuntimeHelpers.PromoteStaging(stagingPath, savedPath, plan.Request.OverwriteConfirmed);
             stagingPath = null;
             changes.Add(new TaskChange("copy-promotion", "workbook", "Promoted the verified staging workbook to the requested output path."));
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Macro procedure changes were saved and verified after reopening.", changes, checks, MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted));
+            // The edit itself is saved and verified either way. A trapped run error is a known,
+            // complete outcome rather than an uncertain one, so it reports Partial and names the
+            // VBA error instead of leaving the caller to guess.
+            return runFailureDetail is null
+                ? new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Macro procedure changes were saved and verified after reopening.", changes, checks, MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted))
+                : new WorkbookExecutionOutcome(ExcelTaskStatus.Partial, "Macro procedure changes were saved and verified, but the requested run did not succeed.", changes, checks, CanRetry: false, RetryReason: runFailureDetail, MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted));
         }
         catch (Exception)
         {
@@ -281,8 +293,96 @@ public sealed partial class ExcelWorkbookRuntime
         Invoke(module, "InsertLines", existing.StartLine, MacroProcedureText.NormalizeLineEndings(replacementSource).Replace("\n", "\r\n", StringComparison.Ordinal));
     }
 
-    private static string QualifiedProcedureName(object workbook, NormalizedEditMacroProcedureOperation operation) =>
-        $"'{((string)Get(workbook, "Name")).Replace("'", "''", StringComparison.Ordinal)}'!{operation.ComponentName}.{operation.ProcedureName}";
+    private static string QualifiedMember(object workbook, string componentName, string memberName) =>
+        $"'{((string)Get(workbook, "Name")).Replace("'", "''", StringComparison.Ordinal)}'!{componentName}.{memberName}";
+
+    /// <summary>
+    /// Runs the edited procedure through a temporary generated wrapper that traps VBA errors.
+    /// Calling the procedure directly lets an unhandled error raise a modal dialog inside the owned
+    /// Excel instance, which blocks the automation thread until a watchdog kills the process and
+    /// costs the caller a useless uncertain result. The wrapper turns that into a returned string.
+    /// The wrapper is appended after the module's existing lines so no procedure shifts position,
+    /// and it is always removed again before the workbook is saved.
+    /// </summary>
+    private static MacroRunResult RunProcedureWithErrorTrap(ExcelSession session, NormalizedEditMacroProcedureOperation operation, string taskId)
+    {
+        using var references = new ComReferenceScope();
+        var project = references.Add(Get(session.TargetWorkbook, "VBProject"));
+        var components = references.Add(Get(project, "VBComponents"));
+        var component = references.Add(VbeItem(components, operation.ComponentName));
+        var module = references.Add(Get(component, "CodeModule"));
+
+        var shimName = CreateShimName(taskId);
+        var linesBefore = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
+        var existing = linesBefore == 0 ? string.Empty : (string)Get(module, "Lines", 1, linesBefore);
+        if (existing.Contains(shimName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The temporary run helper name is already used in the module.");
+        }
+
+        Invoke(module, "InsertLines", linesBefore + 1, BuildRunShim(shimName, operation.ProcedureName));
+        string? raw;
+        try
+        {
+            raw = Invoke(session.Application, "Run", QualifiedMember(session.TargetWorkbook, operation.ComponentName, shimName)) as string;
+        }
+        finally
+        {
+            var linesAfter = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
+            if (linesAfter > linesBefore) Invoke(module, "DeleteLines", linesBefore + 1, linesAfter - linesBefore);
+        }
+
+        // Saving a workbook that still carried the generated helper would hand the user a macro
+        // project they did not write, so an incomplete removal fails the task instead.
+        if (Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture) != linesBefore)
+        {
+            throw new InvalidOperationException("The temporary run helper could not be removed from the module.");
+        }
+
+        return InterpretRunResult(raw);
+    }
+
+    private static MacroRunResult InterpretRunResult(string? raw)
+    {
+        if (string.Equals(raw, RunShimSuccess, StringComparison.Ordinal))
+        {
+            return new MacroRunResult(true, "The requested no-argument macro procedure completed.");
+        }
+
+        if (raw is not null && raw.StartsWith(RunShimFailurePrefix, StringComparison.Ordinal))
+        {
+            var parts = raw.Split(RunShimSeparator);
+            var number = parts.Length > 1 ? BoundRunDetail(parts[1]) : "unknown";
+            var description = parts.Length > 2 ? BoundRunDetail(parts[2]) : string.Empty;
+            return new MacroRunResult(false, $"The macro stopped on VBA error {number}: {description}");
+        }
+
+        return new MacroRunResult(false, "The macro run returned an unrecognized result.");
+    }
+
+    private static string BoundRunDetail(string value)
+    {
+        var collapsed = new string(value.Select(character => char.IsControl(character) ? ' ' : character).ToArray()).Trim();
+        return collapsed.Length <= MaxRunDetailLength ? collapsed : collapsed[..MaxRunDetailLength];
+    }
+
+    private static string CreateShimName(string taskId)
+    {
+        var cleaned = new string(taskId.Where(char.IsLetterOrDigit).Take(16).ToArray());
+        return "ExcelTaskRun" + (cleaned.Length == 0 ? "Shim" : cleaned);
+    }
+
+    private static string BuildRunShim(string shimName, string procedureName) => string.Join("\r\n",
+        $"Public Function {shimName}() As String",
+        "    On Error GoTo ExcelTaskTrapped",
+        $"    {procedureName}",
+        $"    {shimName} = \"{RunShimSuccess}\"",
+        "    Exit Function",
+        "ExcelTaskTrapped:",
+        $"    {shimName} = \"{RunShimFailure}\" & Chr$({(int)RunShimSeparator}) & CStr(Err.Number) & Chr$({(int)RunShimSeparator}) & Err.Description",
+        "End Function");
+
+    private readonly record struct MacroRunResult(bool Ok, string Detail);
 
     private static bool VerifySavedMacroProcedure(string path, NormalizedEditMacroProcedureOperation operation, string expectedHash, IExcelWorkbookRuntimeObserver observer, out TaskCheck check)
     {

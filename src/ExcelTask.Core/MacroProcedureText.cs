@@ -24,6 +24,46 @@ public static partial class MacroProcedureText
         return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 
+    /// <summary>
+    /// VBA constructs that open a modal dialog or enter break mode. Each one blocks the automation
+    /// thread until a person clicks something, which is exactly the outcome the product must never
+    /// produce, so a request that asks to run the procedure is refused before Excel is opened.
+    /// This is a first line of defence only: it cannot see into procedures the replacement calls.
+    /// </summary>
+    public static bool TryFindBlockingConstruct(string source, out string? construct)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        construct = null;
+        foreach (var line in NormalizeLineEndings(source).Split('\n'))
+        {
+            var code = StripStringLiterals(StripComment(line));
+            var match = BlockingConstructRegex().Match(code);
+            if (match.Success)
+            {
+                construct = match.Value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Replaces literal text with spaces so a construct name inside a string is not mistaken for code.</summary>
+    private static string StripStringLiterals(string line)
+    {
+        if (!line.Contains('"', StringComparison.Ordinal)) return line;
+
+        var builder = new StringBuilder(line.Length);
+        var quoted = false;
+        foreach (var character in line)
+        {
+            if (character == '"') quoted = !quoted;
+            builder.Append(quoted || character == '"' ? ' ' : character);
+        }
+
+        return builder.ToString();
+    }
+
     /// <summary>Validates and normalizes exactly one complete replacement procedure without exposing its text in errors.</summary>
     public static bool TryNormalizeProcedureSource(
         string? source,
@@ -174,4 +214,9 @@ public static partial class MacroProcedureText
 
     [GeneratedRegex(@"^End\s+(?<kind>Sub|Function)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex ProcedureEndRegex();
+
+    // MsgBox/InputBox/GetOpenFilename/GetSaveAsFilename/FileDialog raise a modal dialog; Stop drops
+    // the VBA host into break mode. All of them wait for a person the product cannot summon.
+    [GeneratedRegex(@"\b(MsgBox|InputBox|GetOpenFilename|GetSaveAsFilename|FileDialog|Stop)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex BlockingConstructRegex();
 }

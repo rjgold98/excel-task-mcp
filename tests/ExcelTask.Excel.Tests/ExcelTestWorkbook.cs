@@ -66,6 +66,35 @@ internal static class ExcelTestWorkbook
         }
     }
 
+    /// <summary>Reads the whole module so a test can prove no generated helper was left behind.</summary>
+    public static string ReadModuleText(string path, string componentName)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var project = Get(workbook, "VBProject");
+            var components = Get(project, "VBComponents");
+            var component = Invoke(components, "Item", componentName);
+            var module = Get(component, "CodeModule");
+            var count = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
+            var text = count == 0 ? string.Empty : (string)Get(module, "Lines", 1, count);
+            Release(module);
+            Release(component);
+            Release(components);
+            Release(project);
+            return text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
     public static string ReadMacroProcedure(string path, string componentName, string procedureName)
     {
         using var application = TestExcelApplication.Start();
