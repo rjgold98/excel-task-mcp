@@ -20,4 +20,7 @@ jobs:
       - run: dotnet restore ExcelTask.slnx -p:NuGetAudit=false
       - run: dotnet build ExcelTask.slnx -c Release --no-restore -p:NuGetAudit=false
       - run: dotnet test ExcelTask.slnx -c Release --no-build --no-restore --filter "RunType!=OnDemand" -p:NuGetAudit=false
-      - run: dotnet publish src/ExcelTask.McpServer/ExcelTask.McpServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:NuGetAudit=false
+      - run: dotnet publish src/ExcelTask.McpServer/ExcelTask.McpServer.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false -p:PublishReadyToRun=false -p:NuGetAudit=false -o artifacts/ci-publish
+      - run: |
+          $env:EXCELTASK_TEST_SERVER_PATH = (Resolve-Path artifacts/ci-publish/excel-task-mcp.exe)
+          dotnet test tests/ExcelTask.McpServer.Tests/ExcelTask.McpServer.Tests.csproj -c Release --no-build --filter "FullyQualifiedName~PrivateWorkerMcpProcessTests" -p:NuGetAudit=false

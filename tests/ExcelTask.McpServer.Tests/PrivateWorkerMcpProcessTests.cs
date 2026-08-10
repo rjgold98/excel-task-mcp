@@ -15,7 +15,7 @@ public sealed class PrivateWorkerMcpProcessTests
     [Fact]
     public async Task PrivateWorkerModeCompletesOneBoundedInspection()
     {
-        var server = Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe");
+        var server = GetServerPath();
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var target = Path.Combine(directory, "target.xlsx");
@@ -74,7 +74,7 @@ public sealed class PrivateWorkerMcpProcessTests
     [Fact]
     public async Task StdioServerUsesPrivateInspectionWorkerFromAnUntrustedWorkingDirectory()
     {
-        var server = Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe");
+        var server = GetServerPath();
         Assert.True(File.Exists(server), $"Expected MCP server apphost at {server}.");
 
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -125,5 +125,13 @@ public sealed class PrivateWorkerMcpProcessTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    private static string GetServerPath()
+    {
+        var configured = Environment.GetEnvironmentVariable("EXCELTASK_TEST_SERVER_PATH");
+        return string.IsNullOrWhiteSpace(configured)
+            ? Path.Combine(AppContext.BaseDirectory, "excel-task-mcp.exe")
+            : Path.GetFullPath(configured);
     }
 }
