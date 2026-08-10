@@ -33,6 +33,12 @@ public sealed partial class ExcelWorkbookRuntime
 
         public object ReferenceWorkbook { get; }
 
+        /// <summary>
+        /// The Excel process this session created, or null when the session is bound to a workbook
+        /// the user already had open. Only an owned process may ever be watched or acted upon.
+        /// </summary>
+        public ProcessIdentity? OwnedProcessIdentity => _ownedProcess?.Identity;
+
         public bool HasExternalTargetOpen(string targetPath) =>
             RotWorkbookLocator.HasExternalWorkbookAtPath(targetPath, GetApplicationHwnd(Application));
 

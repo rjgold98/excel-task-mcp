@@ -300,6 +300,62 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task MacroCompileErrorIsAnsweredAndReportedInsteadOfStallingTheTask()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        var output = Path.Combine(directory, "macro-output.xlsm");
+        const string component = "SafeModule";
+        const string procedure = "WriteMarker";
+        const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        // Structurally one valid procedure, so it passes validation, but VBA cannot compile it.
+        // A compile error happens before any On Error handler exists, so only the sentry can clear it.
+        const string uncompilableSource = "Public Sub WriteMarker()\n    Call NoSuchProcedureExists\nEnd Sub";
+        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+
+        try
+        {
+            try { ExcelTestWorkbook.CreateMacroTarget(target, component, originalSource); }
+            catch (Exception exception) when (IsAccessVbomUnavailable(exception))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("Excel Trust Center does not permit programmatic VBA project access on this machine.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-plan", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var applied = await runtime.ExecuteAsync(new ExcelTaskPlan("macro-apply", ExcelTaskPlans.Macro(
+                target, output, component, procedure, ExcelTaskMode.Apply,
+                planned.MacroProcedure!.Sha256, uncompilableSource, runAfterEdit: true)), CancellationToken.None);
+            started.Stop();
+
+            Assert.True(started.Elapsed < TimeSpan.FromSeconds(90), $"Run took {started.Elapsed}, which suggests the dialog was never answered.");
+            Assert.Equal(ExcelTaskStatus.Rejected, applied.Status);
+
+            // The caller gets the compiler's own words, which is what makes a retry possible.
+            var runCheck = Assert.Single(applied.Checks!, check => check.Name == "macro-run");
+            Assert.False(runCheck.Passed);
+            Assert.Contains("did not compile", runCheck.Detail, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Sub or Function not defined", runCheck.Detail, StringComparison.OrdinalIgnoreCase);
+
+            // Nothing reached disk, so the retry the caller is invited to make starts from a clean slate.
+            Assert.False(File.Exists(output));
+            Assert.Equal(originalSource, ExcelTestWorkbook.ReadMacroProcedure(target, component, procedure));
+        }
+        finally
+        {
+            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Assert.Empty(leaked);
+        }
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)

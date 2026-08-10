@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using ExcelTask.Core;
@@ -180,6 +181,23 @@ public sealed partial class ExcelWorkbookRuntime
                 ? new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Macro procedure changes were saved and verified after reopening.", changes, checks, MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted))
                 : new WorkbookExecutionOutcome(ExcelTaskStatus.Partial, "Macro procedure changes were saved and verified, but the requested run did not succeed.", changes, checks, CanRetry: false, RetryReason: runFailureDetail, MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted));
         }
+        catch (MacroCompilationException exception)
+        {
+            // The replacement never ran and nothing reached disk: the edit existed only inside the
+            // Excel instance that has now ended, and the target workbook was never written. So this
+            // is an ordinary rejection the caller can fix and retry, not an uncertain outcome.
+            try { session?.Close(); }
+            catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { }
+            session = null;
+
+            checks.Add(new TaskCheck("macro-run", false, $"The macro did not compile, so it was not run: {exception.Message}"));
+            checks.Add(new TaskCheck("owned-process-exit", true, "The isolated Excel instance was ended to release the blocked call."));
+            return new WorkbookExecutionOutcome(
+                ExcelTaskStatus.Rejected,
+                "The replacement macro did not compile, so no changes were saved.",
+                Checks: checks,
+                MacroProcedure: snapshot is null ? null : CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted: false));
+        }
         catch (Exception)
         {
             var ownedCleanupFailed = false;
@@ -321,16 +339,34 @@ public sealed partial class ExcelWorkbookRuntime
         }
 
         Invoke(module, "InsertLines", linesBefore + 1, BuildRunShim(shimName, operation.ProcedureName));
-        string? raw;
-        try
+        string? raw = null;
+        Exception? runFailure = null;
+        IReadOnlyList<DismissedDialog> dismissed;
+        // The wrapper cannot catch a compile error, because VBA refuses to compile the module before
+        // any handler is installed, and it cannot catch a MsgBox in a procedure the replacement
+        // calls. Both raise a modal dialog while this thread is blocked inside COM, so a sentry
+        // watches the owned Excel process from outside and answers what it recognizes.
+        using (var sentry = ModalDialogSentry.Watch(session.OwnedProcessIdentity))
         {
-            raw = Invoke(session.Application, "Run", QualifiedMember(session.TargetWorkbook, operation.ComponentName, shimName)) as string;
+            try
+            {
+                raw = Invoke(session.Application, "Run", QualifiedMember(session.TargetWorkbook, operation.ComponentName, shimName)) as string;
+            }
+            catch (Exception exception)
+            {
+                runFailure = exception;
+            }
+
+            dismissed = sentry?.Dismissed ?? [];
         }
-        finally
-        {
-            var linesAfter = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
-            if (linesAfter > linesBefore) Invoke(module, "DeleteLines", linesBefore + 1, linesAfter - linesBefore);
-        }
+
+        // A compile error means the sentry had to end this Excel instance, so no further COM call
+        // can succeed and there is nothing left to tidy up inside it.
+        var compileError = dismissed.FirstOrDefault(dialog => dialog.Kind == ModalDialogKind.VbaCompileError);
+        if (compileError is not null) throw new MacroCompilationException(compileError.Message);
+
+        var linesAfter = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
+        if (linesAfter > linesBefore) Invoke(module, "DeleteLines", linesBefore + 1, linesAfter - linesBefore);
 
         // Saving a workbook that still carried the generated helper would hand the user a macro
         // project they did not write, so an incomplete removal fails the task instead.
@@ -339,7 +375,25 @@ public sealed partial class ExcelWorkbookRuntime
             throw new InvalidOperationException("The temporary run helper could not be removed from the module.");
         }
 
+        // An answered dialog explains the failure far better than the COM error Excel then returns,
+        // so it wins over both the exception and the wrapper's own result.
+        if (dismissed.Count > 0) return DescribeDismissedDialogs(dismissed);
+        if (runFailure is not null) ExceptionDispatchInfo.Capture(runFailure).Throw();
+
         return InterpretRunResult(raw);
+    }
+
+    private static MacroRunResult DescribeDismissedDialogs(IReadOnlyList<DismissedDialog> dismissed)
+    {
+        var first = dismissed[0];
+        var detail = first.Kind switch
+        {
+            ModalDialogKind.VbaCompileError => $"The macro did not compile, so it was not run: {first.Message}",
+            ModalDialogKind.VbaRuntimeError => $"The macro stopped and was ended: {first.Message}",
+            _ => $"The macro displayed a message box, which was acknowledged so the task could finish: {first.Message}"
+        };
+
+        return new MacroRunResult(false, dismissed.Count == 1 ? detail : $"{detail} ({dismissed.Count} dialogs were answered.)");
     }
 
     private static MacroRunResult InterpretRunResult(string? raw)
@@ -383,6 +437,12 @@ public sealed partial class ExcelWorkbookRuntime
         "End Function");
 
     private readonly record struct MacroRunResult(bool Ok, string Detail);
+
+    /// <summary>
+    /// The replacement could not be compiled, so it never ran and the owned Excel instance had to be
+    /// ended to release the blocked call. Nothing was saved when this is thrown.
+    /// </summary>
+    private sealed class MacroCompilationException(string message) : Exception(message);
 
     private static bool VerifySavedMacroProcedure(string path, NormalizedEditMacroProcedureOperation operation, string expectedHash, IExcelWorkbookRuntimeObserver observer, out TaskCheck check)
     {
