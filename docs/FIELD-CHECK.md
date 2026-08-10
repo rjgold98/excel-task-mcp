@@ -38,7 +38,29 @@ choose where reports land. The default output is
 `Desktop\ExcelTask-FieldCheck`. The exit code is `0` when every operation
 completed and nothing was stranded, `1` otherwise.
 
-Two files are written. Send both back.
+Three files are written, and the third is printed to the console as well.
+
+## Getting the results back
+
+A managed computer often cannot send a file anywhere, so the check ends by
+printing a **digest**: about ten dense lines carrying the Excel build, the VBA
+trust values, both servers' tool-surface sizes, each operation's status and
+elapsed time, and the leak count. It is deliberately short enough to retype or
+photograph, and it is enough to decide what to do next.
+
+```text
+----- EXCELTASK FIELD DIGEST -----
+excel=16.0.20228 vbom=1 vbawarn=1
+self  v0.6.1 tools=1 bytes=7164
+other tools=234 bytes=64512 ratio=9.0x
+CopyExhibit (Plan)         Planned      3.0s L0
+...
+leaked=0 result=PASS
+----- END DIGEST -----
+```
+
+Send the digest first. The full Markdown and JSON reports stay on disk and are
+worth relaying only if something failed and the detail is needed.
 
 What it records:
 

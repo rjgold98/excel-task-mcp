@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.1 - 2026-08-10
+
+- `--field-check` now prints and writes a compact digest: about ten dense lines
+  carrying the Excel build, VBA trust values, both servers' tool-surface sizes,
+  each operation's status and elapsed time, and the leak count. A managed computer
+  often cannot move a file off itself, so the numbers that decide what to do next
+  have to be short enough to retype or photograph.
+- Fixed the environment probe overwriting a good Excel version with an error
+  message. Enumerating COM add-ins can fail on its own, and that failure was
+  discarding the version alongside it. The failure is now recorded separately.
+- Fixed COM add-in enumeration. Office exposes `COMAddIns.Item` as a method rather
+  than a parameterized property, so binding it as a property lost the whole list -
+  the same trap that broke the VBA object model in 0.4.0.
+
 ## 0.6.0 - 2026-08-10
 
 - A VBA modal dialog no longer stalls a macro run. `RunAfterEdit` now calls the

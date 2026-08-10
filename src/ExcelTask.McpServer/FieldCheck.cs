@@ -305,7 +305,10 @@ internal static class FieldCheck
                     var count = Convert.ToInt32(comAddins.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, comAddins, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
                     for (var index = 1; index <= count; index++)
                     {
-                        var addin = comAddins.GetType().InvokeMember("Item", BindingFlags.GetProperty, null, comAddins, [index], CultureInfo.InvariantCulture);
+                        // Office exposes COMAddIns.Item as a method, unlike Excel's own collections
+                        // where Item is a parameterized property. Binding it as a property raises
+                        // DISP_E_MEMBERNOTFOUND and costs the whole add-in list.
+                        var addin = comAddins.GetType().InvokeMember("Item", BindingFlags.InvokeMethod, null, comAddins, [index], CultureInfo.InvariantCulture);
                         if (addin is null) continue;
                         if (Convert.ToBoolean(addin.GetType().InvokeMember("Connect", BindingFlags.GetProperty, null, addin, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture))
                         {
@@ -326,7 +329,10 @@ internal static class FieldCheck
         }
         catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or NotSupportedException)
         {
-            environment["excelVersion"] = $"COM probe failed: {exception.Message.ReplaceLineEndings(" ").Trim()}";
+            // Recorded alongside whatever was already read rather than over it. Enumerating add-ins
+            // can fail on its own, and losing a good Excel version to that would be a poor trade.
+            environment["excelProbeError"] = exception.Message.ReplaceLineEndings(" ").Trim();
+            environment.TryAdd("excelVersion", "unavailable");
         }
 
         return environment;
@@ -400,20 +406,84 @@ internal static class FieldCheck
         foreach (var operation in operations) markdown.AppendLine(CultureInfo.InvariantCulture, $"- **{operation.Label}**: {operation.Checks}");
         File.WriteAllText(markdownPath, markdown.ToString(), Encoding.UTF8);
 
+        var failed = operations.Count(operation => operation.Status is not ("Completed" or "Planned"));
+        var passed = failed == 0 && leaked == 0 && operations.Count > 0;
+        var digestPath = Path.Combine(outputDirectory, $"exceltask-digest-{stamp}.txt");
+        var digest = BuildDigest(environment, surfaces, operations, leaked, passed);
+        File.WriteAllText(digestPath, digest, Encoding.UTF8);
+
         Console.WriteLine();
         Write("Report written:");
         Write("  " + markdownPath);
         Write("  " + jsonPath);
+        Write("  " + digestPath);
+        Console.WriteLine();
+        // Printed as well as written because a managed computer often cannot move a file off itself.
+        // Everything needed to decide what to do next is here, short enough to retype or photograph.
+        Write(digest);
 
-        var failed = operations.Count(operation => operation.Status is not ("Completed" or "Planned"));
-        if (failed > 0 || leaked > 0 || operations.Count == 0)
+        if (!passed)
         {
-            Write("Some operations did not complete, or an Excel process was left behind. Send both files back.");
+            Write("Some operations did not complete, or an Excel process was left behind.");
             return 1;
         }
 
         Write("All operations completed and no Excel process was left behind.");
         return 0;
+    }
+
+    /// <summary>A dense, transcribable summary for machines that cannot send a file anywhere.</summary>
+    private static string BuildDigest(
+        Dictionary<string, string> environment,
+        List<ToolSurface> surfaces,
+        List<OperationResult> operations,
+        int leaked,
+        bool passed)
+    {
+        // Every value is length-capped: the digest is only useful if it stays transcribable, and an
+        // unbounded probe error would otherwise swallow the line it appears on.
+        static string Get(Dictionary<string, string> source, string key)
+        {
+            var value = source.GetValueOrDefault(key, "?");
+            return value.Length <= 24 ? value : value[..24];
+        }
+
+        var digest = new StringBuilder()
+            .AppendLine("----- EXCELTASK FIELD DIGEST -----")
+            .AppendLine(CultureInfo.InvariantCulture,
+                $"excel={Get(environment, "excelVersion")}.{Get(environment, "excelBuild")} vbom={Get(environment, "accessVBOM")} vbawarn={Get(environment, "vbaWarnings")}");
+        if (environment.ContainsKey("excelProbeError")) digest.AppendLine("NOTE excel probe partly failed, see report");
+
+        var mine = surfaces.FirstOrDefault(surface => surface.Error is null);
+        if (mine is null)
+        {
+            digest.AppendLine("tools self=FAILED");
+        }
+        else
+        {
+            digest.AppendLine(CultureInfo.InvariantCulture,
+                $"self  v{mine.ServerVersion} tools={mine.ToolCount} bytes={mine.ToolListBytes}");
+            var other = surfaces.Skip(1).FirstOrDefault();
+            digest.AppendLine(other switch
+            {
+                null => "other none",
+                { Error: not null } => "other FAILED",
+                _ => string.Create(CultureInfo.InvariantCulture,
+                    $"other tools={other.ToolCount} bytes={other.ToolListBytes} ratio={(mine.ToolListBytes > 0 ? Math.Round((double)other.ToolListBytes / mine.ToolListBytes, 1) : 0)}x")
+            });
+        }
+
+        foreach (var operation in operations)
+        {
+            var label = operation.Label.Length <= 26 ? operation.Label : operation.Label[..26];
+            digest.AppendLine(CultureInfo.InvariantCulture,
+                $"{label,-26} {operation.Status,-16} {operation.ElapsedSeconds,6:F1}s L{operation.LeakedExcel}");
+        }
+
+        return digest
+            .AppendLine(CultureInfo.InvariantCulture, $"leaked={leaked} result={(passed ? "PASS" : "FAIL")}")
+            .AppendLine("----- END DIGEST -----")
+            .ToString();
     }
 
     private static void Write(string message) => Console.WriteLine(message);
