@@ -1,0 +1,186 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Globalization;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Runtime.Versioning;
+using System.Security.Cryptography;
+using System.Text;
+using ExcelTask.Core;
+
+namespace ExcelTask.Excel;
+internal static class WorkbookRuntimeHelpers
+{
+    public const int AutomationSecurityLow = 1;
+    public const int AutomationSecurityForceDisable = 3;
+
+    private static readonly HashSet<string> SupportedWorkbookExtensions = new(StringComparer.OrdinalIgnoreCase) { ".xlsx", ".xlsm" };
+
+    public static string NormalizePath(string path) => Path.GetFullPath(path ?? throw new ArgumentNullException(nameof(path)));
+
+    public static bool PathsEqual(string left, string right) => string.Equals(
+        NormalizePath(left).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+        NormalizePath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+        StringComparison.OrdinalIgnoreCase);
+
+    public static bool CanOpenExclusively(string path)
+    {
+        try
+        {
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    public static void EnsureReadableWorkbook(string path, string description)
+    {
+        if (!SupportedWorkbookExtensions.Contains(Path.GetExtension(path)))
+        {
+            throw new InvalidOperationException($"{description} must be an .xlsx or .xlsm file.");
+        }
+
+        if (!File.Exists(path)) throw new InvalidOperationException($"{description} does not exist.");
+    }
+
+    public static void EnsureWritableCopyOutput(string? outputPath)
+    {
+        if (string.IsNullOrWhiteSpace(outputPath)) throw new InvalidOperationException("Copy output path is required.");
+        var normalized = NormalizePath(outputPath);
+        if (!SupportedWorkbookExtensions.Contains(Path.GetExtension(normalized)))
+        {
+            throw new InvalidOperationException("Copy output must be an .xlsx or .xlsm file.");
+        }
+
+        var parent = Directory.GetParent(normalized)?.FullName;
+        if (parent is null || !Directory.Exists(parent)) throw new InvalidOperationException("Copy output directory does not exist.");
+        if ((File.GetAttributes(parent) & FileAttributes.ReadOnly) != 0)
+        {
+            throw new InvalidOperationException("Copy output directory is read-only.");
+        }
+
+        if (File.Exists(normalized) && !CanOpenExclusively(normalized))
+        {
+            throw new InvalidOperationException("Existing copy output is locked.");
+        }
+    }
+
+    public static string CreateStagingPath(string finalPath, string taskId)
+    {
+        var normalized = NormalizePath(finalPath);
+        var directory = Path.GetDirectoryName(normalized) ?? throw new InvalidOperationException("Copy output directory is required.");
+        var extension = Path.GetExtension(normalized);
+        var name = Path.GetFileNameWithoutExtension(normalized);
+        if (!IsSafeTaskId(taskId))
+        {
+            throw new InvalidOperationException("Task identity cannot be used for staging.");
+        }
+
+        return Path.Combine(directory, $".{name}.excel-task-{taskId}-{Guid.NewGuid():N}{extension}");
+    }
+
+    public static bool IsSafeTaskId(string? taskId) => taskId is { Length: > 0 and <= 128 } &&
+        taskId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
+
+    public static void PromoteStaging(string stagingPath, string finalPath, bool overwrite)
+    {
+        File.Move(stagingPath, finalPath, overwrite);
+    }
+
+    public static bool TryDeleteStaging(string stagingPath)
+    {
+        try
+        {
+            if (File.Exists(stagingPath)) File.Delete(stagingPath);
+            return !File.Exists(stagingPath);
+        }
+        catch (IOException) { return false; }
+        catch (UnauthorizedAccessException) { return false; }
+    }
+
+    public static FormulaRangeBounds GetBounds(FormulaRepairRange range)
+    {
+        ArgumentNullException.ThrowIfNull(range);
+        var start = ParseCell(range.StartCell);
+        var end = ParseCell(range.EndCell);
+        if (start.Row > end.Row || start.Column > end.Column) throw new InvalidOperationException("Formula repair range is not rectangular.");
+        return new FormulaRangeBounds(start.Row, start.Column, end.Row, end.Column);
+    }
+
+    public static FormulaGridCell[,] CreateFormulaGrid(object value, int rowCount, int columnCount)
+    {
+        var grid = new FormulaGridCell[rowCount, columnCount];
+        for (var row = 0; row < rowCount; row++)
+        {
+            for (var column = 0; column < columnCount; column++)
+            {
+                var cellValue = value is Array values ? values.GetValue(row + values.GetLowerBound(0), column + values.GetLowerBound(1)) : value;
+                grid[row, column] = cellValue switch
+                {
+                    null => FormulaGridCell.Blank,
+                    string { Length: 0 } => FormulaGridCell.Blank,
+                    string formula when formula.StartsWith('=') => FormulaGridCell.Formula(formula),
+                    _ => FormulaGridCell.Constant
+                };
+            }
+        }
+
+        return grid;
+    }
+
+    public static string ToA1Address(int row, int column)
+    {
+        if (row is < 1 or > 1_048_576 || column is < 1 or > 16_384)
+        {
+            throw new ArgumentOutOfRangeException(nameof(row));
+        }
+
+        Span<char> letters = stackalloc char[3];
+        var index = letters.Length;
+        var remaining = column;
+        while (remaining > 0)
+        {
+            remaining--;
+            letters[--index] = (char)('A' + (remaining % 26));
+            remaining /= 26;
+        }
+
+        return new string(letters[index..]) + row.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private static CellAddress ParseCell(string text)
+    {
+        var index = 0;
+        var column = 0;
+        while (index < text.Length && char.IsLetter(text[index]))
+        {
+            column = checked((column * 26) + char.ToUpperInvariant(text[index]) - 'A' + 1);
+            index++;
+        }
+
+        if (index == 0 || !int.TryParse(text[index..], CultureInfo.InvariantCulture, out var row) ||
+            row is < 1 or > 1_048_576 || column is < 1 or > 16_384)
+        {
+            throw new InvalidOperationException("Formula repair range contains an invalid cell address.");
+        }
+
+        return new CellAddress(row, column);
+    }
+
+    private sealed record CellAddress(int Row, int Column);
+}
+
+internal sealed record FormulaRangeBounds(int StartRow, int StartColumn, int EndRow, int EndColumn)
+{
+    public int RowCount => EndRow - StartRow + 1;
+
+    public int ColumnCount => EndColumn - StartColumn + 1;
+}

@@ -192,6 +192,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
         var target = Path.Combine(directory, "macro-target.xlsm");
         var output = Path.Combine(directory, "macro-output.xlsm");
         const string component = "SafeModule";
@@ -232,7 +233,12 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
+            // Editing VBA materializes the VBE, which is the most likely way this workflow could
+            // strand an Excel process, so the macro case asserts cleanup explicitly.
+            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            Assert.Empty(leaked);
         }
     }
 

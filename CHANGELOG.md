@@ -23,6 +23,12 @@
   Oversized source is still omitted rather than truncated.
 - Verified through the real one-tool MCP path against desktop Excel, including
   plan, hash-guarded replacement, post-edit run, save/reopen, and process cleanup.
+- Split the Excel runtime into one file per type plus focused partials for the
+  formula and session areas. This is a move-only change: the set of code lines is
+  unchanged, and the same tests pass before and after.
+- Added an explicit owned-process cleanup assertion to the desktop macro test,
+  because editing VBA materializes the VBE and that is the most likely way this
+  workflow could strand an Excel process.
 
 ## 0.3.0 - 2026-08-09
 

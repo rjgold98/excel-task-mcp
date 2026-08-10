@@ -1,0 +1,266 @@
+using System.Globalization;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using ExcelTask.Core;
+
+namespace ExcelTask.Excel;
+
+public sealed partial class ExcelWorkbookRuntime
+{
+    private static void AddStagingCleanupCheck(string? stagingPath, List<TaskCheck> checks)
+    {
+        if (stagingPath is not null && !WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath))
+        {
+            checks.Add(new TaskCheck("staging-cleanup", false, "A staging workbook could not be deleted; inspect the output directory before retrying."));
+        }
+    }
+
+    private static bool NeedsReferenceWorkbook(NormalizedExcelTaskRequest request) =>
+        request.Operation.Kind == ExcelOperationKind.CopyExhibit;
+
+    private static WorksheetCopyPreflight PreflightWorksheetCopy(ExcelSession session, string referenceSheetName, string newSheetName)
+    {
+        using var references = new ComReferenceScope();
+        try
+        {
+            var referenceSheets = references.Add(Get(session.ReferenceWorkbook, "Worksheets"));
+            var targetSheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+            var referenceExists = WorksheetExists(referenceSheets, referenceSheetName, references);
+            var destinationExists = WorksheetExists(targetSheets, newSheetName, references);
+            var checks = new List<TaskCheck>
+            {
+                new("reference-worksheet", referenceExists, referenceExists ? "The requested reference worksheet is available." : "The requested reference worksheet is unavailable."),
+                new("destination-worksheet", !destinationExists, destinationExists ? "The destination worksheet name is already in use." : "The destination worksheet name is available.")
+            };
+            return new WorksheetCopyPreflight(referenceExists && !destinationExists, checks);
+        }
+        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
+        {
+            return new WorksheetCopyPreflight(false, [new TaskCheck("worksheet-preflight", false, "Workbook worksheet feasibility could not be read.")]);
+        }
+    }
+
+    private static WorksheetCopyPreflight PreflightWorksheetExists(ExcelSession session, string worksheetName)
+    {
+        using var references = new ComReferenceScope();
+        try
+        {
+            var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+            var exists = WorksheetExists(sheets, worksheetName, references);
+            return new WorksheetCopyPreflight(exists,
+                [new TaskCheck("target-worksheet", exists,
+                    exists ? "The requested target worksheet is available." : "The requested target worksheet is unavailable.")]);
+        }
+        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
+        {
+            return new WorksheetCopyPreflight(false, [new TaskCheck("target-worksheet", false, "Target worksheet feasibility could not be read.")]);
+        }
+    }
+
+    private static bool WorksheetExists(object worksheets, string name, ComReferenceScope references)
+    {
+        var count = Convert.ToInt32(Get(worksheets, "Count"), CultureInfo.InvariantCulture);
+        for (var index = 1; index <= count; index++)
+        {
+            var worksheet = references.Add(Get(worksheets, "Item", index));
+            var worksheetName = Get(worksheet, "Name") as string;
+            if (string.Equals(worksheetName, name, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+
+        return false;
+    }
+
+    private static void CopyReferenceWorksheet(ExcelSession session, string referenceSheetName, string newSheetName, Action<string> updatePhase)
+    {
+        using var references = new ComReferenceScope();
+        updatePhase("worksheet-copy-reference-sheets");
+        var referenceSheets = references.Add(Get(session.ReferenceWorkbook, "Worksheets"));
+        updatePhase("worksheet-copy-reference-sheet");
+        var referenceSheet = references.Add(Get(referenceSheets, "Item", referenceSheetName));
+        updatePhase("worksheet-copy-target-sheets");
+        var targetSheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var count = Convert.ToInt32(Get(targetSheets, "Count"), CultureInfo.InvariantCulture);
+        updatePhase("worksheet-copy-target-anchor");
+        var afterSheet = references.Add(Get(targetSheets, "Item", count));
+        updatePhase("worksheet-copy-copy");
+        Invoke(referenceSheet, "Copy", Type.Missing, afterSheet);
+        updatePhase("worksheet-copy-copied-sheet");
+        var copiedSheet = references.Add(Get(targetSheets, "Item", count + 1));
+        updatePhase("worksheet-copy-rename");
+        Set(copiedSheet, "Name", newSheetName);
+    }
+
+    private static FormulaExecutionPlan AnalyzeFormulaPlan(ExcelSession session, NormalizedExcelOperation operation) => operation.Kind switch
+    {
+        ExcelOperationKind.CopyExhibit => AnalyzeFormulaRepairs(
+            session.ReferenceWorkbook,
+            operation.CopyExhibit!.ReferenceWorksheet,
+            operation.CopyExhibit.RepairRanges,
+            operation.Kind,
+            operation.CopyExhibit.NewWorksheetName),
+        ExcelOperationKind.RepairExistingWorksheet => AnalyzeFormulaRepairs(
+            session.TargetWorkbook,
+            operation.RepairExistingWorksheet!.WorksheetName,
+            operation.RepairExistingWorksheet.Ranges,
+            operation.Kind,
+            operation.RepairExistingWorksheet.WorksheetName),
+        ExcelOperationKind.ExtendFormulaSeries => AnalyzeFormulaExtension(session.TargetWorkbook, operation.ExtendFormulaSeries!),
+        _ => throw new InvalidOperationException("The requested operation kind is unsupported.")
+    };
+
+    private static FormulaExecutionPlan AnalyzeFormulaRepairs(
+        object workbook,
+        string sourceWorksheetName,
+        IReadOnlyList<FormulaRepairRange> ranges,
+        ExcelOperationKind kind,
+        string targetWorksheetName)
+    {
+        using var references = new ComReferenceScope();
+        var worksheetCollection = references.Add(Get(workbook, "Worksheets"));
+        var worksheet = references.Add(Get(worksheetCollection, "Item", sourceWorksheetName));
+        var repairs = new List<ExpectedFormula>();
+        var rangeResults = new List<RepairRangeResult>();
+
+        foreach (var requestedRange in ranges)
+        {
+            var bounds = WorkbookRuntimeHelpers.GetBounds(requestedRange);
+            var range = references.Add(Get(worksheet, "Range", requestedRange.ToString()));
+            var formulaGrid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"), bounds.RowCount, bounds.ColumnCount);
+            var inferred = FormulaPatternAnalyzer.InferRepairs(formulaGrid);
+            rangeResults.Add(new RepairRangeResult(requestedRange, inferred.Count));
+            foreach (var repair in inferred)
+            {
+                repairs.Add(new ExpectedFormula(bounds.StartRow + repair.RowIndex, bounds.StartColumn + repair.ColumnIndex, repair.FormulaR1C1));
+            }
+        }
+
+        return FormulaExecutionPlan.Create(kind, targetWorksheetName, repairs, rangeResults);
+    }
+
+    private static FormulaExecutionPlan AnalyzeFormulaExtension(object workbook, NormalizedExtendFormulaSeriesOperation task)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(workbook, "Worksheets"));
+        var sheet = references.Add(Get(sheets, "Item", task.WorksheetName));
+        var evidence = WorkbookRuntimeHelpers.GetBounds(task.EvidenceRange);
+        var destination = WorkbookRuntimeHelpers.GetBounds(task.DestinationRange);
+        var combinedAddress = $"{WorkbookRuntimeHelpers.ToA1Address(Math.Min(evidence.StartRow, destination.StartRow), Math.Min(evidence.StartColumn, destination.StartColumn))}:{WorkbookRuntimeHelpers.ToA1Address(Math.Max(evidence.EndRow, destination.EndRow), Math.Max(evidence.EndColumn, destination.EndColumn))}";
+        var range = references.Add(Get(sheet, "Range", combinedAddress));
+        var grid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"),
+            destination.EndRow - evidence.StartRow + 1,
+            destination.EndColumn - evidence.StartColumn + 1);
+        var periods = task.Direction == FormulaExtensionDirection.Right
+            ? destination.EndColumn - destination.StartColumn + 1
+            : destination.EndRow - destination.StartRow + 1;
+        var planned = FormulaMutationPlanner.Plan(grid, task.Direction, periods);
+        var repairs = planned.Mutations.Select(m => new ExpectedFormula(
+            evidence.StartRow + m.RowIndex, evidence.StartColumn + m.ColumnIndex, m.FormulaR1C1)).ToList();
+        return FormulaExecutionPlan.Create(ExcelOperationKind.ExtendFormulaSeries, task.WorksheetName, repairs,
+            [new RepairRangeResult(task.DestinationRange, repairs.Count)]);
+    }
+
+    private static void ApplyFormulaWrites(ExcelSession session, FormulaExecutionPlan plan, Action markMutationAttempted)
+    {
+        if (plan.Repairs.Count == 0) return;
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Get(sheets, "Item", plan.WorksheetName));
+        foreach (var group in plan.Repairs.GroupBy(repair => repair.FormulaR1C1, StringComparer.Ordinal))
+        {
+            foreach (var batch in group.Chunk(64))
+            {
+                var address = string.Join(",", batch.Select(repair => WorkbookRuntimeHelpers.ToA1Address(repair.Row, repair.Column)));
+                var target = references.Add(Get(sheet, "Range", address));
+                markMutationAttempted();
+                Set(target, "FormulaR1C1", group.Key);
+            }
+        }
+    }
+
+    private static bool FormulaPlansEqual(FormulaExecutionPlan left, FormulaExecutionPlan right) =>
+        left.Kind == right.Kind &&
+        string.Equals(left.WorksheetName, right.WorksheetName, StringComparison.Ordinal) &&
+        left.Fingerprint == right.Fingerprint &&
+        left.Repairs.SequenceEqual(right.Repairs) &&
+        left.RangeResults.SequenceEqual(right.RangeResults);
+
+    private static TaskChange[] CreateFormulaChanges(FormulaExecutionPlan plan, bool planning)
+    {
+        var kind = plan.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair";
+        var verb = planning ? "Planned" : "Applied";
+        return plan.RangeResults.Select(result => new TaskChange(
+            kind,
+            $"{plan.WorksheetName}!{result.Range}",
+            $"{verb} {result.RepairCount} formula changes.")).ToArray();
+    }
+
+    private static bool VerifySavedWorkbook(
+        string path,
+        string worksheetName,
+        IReadOnlyList<ExpectedFormula> expectedRepairs,
+        IExcelWorkbookRuntimeObserver observer,
+        out TaskCheck check)
+    {
+        ExcelSession? verification = null;
+        var contentVerified = false;
+        check = new TaskCheck("reopen-verification", false, "Saved workbook verification did not complete.");
+        try
+        {
+            verification = ExcelSession.OpenForVerification(path, observer);
+            using var references = new ComReferenceScope();
+            var sheets = references.Add(Get(verification.TargetWorkbook, "Worksheets"));
+            var sheet = references.Add(Get(sheets, "Item", worksheetName));
+            foreach (var expected in expectedRepairs)
+            {
+                var cell = references.Add(Get(sheet, "Cells", expected.Row, expected.Column));
+                var actual = Get(cell, "FormulaR1C1") as string;
+                if (!string.Equals(actual, expected.FormulaR1C1, StringComparison.Ordinal))
+                {
+                    check = new TaskCheck("reopen-verification", false, "A repaired formula was not present after reopening the saved workbook.");
+                    return false;
+                }
+            }
+
+            contentVerified = true;
+            check = new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas.");
+        }
+        finally
+        {
+            if (verification is not null && !verification.Close())
+            {
+                check = new TaskCheck("verification-process-exit", false, "The owned verification Excel process did not exit.");
+                contentVerified = false;
+            }
+        }
+
+        return contentVerified;
+    }
+
+    private sealed record ExpectedFormula(int Row, int Column, string FormulaR1C1);
+
+    private sealed record RepairRangeResult(FormulaRepairRange Range, int RepairCount);
+
+    private sealed record FormulaExecutionPlan(
+        ExcelOperationKind Kind,
+        string WorksheetName,
+        IReadOnlyList<ExpectedFormula> Repairs,
+        IReadOnlyList<RepairRangeResult> RangeResults,
+        string Fingerprint)
+    {
+        public static FormulaExecutionPlan Create(ExcelOperationKind kind, string worksheetName, IReadOnlyList<ExpectedFormula> repairs, IReadOnlyList<RepairRangeResult> rangeResults)
+        {
+            var orderedRepairs = repairs.OrderBy(repair => repair.Row).ThenBy(repair => repair.Column).ToArray();
+            var orderedRanges = rangeResults.OrderBy(result => result.Range.StartCell, StringComparer.Ordinal).ThenBy(result => result.Range.EndCell, StringComparer.Ordinal).ToArray();
+            var material = new StringBuilder()
+                .Append(kind).Append('|').Append(worksheetName).Append('|');
+            foreach (var result in orderedRanges) material.Append(result.Range).Append(':').Append(result.RepairCount).Append('|');
+            foreach (var repair in orderedRepairs) material.Append(repair.Row).Append(',').Append(repair.Column).Append(':').Append(repair.FormulaR1C1).Append('|');
+            var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(material.ToString()))).ToLowerInvariant();
+            return new FormulaExecutionPlan(kind, worksheetName, Array.AsReadOnly(orderedRepairs), Array.AsReadOnly(orderedRanges), fingerprint);
+        }
+    }
+
+    private sealed record WorksheetCopyPreflight(bool IsFeasible, IReadOnlyList<TaskCheck> Checks);
+}
