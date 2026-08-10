@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added `scripts/Invoke-FieldCheck.ps1` and `docs/FIELD-CHECK.md` so the
+  work-computer gates the roadmap has always required can actually be run. It
+  reports the environment, measures the advertised tool surface against another
+  MCP server, and times each operation against disposable workbooks. It changes
+  no Excel or security setting.
+
 ## 0.4.0 - 2026-08-10
 
 - Added bounded macro editing to the existing operation union: `Plan` returns one
