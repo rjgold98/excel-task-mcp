@@ -13,6 +13,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
     private const int MaxReceiptStringLength = 96;
     private const int MaxReceiptChanges = 20;
     private const int MaxReceiptChecks = 20;
+    private const int MaxReceiptItems = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
     private const int MaxMacroMetadataLength = 96;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
@@ -33,11 +34,16 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
     {
         var receipt = BoundReceipt(await engine.RunAsync(request, cancellationToken), request.Mode == ExcelTaskMode.Plan);
         var result = CreateResult(receipt);
+        if (WithinResponseBound(result)) return result;
 
-        return JsonSerializer.SerializeToUtf8Bytes(result, ReceiptJsonOptions).Length <= MaxMcpResultBytes
-            ? result
-            : CreateResult(MinimalReceipt(receipt));
+        // The minimal receipt is measured too. Claiming details were omitted while returning an
+        // oversized response would be both untrue and useless to the caller.
+        var minimal = CreateResult(MinimalReceipt(receipt));
+        return WithinResponseBound(minimal) ? minimal : CreateResult(EmptyReceipt(receipt));
     }
+
+    private static bool WithinResponseBound(CallToolResult result) =>
+        JsonSerializer.SerializeToUtf8Bytes(result, ReceiptJsonOptions).Length <= MaxMcpResultBytes;
 
     private static CallToolResult CreateResult(ExcelTaskReceipt receipt) => new()
     {
@@ -54,7 +60,20 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Save = receipt.Save with { OutputWorkbookPath = Bound(receipt.Save.OutputWorkbookPath) },
         Retry = receipt.Retry with { Reason = Bound(receipt.Retry.Reason) },
         Confirmation = receipt.Confirmation with { Requirements = [] },
-        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeSource: false)
+        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeSource: false),
+        // The audit report is the largest field a receipt can carry, so a receipt that had to be
+        // minimized is precisely the one that must drop it. Keeping it while the summary says
+        // details were omitted would be untrue as well as oversized.
+        Audit = null
+    };
+
+    /// <summary>Last resort: status and identity only, for a receipt oversized without any detail.</summary>
+    private static ExcelTaskReceipt EmptyReceipt(ExcelTaskReceipt receipt) => MinimalReceipt(receipt) with
+    {
+        Summary = "The receipt exceeded the MCP response size bound and was reduced to its status.",
+        Save = receipt.Save with { OutputWorkbookPath = null },
+        Retry = receipt.Retry with { Reason = null },
+        MacroProcedure = null
     };
 
     private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool includeMacroSource) => receipt with
@@ -82,7 +101,24 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
                 Prompt = BoundRequired(requirement.Prompt)
             }).ToArray()
         },
-        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeMacroSource)
+        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeMacroSource),
+        Audit = BoundAudit(receipt.Audit)
+    };
+
+    /// <summary>
+    /// The audit report is the one receipt field that grows with the workbook, so the model-facing
+    /// seam bounds it like every other field rather than trusting the layers behind it.
+    /// </summary>
+    private static WorkbookAuditReceipt? BoundAudit(WorkbookAuditReceipt? audit) => audit is null ? null : audit with
+    {
+        Items = audit.Items.Take(MaxReceiptItems).Select(item => item with
+        {
+            Kind = BoundRequired(item.Kind),
+            Name = BoundRequired(item.Name),
+            Detail = BoundRequired(item.Detail),
+            DependsOn = Bound(item.DependsOn)
+        }).ToArray(),
+        Truncated = audit.Truncated || audit.Items.Count > MaxReceiptItems
     };
 
     private static string? Bound(string? value) => value is { Length: > MaxReceiptStringLength }

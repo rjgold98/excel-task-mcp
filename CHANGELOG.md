@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.8.0 - 2026-08-10
+
+Two product defects found by driving the built server against real Excel, the
+discovery gap that sent a real task to a different server, and an architectural
+pass that removes the duplication behind three of this month's defects.
+
+### Fixed - found end to end against real Excel
+
+- **A repair could be rejected with no reason depending on where it sat in the
+  sheet.** Formula writes were batched into fixed groups of 64 and joined into a
+  single `Range("B10,B20,...")` address, but Excel rejects that argument beyond
+  255 characters - so identical work succeeded near row 1 and failed near row
+  2500. Batches are now bounded by joined address length.
+- **A chunked repair could silently skip the last row of each chunk.** Inference
+  reads the neighbour on each side of a blank, and a gap on a chunk's edge had
+  its neighbour outside the range that was read - so the cell was skipped with a
+  `Completed` receipt and no warning. Evidence is now read one cell beyond the
+  request on each side while writes stay inside it. The natural chunking at round
+  thousands was the dangerous one.
+- **A catch-all failure now names its phase and fault.** Any COM fault previously
+  surfaced as "execution was rejected before changes were attempted" with the
+  reason discarded.
+
+### Added
+
+- **The audit lists what a caller needs before it can act**: macro components and
+  procedures, and every worksheet with its visibility and used range. Both close
+  discovery gaps that forced real work to a different server - `EditMacroProcedure`
+  demands names ExcelTask could not supply, and every formula operation demands a
+  worksheet name.
+- Pivot sources are classified rather than quoted, because `PivotCache.SourceData`
+  is a connection string for externally backed pivots.
+
+### Changed - measured interface work
+
+- Guardrails the engine enforced but never stated are now in the schema: the range
+  and cell caps, the `UseOpen`+`Copy` conflict, audit-never-writes, and the
+  already-open exception. Proven across two models (p = 0.0012) and end to end
+  (32% fewer calls, p = 0.0032); every failure in the study traced to a rule the
+  server rejected on but the description never mentioned.
+- Macro policy states every unmet requirement in one rejection instead of teaching
+  one rule per round trip.
+
+### Internal
+
+- One `ComAccess` module holds the late-bound rules that nine helper sets used to
+  restate. `Item` is the only member that tries both bindings, since a retried
+  write could land somewhere nobody asked for. This is the trap behind three
+  defects this month.
+- `CloseAndProve` replaces fourteen hand-written copies of close, prove exit, and
+  map failure to `Unknown` - previously nine different wordings of one check.
+- The field check's leak figure and the test fixtures now stand on the product's
+  own process identity rather than raw process ids, which are recyclable.
+- Leak assertions settle before failing and exclude harness-owned processes, so a
+  test cannot blame the product for Excel exiting asynchronously.
+
 ## 0.7.0 - 2026-08-10
 
 - Added the fifth operation, `AuditWorkbookFlows`: a read-only report of how one

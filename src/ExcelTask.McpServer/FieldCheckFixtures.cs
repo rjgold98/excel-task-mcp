@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using ExcelTask.Excel;
 
 namespace ExcelTask.McpServer;
 
@@ -16,22 +16,18 @@ internal sealed class FieldCheckFixtures
 {
     private const int XlOpenXmlWorkbookMacroEnabled = 52;
 
-    private readonly List<int> _ownedProcesses = [];
+    private readonly List<ProcessIdentity> _ownedProcesses = [];
 
-    public IReadOnlyList<int> OwnedProcesses => _ownedProcesses;
+    public IReadOnlyList<ProcessIdentity> OwnedProcesses => _ownedProcesses;
 
-    public static int[] SnapshotExcelProcesses()
-    {
-        var processes = Process.GetProcessesByName("EXCEL");
-        try
-        {
-            return [.. processes.Select(process => process.Id)];
-        }
-        finally
-        {
-            foreach (var process in processes) process.Dispose();
-        }
-    }
+    /// <summary>
+    /// Identities, not process ids. The leak figure this check exists to report is the difference
+    /// between two snapshots, and a process id alone can be recycled - the same hazard the runtime's
+    /// dialog sentry refuses to accept before acting on a process. Reusing the product's identity
+    /// means the reported number carries the same id, start time, and image path check the product
+    /// itself demands.
+    /// </summary>
+    public static HashSet<ProcessIdentity> SnapshotExcelProcesses() => OwnedExcelProcess.SnapshotExcelProcesses();
 
     public void CreateFormulaFixtures(string targetPath, string referencePath)
     {
@@ -42,7 +38,7 @@ internal sealed class FieldCheckFixtures
             // Reference first, so the target can carry an external link to it for the audit to find.
             var reference = Invoke(workbooks, "Add")!;
             var referenceSheets = Get(reference, "Worksheets");
-            var referenceSheet = Get(referenceSheets, "Item", 1);
+            var referenceSheet = Item(referenceSheets, 1);
             Set(referenceSheet, "Name", "Reference");
             Set(Get(referenceSheet, "Range", "A1"), "Formula", "=ROW()");
             Set(Get(referenceSheet, "Range", "A3"), "Formula", "=ROW()");
@@ -51,7 +47,7 @@ internal sealed class FieldCheckFixtures
 
             var target = Invoke(workbooks, "Add")!;
             var sheets = Get(target, "Worksheets");
-            var model = Get(sheets, "Item", 1);
+            var model = Item(sheets, 1);
             Set(model, "Name", "Model");
             Set(Get(model, "Range", "A1:D1"), "Formula", new object[,] { { "=1", "=2", "=3", "=4" } });
             Set(Get(model, "Range", "A2"), "Formula", "=A1*2");
@@ -112,15 +108,20 @@ internal sealed class FieldCheckFixtures
 
     public void TerminateOwnedProcesses()
     {
-        foreach (var id in _ownedProcesses)
+        foreach (var identity in _ownedProcesses)
         {
-            try
+            // Identity-checked before the kill, so a recycled id cannot redirect it at a process
+            // this check never started.
+            if (!ProcessIdentity.TryOpenMatching(identity, out var process)) continue;
+            using (process)
             {
-                using var process = Process.GetProcessById(id);
-                if (!process.HasExited) process.Kill();
+                try
+                {
+                    if (!process.HasExited) process.Kill();
+                }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception) { }
             }
-            catch (ArgumentException) { }
-            catch (InvalidOperationException) { }
         }
     }
 
@@ -133,9 +134,9 @@ internal sealed class FieldCheckFixtures
             ?? throw new InvalidOperationException("Microsoft Excel could not be started.");
         Set(application, "Visible", false);
         Set(application, "DisplayAlerts", false);
-        foreach (var id in SnapshotExcelProcesses().Where(id => !before.Contains(id)))
+        foreach (var identity in SnapshotExcelProcesses().Where(identity => !before.Contains(identity)))
         {
-            if (!_ownedProcesses.Contains(id)) _ownedProcesses.Add(id);
+            if (!_ownedProcesses.Contains(identity)) _ownedProcesses.Add(identity);
         }
 
         return application;
@@ -152,13 +153,13 @@ internal sealed class FieldCheckFixtures
         }
     }
 
-    private static object Get(object target, string member, params object?[] arguments) =>
-        target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, arguments, CultureInfo.InvariantCulture)
-        ?? throw new InvalidOperationException($"Excel did not return '{member}'.");
+    // The same late-bound rules the runtime uses, so a fixture cannot bind a member differently
+    // from the product it exists to exercise.
+    private static object Get(object target, string member, params object?[] arguments) => ComAccess.Get(target, member, arguments);
 
-    private static void Set(object target, string member, object? value) =>
-        target.GetType().InvokeMember(member, BindingFlags.SetProperty, null, target, [value], CultureInfo.InvariantCulture);
+    private static void Set(object target, string member, object? value) => ComAccess.Set(target, member, value);
 
-    private static object? Invoke(object target, string member, params object?[] arguments) =>
-        target.GetType().InvokeMember(member, BindingFlags.InvokeMethod, null, target, arguments, CultureInfo.InvariantCulture);
+    private static object? Invoke(object target, string member, params object?[] arguments) => ComAccess.Invoke(target, member, arguments);
+
+    private static object Item(object collection, object index) => ComAccess.Item(collection, index);
 }

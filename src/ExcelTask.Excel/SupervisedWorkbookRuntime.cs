@@ -318,7 +318,7 @@ internal sealed record SupervisedWorkerFrame(
     bool Fatal = false)
 {
     public bool IsWellFormed() =>
-        (Phase is null || (Phase.Length is > 0 and <= 64)) &&
+        (Phase is null || (Phase.Length is > 0 and <= WorkbookWorkerProtocol.MaxPhaseLength)) &&
         (ExcelIdentity is null || ExcelIdentity.IsExcelProcess()) &&
         !(Inspection is not null && Execution is not null) &&
         !(Fatal && (Inspection is not null || Execution is not null));
@@ -587,7 +587,10 @@ internal sealed class JsonLineWorkbookWorkerSession : IWorkbookWorkerSession
             return type switch
             {
                 "accepted" => new SupervisedWorkerFrame(Accepted: true),
-                "phase" when TryGetBoundedText(root, "phase", out var phase) => new SupervisedWorkerFrame(Phase: phase),
+                // Bounded at the same length the frame is later checked against. Parsing a longer
+                // phase and then classifying the frame malformed would turn a healthy run into
+                // Unknown over a label nobody reads.
+                "phase" when TryGetBoundedText(root, "phase", WorkbookWorkerProtocol.MaxPhaseLength, out var phase) => new SupervisedWorkerFrame(Phase: phase),
                 "owned-process" when TryGetExcelIdentity(root, out var identity) && IsAuthorizedExcelIdentity(identity!, preExistingExcel) => new SupervisedWorkerFrame(ExcelIdentity: identity),
                 "artifact-staged" when TryGetBoundedPath(root, "stagingPath", out var stagingPath) => new SupervisedWorkerFrame(StagingArtifactPath: stagingPath),
                 "result" when TryGetResult(root, operation, out var inspection, out var execution) => new SupervisedWorkerFrame(Inspection: inspection, Execution: execution),
@@ -609,12 +612,15 @@ internal sealed class JsonLineWorkbookWorkerSession : IWorkbookWorkerSession
                (frameOperation.ValueKind == JsonValueKind.String && string.Equals(frameOperation.GetString(), operation, StringComparison.Ordinal));
     }
 
-    private static bool TryGetBoundedText(JsonElement root, string property, out string? value)
+    private static bool TryGetBoundedText(JsonElement root, string property, out string? value) =>
+        TryGetBoundedText(root, property, WorkbookWorkerProtocol.MaxTextLength, out value);
+
+    private static bool TryGetBoundedText(JsonElement root, string property, int maximumLength, out string? value)
     {
         value = null;
         if (!root.TryGetProperty(property, out var text) || text.ValueKind != JsonValueKind.String) return false;
         value = text.GetString();
-        return value is { Length: > 0 and <= WorkbookWorkerProtocol.MaxTextLength };
+        return value is { Length: > 0 } && value.Length <= maximumLength;
     }
 
     private static bool TryGetBoundedPath(JsonElement root, string property, out string? value)

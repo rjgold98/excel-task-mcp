@@ -70,41 +70,34 @@ public sealed partial class ExcelWorkbookRuntime
             if (!TryGetVbaSigned(session.TargetWorkbook, out var vbaSigned))
             {
                 checks.Add(new TaskCheck("macro-procedure-access", false, "The selected macro procedure cannot be safely accessed."));
-                return CloseRejectedMacroSession(session, checks);
+                return CloseRejectedMacroSession(ref session, checks);
             }
             if (vbaSigned)
             {
                 checks.Add(new TaskCheck("vba-signature", false, "Signed VBA projects cannot be edited."));
-                return CloseRejectedMacroSession(session, checks);
+                return CloseRejectedMacroSession(ref session, checks);
             }
             if (!TryReadMacroProcedure(session.TargetWorkbook, operation.ComponentName, operation.ProcedureName, out snapshot, out var preflightCheck))
             {
                 checks.Add(preflightCheck);
-                return CloseRejectedMacroSession(session, checks);
+                return CloseRejectedMacroSession(ref session, checks);
             }
 
             checks.Add(preflightCheck);
             var currentSnapshot = snapshot!;
             if (plan.Request.Mode == ExcelTaskMode.Plan)
             {
-                var cleanupVerified = session.Close();
-                session = null;
-                if (!cleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned macro planning Excel process did not exit."));
-                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Macro plan could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
-                }
-
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
-                    "Macro procedure plan is feasible; no Excel changes were made.",
-                    Checks: checks,
-                    MacroProcedure: CreateMacroReceipt(operation, currentSnapshot, includeSource: true, runCompleted: false));
+                return ExcelSession.CloseAndProve(ref session, "macro planning", checks)
+                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
+                        "Macro procedure plan is feasible; no Excel changes were made.",
+                        Checks: checks,
+                        MacroProcedure: CreateMacroReceipt(operation, currentSnapshot, includeSource: true, runCompleted: false));
             }
 
             if (!string.Equals(operation.ExpectedProcedureSha256, currentSnapshot.Sha256, StringComparison.Ordinal))
             {
                 checks.Add(new TaskCheck("macro-hash", false, "The selected macro procedure changed before replacement; no changes were made."));
-                return CloseRejectedMacroSession(session, checks, CreateMacroReceipt(operation, currentSnapshot, includeSource: false, runCompleted: false));
+                return CloseRejectedMacroSession(ref session, checks, CreateMacroReceipt(operation, currentSnapshot, includeSource: false, runCompleted: false));
             }
 
             observer.OnPhase("macro-revalidation");
@@ -112,7 +105,7 @@ public sealed partial class ExcelWorkbookRuntime
                 !string.Equals(currentSnapshot.Sha256, revalidated!.Sha256, StringComparison.Ordinal))
             {
                 checks.Add(new TaskCheck("macro-revalidation", false, "Macro procedure evidence changed before mutation; no changes were made."));
-                return CloseRejectedMacroSession(session, checks, CreateMacroReceipt(operation, currentSnapshot, includeSource: false, runCompleted: false));
+                return CloseRejectedMacroSession(ref session, checks, CreateMacroReceipt(operation, currentSnapshot, includeSource: false, runCompleted: false));
             }
 
             observer.OnPhase("macro-replace");
@@ -144,14 +137,13 @@ public sealed partial class ExcelWorkbookRuntime
             checks.Add(new TaskCheck("save", true, "Excel completed the requested macro copy save."));
 
             observer.OnPhase("primary-cleanup");
-            if (!session.Close())
+            var saveCleanupFailure = ExcelSession.CloseAndProve(
+                ref session, "the macro save", checks, changes, CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted));
+            if (saveCleanupFailure is not null)
             {
-                session = null;
-                checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit after the macro save."));
                 AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Macro changes could not be verified after owned Excel cleanup.", changes, checks, CanRetry: false, RetryReason: "Inspect workbook state before retrying.", MacroProcedure: CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted));
+                return saveCleanupFailure with { RetryReason = "Inspect workbook state before retrying." };
             }
-            session = null;
 
             if (!WorkbookRuntimeHelpers.CanOpenExclusively(stagingPath))
             {
@@ -234,17 +226,14 @@ public sealed partial class ExcelWorkbookRuntime
         string.Equals(Path.GetExtension(request.TargetWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase) &&
         string.Equals(Path.GetExtension(request.OutputWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase);
 
-    private static WorkbookExecutionOutcome CloseRejectedMacroSession(ExcelSession session, List<TaskCheck> checks, MacroProcedureReceipt? receipt = null)
-    {
-        var cleanupVerified = session.Close();
-        if (!cleanupVerified)
-        {
-            checks.Add(new TaskCheck("owned-process-exit", false, "The owned macro preflight Excel process did not exit."));
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Macro preflight could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.", MacroProcedure: receipt);
-        }
-
-        return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Macro procedure preflight did not permit the requested operation.", Checks: checks, MacroProcedure: receipt);
-    }
+    /// <summary>
+    /// Closes a session that preflight refused, proving cleanup the same way every other exit does.
+    /// Takes the session by reference so the caller's field is nulled here rather than being left
+    /// for a later close to run against a process that is already gone.
+    /// </summary>
+    private static WorkbookExecutionOutcome CloseRejectedMacroSession(ref ExcelSession? session, List<TaskCheck> checks, MacroProcedureReceipt? receipt = null) =>
+        ExcelSession.CloseAndProve(ref session, "macro preflight", checks, macroProcedure: receipt)
+        ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Macro procedure preflight did not permit the requested operation.", Checks: checks, MacroProcedure: receipt);
 
     private static bool TryReadMacroProcedure(object workbook, string componentName, string procedureName, out MacroProcedureSnapshot? snapshot, out TaskCheck check)
     {
@@ -262,7 +251,7 @@ public sealed partial class ExcelWorkbookRuntime
 
             reason = "The requested VBA component does not exist in the workbook.";
             var components = references.Add(Get(project, "VBComponents"));
-            var component = references.Add(VbeItem(components, componentName));
+            var component = references.Add(Item(components, componentName));
 
             reason = "The requested VBA component is not a standard module; only standard modules can be inspected or edited.";
             if (Convert.ToInt32(Get(component, "Type"), CultureInfo.InvariantCulture) != VbextCtStdModule) throw new InvalidOperationException();
@@ -292,20 +281,12 @@ public sealed partial class ExcelWorkbookRuntime
 
     private static int CountLines(string source) => source.Length == 0 ? 0 : source.Count(character => character == '\n') + 1;
 
-    /// <summary>
-    /// Resolves one VBIDE collection entry. The VBA extensibility model exposes Item as a method,
-    /// unlike Excel's own collections where Item is a parameterized property, so the property
-    /// binding used elsewhere in this runtime raises DISP_E_MEMBERNOTFOUND here.
-    /// </summary>
-    private static object VbeItem(object collection, string name) =>
-        Invoke(collection, "Item", name) ?? throw new InvalidOperationException("The VBA collection entry was not returned.");
-
     private static void ReplaceMacroProcedure(object workbook, string componentName, MacroProcedureSnapshot existing, string replacementSource)
     {
         using var references = new ComReferenceScope();
         var project = references.Add(Get(workbook, "VBProject"));
         var components = references.Add(Get(project, "VBComponents"));
-        var component = references.Add(VbeItem(components, componentName));
+        var component = references.Add(Item(components, componentName));
         var module = references.Add(Get(component, "CodeModule"));
         Invoke(module, "DeleteLines", existing.StartLine, existing.LineCount);
         Invoke(module, "InsertLines", existing.StartLine, MacroProcedureText.NormalizeLineEndings(replacementSource).Replace("\n", "\r\n", StringComparison.Ordinal));
@@ -327,7 +308,7 @@ public sealed partial class ExcelWorkbookRuntime
         using var references = new ComReferenceScope();
         var project = references.Add(Get(session.TargetWorkbook, "VBProject"));
         var components = references.Add(Get(project, "VBComponents"));
-        var component = references.Add(VbeItem(components, operation.ComponentName));
+        var component = references.Add(Item(components, operation.ComponentName));
         var module = references.Add(Get(component, "CodeModule"));
 
         var shimName = CreateShimName(taskId);

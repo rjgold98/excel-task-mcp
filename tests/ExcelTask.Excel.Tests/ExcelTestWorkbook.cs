@@ -11,7 +11,7 @@ internal static class ExcelTestWorkbook
     public static void CreateFormulaTarget(string path, string range, object?[,] formulas, string? constantCell = null, object? constantValue = null) => Create(path, workbook =>
     {
         var sheets = Get(workbook, "Worksheets");
-        var sheet = Get(sheets, "Item", 1);
+        var sheet = Item(sheets, 1);
         var target = Get(sheet, "Range", range);
         Set(target, "FormulaR1C1", formulas);
         if (constantCell is not null)
@@ -28,7 +28,7 @@ internal static class ExcelTestWorkbook
     public static void CreateReference(string path) => Create(path, workbook =>
     {
         var sheets = Get(workbook, "Worksheets");
-        var sheet = Get(sheets, "Item", 1);
+        var sheet = Item(sheets, 1);
         Set(sheet, "Name", "Reference");
         var range = Get(sheet, "Range", "A1:A3");
         Set(range, "FormulaR1C1", new object?[,] { { "=ROW()" }, { null }, { "=ROW()" } });
@@ -47,7 +47,7 @@ internal static class ExcelTestWorkbook
         Create(path, workbook =>
         {
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", 1);
+            var sheet = Item(sheets, 1);
             var directory = Path.GetDirectoryName(Path.GetFullPath(referencePath));
             var file = Path.GetFileName(referencePath);
             Set(Get(sheet, "Range", "F1"), "Formula", $"='{directory}\\[{file}]Reference'!$A$1");
@@ -109,7 +109,7 @@ internal static class ExcelTestWorkbook
             finally { Release(workbooks); }
             var project = Get(workbook, "VBProject");
             var components = Get(project, "VBComponents");
-            var component = Invoke(components, "Item", componentName);
+            var component = Item(components, componentName);
             var module = Get(component, "CodeModule");
             var count = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
             var text = count == 0 ? string.Empty : (string)Get(module, "Lines", 1, count);
@@ -138,7 +138,7 @@ internal static class ExcelTestWorkbook
             var project = Get(workbook, "VBProject");
             var components = Get(project, "VBComponents");
             // VBIDE exposes Item as a method, unlike Excel's own collections.
-            var component = Invoke(components, "Item", componentName);
+            var component = Item(components, componentName);
             var module = Get(component, "CodeModule");
             // Parameterized VBIDE properties; they are not callable with InvokeMethod binding.
             var start = Convert.ToInt32(Get(module, "ProcStartLine", procedureName, 0), CultureInfo.InvariantCulture);
@@ -183,7 +183,7 @@ internal static class ExcelTestWorkbook
             try { workbook = Invoke(workbooks, "Open", path, 0, true); }
             finally { Release(workbooks); }
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", "Imported");
+            var sheet = Item(sheets, "Imported");
             var range = Get(sheet, "Range", "A1:A3");
             var formulas = Get(range, "FormulaR1C1") as Array;
             var expected = formulas is not null &&
@@ -210,7 +210,7 @@ internal static class ExcelTestWorkbook
             try { workbook = Invoke(workbooks, "Open", path, 0, true); }
             finally { Release(workbooks); }
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", 1);
+            var sheet = Item(sheets, 1);
             var target = Get(sheet, "Range", range);
             var actual = Get(target, "FormulaR1C1") as string;
             Release(target);
@@ -235,7 +235,7 @@ internal static class ExcelTestWorkbook
             try { workbook = Invoke(workbooks, "Open", path, 0, true); }
             finally { Release(workbooks); }
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", 1);
+            var sheet = Item(sheets, 1);
             var target = Get(sheet, "Range", range);
             var actual = Get(target, "Value2");
             Release(target);
@@ -263,7 +263,7 @@ internal static class ExcelTestWorkbook
             try { workbook = Invoke(workbooks, "Open", path, 0, true); }
             finally { Release(workbooks); }
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", 1);
+            var sheet = Item(sheets, 1);
             try
             {
                 foreach (var (range, expectedFormula) in expectedFormulas)
@@ -380,6 +380,7 @@ internal static class ExcelTestWorkbook
             try
             {
                 var process = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                RecordFixtureProcess(process.Identity);
                 Set(app, "Visible", false);
                 Set(app, "DisplayAlerts", false);
                 return new TestExcelApplication(app, process);
@@ -405,14 +406,78 @@ internal static class ExcelTestWorkbook
         }
     }
 
-    private static object Get(object target, string member, params object?[] arguments) => target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, arguments, CultureInfo.InvariantCulture)!;
+    private static readonly Lock FixtureProcessGate = new();
+    private static readonly HashSet<ProcessIdentity> FixtureProcesses = [];
 
-    private static void Set(object target, string member, object? value) => target.GetType().InvokeMember(member, BindingFlags.SetProperty, null, target, [value], CultureInfo.InvariantCulture);
-
-    private static object Invoke(object target, string member, params object?[] arguments) => target.GetType().InvokeMember(member, BindingFlags.InvokeMethod, null, target, arguments, CultureInfo.InvariantCulture)!;
-
-    private static void Release(object? value)
+    /// <summary>
+    /// Captures the "before" set once the process table has stopped moving.
+    ///
+    /// Excel exits asynchronously, so an instance from the previous test can still be dying when
+    /// the next one starts. Snapshotting immediately omits it from that test's baseline, and it
+    /// then surfaces as a leak attributed to a test that never created it. These tests are already
+    /// serial; this makes their accounting serial too. Two identical readings in a row mean nothing
+    /// is mid-exit, and the wait is bounded so a genuinely busy machine still proceeds.
+    /// </summary>
+    public static HashSet<ProcessIdentity> SnapshotSettledExcel()
     {
-        if (value is not null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
+        var previous = OwnedExcelProcess.SnapshotExcelProcesses();
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            Thread.Sleep(250);
+            var current = OwnedExcelProcess.SnapshotExcelProcesses();
+            if (current.SetEquals(previous)) return current;
+            previous = current;
+        }
+
+        return previous;
     }
+
+    private static void RecordFixtureProcess(ProcessIdentity identity)
+    {
+        lock (FixtureProcessGate) FixtureProcesses.Add(identity);
+    }
+
+    /// <summary>
+    /// Asserts the product left no Excel process behind.
+    ///
+    /// Two things are excluded, and only these two: processes that existed before the test, and
+    /// processes this fixture started itself. The second exclusion is the important one - a test
+    /// opens Excel several times of its own accord to verify results, and counting those as product
+    /// leaks measures the harness rather than the product. That is exactly the false positive a
+    /// field report produced when both servers appeared to strand a process on the same workflow.
+    ///
+    /// Identity, not process id: the fixture's own processes are matched on id, start time, and
+    /// image path, so a recycled id can never launder a genuine leak into an exclusion.
+    ///
+    /// A brief settle first, because Excel exits asynchronously and can linger a beat after Quit
+    /// returns. A real leak never clears, so waiting cannot hide one.
+    /// </summary>
+    public static void AssertNoLeakedExcel(ISet<ProcessIdentity> existingExcel)
+    {
+        ProcessIdentity[] leaked = [];
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            HashSet<ProcessIdentity> fixtureOwned;
+            lock (FixtureProcessGate) fixtureOwned = [.. FixtureProcesses];
+
+            leaked = [.. OwnedExcelProcess.SnapshotExcelProcesses()
+                .Where(process => !existingExcel.Contains(process) && !fixtureOwned.Contains(process))];
+            if (leaked.Length == 0) return;
+            Thread.Sleep(250);
+        }
+
+        Assert.Empty(leaked);
+    }
+
+    // The product's own late-bound rules, so a fixture cannot bind a member differently from the
+    // runtime it exists to exercise - which is how three binding defects reached a release.
+    private static object Get(object target, string member, params object?[] arguments) => ComAccess.Get(target, member, arguments);
+
+    private static void Set(object target, string member, object? value) => ComAccess.Set(target, member, value);
+
+    private static object Invoke(object target, string member, params object?[] arguments) => ComAccess.Invoke(target, member, arguments)!;
+
+    private static object Item(object collection, object index) => ComAccess.Item(collection, index);
+
+    private static void Release(object? value) => ComAccess.Release(value);
 }

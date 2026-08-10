@@ -6,6 +6,7 @@ using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
 using ExcelTask.Core;
+using ExcelTask.Excel;
 using Microsoft.Win32;
 using ModelContextProtocol.Client;
 
@@ -134,7 +135,7 @@ internal static class FieldCheck
         }
 
         var leaked = FieldCheckFixtures.SnapshotExcelProcesses()
-            .Count(id => !preExisting.Contains(id) && !fixtures.OwnedProcesses.Contains(id));
+            .Count(identity => !preExisting.Contains(identity) && !fixtures.OwnedProcesses.Contains(identity));
         return WriteReport(outputDirectory, serverPath, environment, surfaces, operations, notes, leaked);
     }
 
@@ -255,7 +256,7 @@ internal static class FieldCheck
         timer.Stop();
         await Task.Delay(700);
         var leaked = FieldCheckFixtures.SnapshotExcelProcesses()
-            .Count(id => !before.Contains(id) && !fixtures.OwnedProcesses.Contains(id));
+            .Count(identity => !before.Contains(identity) && !fixtures.OwnedProcesses.Contains(identity));
 
         operations.Add(new OperationResult(label, status, Math.Round(timer.Elapsed.TotalSeconds, 2), leaked, summary, checks, error));
         Write($"      {label,-34} {status,-16} {timer.Elapsed.TotalSeconds,6:F1}s  leaked={leaked}");
@@ -294,7 +295,7 @@ internal static class FieldCheck
             }
         }
 
-        environment["excelRunningBefore"] = FieldCheckFixtures.SnapshotExcelProcesses().Length.ToString(CultureInfo.InvariantCulture);
+        environment["excelRunningBefore"] = FieldCheckFixtures.SnapshotExcelProcesses().Count.ToString(CultureInfo.InvariantCulture);
         try
         {
             var type = Type.GetTypeFromProgID("Excel.Application", throwOnError: true)!;
@@ -308,29 +309,28 @@ internal static class FieldCheck
                 // keeps the probe's Excel alive past Quit, and the next activation then meets a
                 // half-dead instance - the likely shape of the CO_E_SERVER_EXEC_FAILURE seen on the
                 // work computer in 0.5.0.
-                var comAddins = application.GetType().InvokeMember("COMAddIns", BindingFlags.GetProperty, null, application, null, CultureInfo.InvariantCulture);
+                var comAddins = ComAccess.Get(application, "COMAddIns");
                 try
                 {
                     if (comAddins is not null)
                     {
-                        var count = Convert.ToInt32(comAddins.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, comAddins, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+                        var count = Convert.ToInt32(ComAccess.Get(comAddins, "Count"), CultureInfo.InvariantCulture);
                         for (var index = 1; index <= count; index++)
                         {
-                            // Office exposes COMAddIns.Item as a method, unlike Excel's own collections
-                            // where Item is a parameterized property. Binding it as a property raises
-                            // DISP_E_MEMBERNOTFOUND and costs the whole add-in list.
-                            var addin = comAddins.GetType().InvokeMember("Item", BindingFlags.InvokeMethod, null, comAddins, [index], CultureInfo.InvariantCulture);
-                            if (addin is null) continue;
+                            // ComAccess.Item resolves whichever binding this object model uses: Office
+                            // exposes COMAddIns.Item as a method where Excel exposes its own collections'
+                            // Item as a parameterized property.
+                            var addin = ComAccess.Item(comAddins, index);
                             try
                             {
-                                if (Convert.ToBoolean(addin.GetType().InvokeMember("Connect", BindingFlags.GetProperty, null, addin, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture))
+                                if (Convert.ToBoolean(ComAccess.Get(addin, "Connect"), CultureInfo.InvariantCulture))
                                 {
                                     addins.Add(Read(addin, "ProgId"));
                                 }
                             }
                             finally
                             {
-                                if (Marshal.IsComObject(addin)) Marshal.FinalReleaseComObject(addin);
+                                ComAccess.Release(addin);
                             }
                         }
                     }

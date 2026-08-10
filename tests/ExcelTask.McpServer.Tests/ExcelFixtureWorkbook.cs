@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using ExcelTask.Excel;
 
 namespace ExcelTask.McpServer.Tests;
 
@@ -14,7 +15,7 @@ internal static class ExcelFixtureWorkbook
         Create(path, ownedProcesses, workbook =>
         {
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", 1);
+            var sheet = Item(sheets, 1);
             Set(sheet, "Name", "Reference");
             var range = Get(sheet, "Range", "A1:A3");
             Set(range, "FormulaR1C1", new object?[,] { { "=ROW()" }, { null }, { "=ROW()" } });
@@ -65,7 +66,7 @@ internal static class ExcelFixtureWorkbook
             var components = Get(project, "VBComponents");
             // VBIDE exposes Item as a method and its line accessors as parameterized properties,
             // the opposite of Excel's own collections.
-            var component = Invoke(components, "Item", componentName);
+            var component = Item(components, componentName);
             var module = Get(component, "CodeModule");
             var start = Convert.ToInt32(Get(module, "ProcStartLine", procedureName, 0), CultureInfo.InvariantCulture);
             var count = Convert.ToInt32(Get(module, "ProcCountLines", procedureName, 0), CultureInfo.InvariantCulture);
@@ -94,7 +95,7 @@ internal static class ExcelFixtureWorkbook
             finally { Release(workbooks); }
 
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Get(sheets, "Item", "Imported");
+            var sheet = Item(sheets, "Imported");
             var range = Get(sheet, "Range", "A1:A3");
             var formulas = Get(range, "FormulaR1C1") as Array;
             var expected = formulas is not null &&
@@ -130,19 +131,17 @@ internal static class ExcelFixtureWorkbook
         }
     }
 
-    private static object Get(object target, string member, params object?[] arguments) =>
-        target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, arguments, CultureInfo.InvariantCulture)!;
+    // The product's own late-bound rules, so a fixture cannot bind a member differently from the
+    // runtime it exists to exercise.
+    private static object Get(object target, string member, params object?[] arguments) => ComAccess.Get(target, member, arguments);
 
-    private static void Set(object target, string member, object? value) =>
-        target.GetType().InvokeMember(member, BindingFlags.SetProperty, null, target, [value], CultureInfo.InvariantCulture);
+    private static void Set(object target, string member, object? value) => ComAccess.Set(target, member, value);
 
-    private static object Invoke(object target, string member, params object?[] arguments) =>
-        target.GetType().InvokeMember(member, BindingFlags.InvokeMethod, null, target, arguments, CultureInfo.InvariantCulture)!;
+    private static object Invoke(object target, string member, params object?[] arguments) => ComAccess.Invoke(target, member, arguments)!;
 
-    private static void Release(object? value)
-    {
-        if (value is not null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
-    }
+    private static object Item(object collection, object index) => ComAccess.Item(collection, index);
+
+    private static void Release(object? value) => ComAccess.Release(value);
 
     private sealed class FixtureExcelApplication : IDisposable
     {
@@ -203,58 +202,29 @@ internal static class ExcelFixtureWorkbook
     }
 }
 
-internal sealed record ExcelProcessIdentity(int ProcessId, DateTime StartTimeUtc, string ExecutablePath)
+/// <summary>
+/// Process identity for fixtures, standing on the product's own <see cref="ProcessIdentity"/> rather
+/// than a second implementation of it. This was a near-verbatim copy of the product's triple-check -
+/// process id, start time, and image path - which meant a test could prove a weaker fact about
+/// process ownership than the runtime it was testing.
+/// </summary>
+internal sealed record ExcelProcessIdentity(ProcessIdentity Identity)
 {
-    public static HashSet<ExcelProcessIdentity> SnapshotExcelProcesses()
-    {
-        var identities = new HashSet<ExcelProcessIdentity>();
-        foreach (var process in Process.GetProcessesByName("EXCEL"))
-        {
-            using (process)
-            {
-                try { identities.Add(Capture(process.Id)); }
-                catch (InvalidOperationException) { }
-                catch (System.ComponentModel.Win32Exception) { }
-            }
-        }
-
-        return identities;
-    }
+    public static HashSet<ExcelProcessIdentity> SnapshotExcelProcesses() =>
+        [.. OwnedExcelProcess.SnapshotExcelProcesses().Select(identity => new ExcelProcessIdentity(identity))];
 
     public static ExcelProcessIdentity CaptureApplication(object application)
     {
-        var hwndValue = application.GetType().InvokeMember("Hwnd", BindingFlags.GetProperty, null, application, null, CultureInfo.InvariantCulture);
-        var hwnd = new IntPtr(Convert.ToInt64(hwndValue, CultureInfo.InvariantCulture));
+        var hwnd = new IntPtr(Convert.ToInt64(ComAccess.Get(application, "Hwnd"), CultureInfo.InvariantCulture));
         _ = GetWindowThreadProcessId(hwnd, out var processId);
         if (processId == 0) throw new InvalidOperationException("Excel fixture process identity could not be captured.");
         return Capture((int)processId);
     }
 
-    public static ExcelProcessIdentity Capture(int processId)
-    {
-        using var process = Process.GetProcessById(processId);
-        return new ExcelProcessIdentity(processId, process.StartTime.ToUniversalTime(), GetExecutablePath(process));
-    }
+    public static ExcelProcessIdentity Capture(int processId) => new(ProcessIdentity.Capture(processId));
 
-    public static bool TryOpenMatching(ExcelProcessIdentity identity, out Process process)
-    {
-        process = null!;
-        try
-        {
-            var candidate = Process.GetProcessById(identity.ProcessId);
-            if (candidate.StartTime.ToUniversalTime() != identity.StartTimeUtc ||
-                !string.Equals(GetExecutablePath(candidate), identity.ExecutablePath, StringComparison.OrdinalIgnoreCase))
-            {
-                candidate.Dispose();
-                return false;
-            }
-
-            process = candidate;
-            return true;
-        }
-        catch (ArgumentException) { return false; }
-        catch (InvalidOperationException) { return false; }
-    }
+    public static bool TryOpenMatching(ExcelProcessIdentity identity, out Process process) =>
+        ProcessIdentity.TryOpenMatching(identity.Identity, out process);
 
     public bool IsRunning => TryOpenMatching(this, out var process) && DisposeProcess(process);
 
@@ -278,9 +248,6 @@ internal sealed record ExcelProcessIdentity(int ProcessId, DateTime StartTimeUtc
         process.Dispose();
         return true;
     }
-
-    private static string GetExecutablePath(Process process) => process.MainModule?.FileName
-        ?? throw new InvalidOperationException("Excel executable path could not be captured.");
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);

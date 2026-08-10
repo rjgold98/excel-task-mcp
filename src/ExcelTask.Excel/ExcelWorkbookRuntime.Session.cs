@@ -42,6 +42,42 @@ public sealed partial class ExcelWorkbookRuntime
         public bool HasExternalTargetOpen(string targetPath) =>
             RotWorkbookLocator.HasExternalWorkbookAtPath(targetPath, GetApplicationHwnd(Application));
 
+        /// <summary>
+        /// Closes the session and turns a failure to prove owned Excel exited into the outcome the
+        /// caller must return, or null when cleanup was proven and the caller may continue.
+        ///
+        /// This exists because the close-and-prove sequence was written out fourteen times across
+        /// three operations, in nine different wordings, and every copy had to remember four
+        /// separate things: capture the result, forget the session, add the failed check, and return
+        /// Unknown as non-retryable. Forgetting any one of them silently weakens the guarantee that
+        /// no Excel process is left behind, which is the product's central reliability claim.
+        /// </summary>
+        /// <param name="session">Set to null so a later close cannot double-run against a dead process.</param>
+        /// <param name="what">Names the moment in the operation, for the failure detail only.</param>
+        public static WorkbookExecutionOutcome? CloseAndProve(
+            ref ExcelSession? session,
+            string what,
+            List<TaskCheck> checks,
+            IReadOnlyList<TaskChange>? changes = null,
+            MacroProcedureReceipt? macroProcedure = null)
+        {
+            if (session is null) return null;
+
+            var proven = session.Close();
+            session = null;
+            if (proven) return null;
+
+            checks.Add(new TaskCheck("owned-process-exit", false, $"The owned Excel process did not exit after {what}."));
+            return new WorkbookExecutionOutcome(
+                ExcelTaskStatus.Unknown,
+                $"ExcelTask could not prove owned Excel cleanup after {what}.",
+                changes,
+                checks,
+                CanRetry: false,
+                RetryReason: "Inspect the owned Excel process before retrying.",
+                MacroProcedure: macroProcedure);
+        }
+
         public static ExcelSession Open(NormalizedExcelTaskRequest request, IExcelWorkbookRuntimeObserver observer, bool readOnlyTarget = false, bool enableMacros = false)
         {
             var needsReference = NeedsReferenceWorkbook(request);

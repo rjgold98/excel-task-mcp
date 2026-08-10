@@ -260,6 +260,39 @@ public sealed class WorkbookRuntimeHelpersTests
     }
 
     [Fact]
+    public void CreateFormulaGridReadsTheOneBasedArrayExcelActuallyReturns()
+    {
+        // Excel hands back a 1-based two-dimensional array from Range.FormulaR1C1, never the 0-based
+        // one a C# literal produces. Testing only the literal shape exercises the branch Excel never
+        // takes, so the offsetting arithmetic that matters is asserted here against the real shape.
+        var values = Array.CreateInstance(typeof(object), [2, 2], [1, 1]);
+        values.SetValue("=RC[-1]", 1, 1);
+        values.SetValue(null, 1, 2);
+        values.SetValue(42, 2, 1);
+        values.SetValue(string.Empty, 2, 2);
+
+        var grid = WorkbookRuntimeHelpers.CreateFormulaGrid(values, 2, 2);
+
+        Assert.Equal(FormulaCellKind.Formula, grid[0, 0].Kind);
+        Assert.Equal(FormulaCellKind.Blank, grid[0, 1].Kind);
+        Assert.Equal(FormulaCellKind.Constant, grid[1, 0].Kind);
+        Assert.Equal(FormulaCellKind.Blank, grid[1, 1].Kind);
+    }
+
+    [Fact]
+    public void CreateFormulaGridTreatsASingleCellScalarAsTheWholeRange()
+    {
+        // A one-cell range returns the value itself rather than an array. The scalar branch was
+        // reachable only through desktop Excel until now.
+        var formula = WorkbookRuntimeHelpers.CreateFormulaGrid("=ROW()", 1, 1);
+        var blank = WorkbookRuntimeHelpers.CreateFormulaGrid(string.Empty, 1, 1);
+
+        Assert.Equal(FormulaCellKind.Formula, formula[0, 0].Kind);
+        Assert.Equal("=ROW()", formula[0, 0].FormulaR1C1);
+        Assert.Equal(FormulaCellKind.Blank, blank[0, 0].Kind);
+    }
+
+    [Fact]
     public void ToA1AddressReturnsExpectedColumnsAtBoundaries()
     {
         Assert.Equal("A1", WorkbookRuntimeHelpers.ToA1Address(1, 1));

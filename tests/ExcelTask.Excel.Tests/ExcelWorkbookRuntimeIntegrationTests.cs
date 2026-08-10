@@ -192,7 +192,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
-        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
         var target = Path.Combine(directory, "macro-target.xlsm");
         var output = Path.Combine(directory, "macro-output.xlsm");
         const string component = "SafeModule";
@@ -235,10 +235,8 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         {
             // Editing VBA materializes the VBE, which is the most likely way this workflow could
             // strand an Excel process, so the macro case asserts cleanup explicitly.
-            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
-            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-            Assert.Empty(leaked);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
 
@@ -255,7 +253,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         // Raises VBA error 9 at run time. Called directly this opens a modal "Run-time error '9'"
         // dialog inside the owned Excel instance and blocks until the watchdog kills the process.
         const string failingSource = "Public Sub WriteMarker()\n    Dim values(1 To 2) As Long\n    values(99) = 1\nEnd Sub";
-        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
 
         try
         {
@@ -293,10 +291,8 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
-            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-            Assert.Empty(leaked);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
 
@@ -313,7 +309,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         // Structurally one valid procedure, so it passes validation, but VBA cannot compile it.
         // A compile error happens before any On Error handler exists, so only the sentry can clear it.
         const string uncompilableSource = "Public Sub WriteMarker()\n    Call NoSuchProcedureExists\nEnd Sub";
-        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
 
         try
         {
@@ -349,10 +345,8 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
-            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-            Assert.Empty(leaked);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
 
@@ -375,7 +369,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
         var helper = $"\nPublic Sub Announce()\n    {call}\nEnd Sub";
         const string replacementSource = "Public Sub WriteMarker()\n    Announce\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"after\"\nEnd Sub";
-        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
 
         try
         {
@@ -412,17 +406,20 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
-            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-            Assert.Empty(leaked);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
 
     // A dialog offering a real choice - Yes/No, OK/Cancel, Retry/Cancel - is deliberately left
     // alone, so the blocked automation call never returns. Only the supervised runtime bounds that,
-    // by its deadline; this direct-runtime layer has none and would hang forever. The exclusion is
-    // therefore covered by ModalDialogSentryTests against real dialogs rather than here.
+    // by its deadline; this direct-runtime layer has none and would hang forever.
+    //
+    // That exclusion is therefore UNTESTED. Driving it needs a real modal dialog and a real blocked
+    // COM call, and any test asserting it here would hang rather than fail. The rule it protects -
+    // identifier 2 is OK on a one-button dialog but Cancel on OK/Cancel and Retry/Cancel, so a
+    // count-based match presses exactly the wrong button - is enforced only by ModalDialogSentry's
+    // own structure. Measured dialog layouts are recorded in the 0.6.0 release notes.
 
     [Fact]
     public async Task AuditReportsFlowsWithoutChangingTheWorkbookOrLeakingPaths()
@@ -431,7 +428,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         Directory.CreateDirectory(directory);
         var target = Path.Combine(directory, "audit-target.xlsx");
         var reference = Path.Combine(directory, "audit-reference.xlsx");
-        var existingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
 
         try
         {
@@ -448,6 +445,11 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             Assert.NotNull(outcome.Audit);
             Assert.True(outcome.Audit.WorkbookUnchanged);
             Assert.True(outcome.Audit.TotalFound >= 1);
+
+            // Worksheets are named so a caller can aim the formula operations, every one of which
+            // requires a worksheet name it otherwise has no way to discover.
+            var sheet = Assert.Single(outcome.Audit.Items, item => item.Kind == "worksheet");
+            Assert.Contains("worksheet", sheet.Detail, StringComparison.Ordinal);
 
             // The external link is reported as a file name only; the directory would carry
             // machine-specific path segments a receipt must never contain.
@@ -468,10 +470,50 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            var remainingExcel = OwnedExcelProcess.SnapshotExcelProcesses();
-            var leaked = remainingExcel.Where(process => !existingExcel.Contains(process)).ToArray();
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
-            Assert.Empty(leaked);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task AuditListsMacroProceduresSoAnEditCanBeDiscovered()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "macro-target.xlsm");
+        const string component = "SafeModule";
+        const string source = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            try { ExcelTestWorkbook.CreateMacroTarget(target, component, source); }
+            catch (Exception exception) when (IsAccessVbomUnavailable(exception))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("Excel Trust Center does not permit programmatic VBA project access on this machine.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("audit-macros", ExcelTaskPlans.Audit(target)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Completed, outcome.Status);
+            Assert.NotNull(outcome.Audit);
+            Assert.True(outcome.Audit.WorkbookUnchanged);
+
+            // The discovery a caller needs before EditMacroProcedure: the component and the
+            // qualified procedure name, with its size, and never its source.
+            Assert.Contains(outcome.Audit.Items, item => item.Kind == "macro-component" && item.Name == component);
+            var procedure = Assert.Single(outcome.Audit.Items, item => item.Kind == "macro-procedure");
+            Assert.Equal($"{component}.WriteMarker", procedure.Name);
+            Assert.Equal("3 lines", procedure.Detail);
+            Assert.Equal(component, procedure.DependsOn);
+            Assert.All(outcome.Audit.Items, item => Assert.DoesNotContain("Value2", item.Name + item.Detail, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
 

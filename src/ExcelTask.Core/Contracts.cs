@@ -13,24 +13,24 @@ public sealed record CopyExhibitOperation(
     [property: Description("Existing reference workbook path containing the worksheet to copy.")] string ReferenceWorkbookPath,
     [property: Description("Worksheet name in the reference workbook to copy.")] string ReferenceWorksheet,
     [property: Description("New worksheet name in the target workbook.")] string NewWorksheetName,
-    [property: Description("Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed.")] IReadOnlyList<string> RepairRanges);
+    [property: Description("Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed. At most 16 ranges and 10,000 cells per call; split a larger area across calls.")] IReadOnlyList<string> RepairRanges);
 
 public sealed record RepairExistingWorksheetOperation(
     [property: Description("Existing target worksheet name to repair.")] string WorksheetName,
-    [property: Description("One or more bounded A1 ranges where blank formulas may be repaired.")] IReadOnlyList<string> Ranges);
+    [property: Description("One or more bounded A1 ranges where blank formulas may be repaired. At most 16 ranges and 10,000 cells per call; split a larger area across calls.")] IReadOnlyList<string> Ranges);
 
 public sealed record ExtendFormulaSeriesOperation(
     [property: Description("Existing target worksheet name containing the formula series.")] string WorksheetName,
     [property: Description("Right extends a horizontal series; Down extends a vertical series.")] FormulaExtensionDirection Direction,
-    [property: Description("Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.")] string EvidenceRange,
-    [property: Description("Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.")] string DestinationRange);
+    [property: Description("Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range. Evidence and destination together must stay within 10,000 cells.")] string EvidenceRange,
+    [property: Description("Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range. At most 24 periods and 2,000 destination cells, which binds before the 10,000-cell aggregate; split larger work across calls.")] string DestinationRange);
 
 /// <summary>
 /// Macro editing always uses workbookBinding Isolated and save Copy, on an .xlsm target and output.
 /// Plan is inspect-only and must carry none of the Apply fields.
 /// </summary>
 public sealed record EditMacroProcedureOperation(
-    [property: Description("Existing VBA component name containing the procedure to inspect or replace.")] string ComponentName,
+    [property: Description("Existing VBA component name containing the procedure to inspect or replace. If unknown, run AuditWorkbookFlows first; it lists every macro component and procedure.")] string ComponentName,
     [property: Description("Existing VBA procedure name to inspect or replace.")] string ProcedureName,
     [property: Description("Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.")] string? ExpectedProcedureSha256 = null,
     [property: Description("Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
@@ -38,10 +38,11 @@ public sealed record EditMacroProcedureOperation(
 
 /// <summary>
 /// Reports how one workbook's data flows fit together: its Power Query queries and where each one
-/// loads, its connections, its Data Model tables, relationships and measures, its PivotTables, and
-/// the other workbooks it links to. It never changes anything, and it returns names and shapes
-/// rather than data: no cell values, no query text, and no connection strings, because those carry
-/// server names and credentials.
+/// loads, its connections, its macro components and procedures, its Data Model tables,
+/// relationships and measures, its PivotTables, and the other workbooks it links to. It never
+/// changes anything, and it returns names and shapes rather than data: no cell values, no query
+/// text, no VBA source, and no connection strings, because those carry server names and
+/// credentials.
 /// </summary>
 public sealed record AuditWorkbookFlowsOperation();
 
@@ -52,14 +53,14 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
-    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
+    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
-    [property: Description("Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated. EditMacroProcedure requires Isolated and rejects anything else.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
-    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path.")] SaveMode Save = SaveMode.Same,
+    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
+    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows never writes: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same.")] string? OutputWorkbookPath = null,
     [property: Description("Explicit authorization required before Apply can overwrite an existing save destination.")] bool OverwriteConfirmed = false);
 

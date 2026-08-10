@@ -672,23 +672,31 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         out string? error)
     {
         error = null;
-        if (!string.Equals(Path.GetExtension(targetWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(Path.GetExtension(outputWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase))
+        // All violations are reported in one message. Field use showed a caller being rejected
+        // twice, learning one rule per round trip; every unmet requirement in a single rejection
+        // makes the second attempt the correct one.
+        var violations = new List<string>();
+        if (!string.Equals(Path.GetExtension(targetWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase))
         {
-            error = "Macro editing requires .xlsm target and copy output workbook paths.";
-            return false;
+            violations.Add("an .xlsm target workbook path");
         }
         if (workbookBinding != WorkbookBinding.Isolated)
         {
-            error = "Macro editing requires workbook binding Isolated.";
-            return false;
+            violations.Add("workbook binding Isolated");
         }
         if (save != SaveMode.Copy)
         {
-            error = "Macro editing requires save mode Copy.";
-            return false;
+            violations.Add("save mode Copy");
         }
-        return true;
+        if (!string.Equals(Path.GetExtension(outputWorkbookPath), ".xlsm", StringComparison.OrdinalIgnoreCase))
+        {
+            violations.Add("an .xlsm outputWorkbookPath");
+        }
+
+        if (violations.Count == 0) return true;
+
+        error = $"Macro editing requires {string.Join(", ", violations)}. Correct all of these in one resubmission.";
+        return false;
     }
 
     private static bool TryNormalizeVbaIdentifier(string? value, string name, out string? normalized, out string? error)

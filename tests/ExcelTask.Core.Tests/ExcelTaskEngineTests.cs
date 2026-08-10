@@ -244,6 +244,32 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
+    public async Task MacroPolicyNamesEveryUnmetRequirementInOneRejection()
+    {
+        // Field use showed a caller rejected twice, learning one rule per round trip. Every unmet
+        // requirement must arrive in the first rejection so the second attempt is the correct one.
+        var runtime = new FakeRuntime();
+        var request = MacroRequest(
+            mode: ExcelTaskMode.Apply,
+            operation: Macro(expectedHash: new string('a', 64), replacementSource: "Sub RefreshModel()\nEnd Sub"),
+            binding: WorkbookBinding.AskIfOpen,
+            save: SaveMode.Same) with
+        {
+            TargetWorkbookPath = ".\\target.xlsx",
+            OutputWorkbookPath = null
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(request, CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        var check = Assert.Single(receipt.Checks, check => check.Name == "request");
+        Assert.Contains(".xlsm target", check.Detail, StringComparison.Ordinal);
+        Assert.Contains("Isolated", check.Detail, StringComparison.Ordinal);
+        Assert.Contains("save mode Copy", check.Detail, StringComparison.Ordinal);
+        Assert.Contains("outputWorkbookPath", check.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MacroApplyRejectsAutomaticEntryProcedureAndParameterizedRunBeforeInspection()
     {
         var autoRuntime = new FakeRuntime();

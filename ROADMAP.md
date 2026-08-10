@@ -1,53 +1,76 @@
 # Roadmap
 
-Each phase starts only after its gate is met. This is direction, not a feature
-promise.
+Direction, not a feature promise. Nothing ships without its gate, and gates are
+evidence - a test that passed, a field report, a measured need. The full
+evidence trail lives in `docs/field-reports/` and the changelog.
 
-1. **Work-computer validation and reliability** - v0.2.0 delivered the private
-   worker, hard deadline, truthful interruption handling, and process cleanup.
-   On 2026-08-10 the complete suite passed 146/146 on the work computer, and the
-   field check then passed there against real Excel with four of the user's own
-   Excel processes running and untouched. The tool-surface comparison is done:
-   1 tool and 7,164 bytes against the original's 25 tools and 58,324 bytes, a
-   ratio of 8.1x. See `docs/field-reports/2026-08-10-comparison/`.
-   The three controlled client tasks then ran as six fresh sessions, three per
-   server: 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
-   and 53% less wall time to a verified workbook, with all six correct after
-   reopening. See `docs/field-reports/2026-08-10-comparison/CLIENT-SESSIONS.md`.
-   Two qualifications belong with those figures: ExcelTask's own Excel execution
-   was 13% *slower*, and the whole advantage came from removing model
-   coordination between calls; and both tool catalogs were registered during
-   those sessions, so they measure orchestration, not schema loading. This phase
-   is met. What remains is repetition - one run per workflow is evidence, not a
-   benchmark.
-2. **Formula/exhibit depth** - v0.3.0 delivered bounded in-place gap repair and
-   stable right/down formula-series extension through the existing one-tool
-   operation union. Remaining field gate: three controlled Copilot tasks finish
-   with verified outputs and no new tool.
-3. **Macro editing** - v0.4.0 delivered the `EditMacroProcedure` operation for an
-   isolated `.xlsm` saved only as a `Copy`: Plan returns a bounded
-   requested-procedure source and hash, Apply requires that hash plus a complete
-   replacement, returns no source, and may optionally run the no-argument
-   procedure. v0.6.0 added dialog containment, so a run-time error, a compile
-   error, or a message box returns a named outcome instead of stalling.
-   Trust access remains user-controlled. Field gate met 2026-08-10:
-   the work computer ran the disposable `.xlsm` edit, run, save, and reopen
-   tests through the real MCP boundary, with VBA project access permitted by
-   that machine's own policy and no Excel process left behind.
-4. **Read-first multi-workbook audit** - inspect Power Query and Data Model
-   flows before considering mutation. v0.7.0 delivered the single-workbook
-   slice: `AuditWorkbookFlows` reports queries and their load destinations,
-   connections, model tables, relationships and measures, pivots, and links to
-   other workbooks - names and shapes only, never values, M text, connection
-   strings, or paths - with the receipt proving by size and timestamp that the
-   workbook was not changed. The development gate is met: the fixture set
-   produces a correct bounded report, verified against real Excel. On
-   2026-08-10 the first real-workbook audit ran on the work computer: one call,
-   nothing changed by the receipt's own proof and by independent metadata, no
-   process left behind. See `docs/field-reports/2026-08-10-audit/`. That proved
-   the audit safe on real content but not yet complete on rich content - the
-   chosen workbook had no Power Query or Data Model flows, so those surfaces
-   have only been exercised against fixtures. Remaining field gate: one audit
-   of a workbook the owner knows to contain query and model flows, with the
-   owner confirming the reported categories. Following multiple workbooks
-   through their links into one report remains open.
+## Delivered
+
+All four original phases landed and were field-validated on the work computer on
+2026-08-10:
+
+1. **Reliability** (v0.2.0): supervised worker, hard deadline, truthful
+   interruption, proven process cleanup. Field-confirmed with the user's own
+   Excel instances live and untouched.
+2. **Formula/exhibit depth** (v0.3.0): bounded gap repair and series extension.
+3. **Macro editing** (v0.4.0, hardened v0.6.0): hash-preconditioned
+   whole-procedure replacement on an isolated copy, optional run, dialog
+   containment. Field-confirmed including execution.
+4. **Read-only audit** (v0.7.0): one workbook's queries, connections, model,
+   pivots, and external links - names and shapes only, unchanged-proof in the
+   receipt. Field-confirmed safe on a real business workbook.
+
+Measured against the original server on the work computer: 8.1x smaller tool
+surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
+53% less wall time across three client workflows - with ExcelTask's own Excel
+execution 13% slower, the advantage being entirely the removal of model
+coordination. One run per workflow; not yet a benchmark.
+
+## Next release: v0.8.0 (built, gated, held)
+
+Held only for coordination with in-flight interface work, then ships:
+
+- **Macro discovery.** The audit lists macro components and procedures, and the
+  schema routes unknown names to it. Built the day the first real task split
+  across both servers exactly at this gap - the field agent's verdict was "if
+  excel-task added a read-only list of modules and procedures, it'd stand
+  alone." See `docs/field-reports/2026-08-10-mixed-server-macro.md`.
+- **One-rejection macro policy.** Every unmet requirement in a single message;
+  field use paid one round trip per rule to learn them one at a time.
+- **Measured schema improvements** from the interface A/B study: bounds stated
+  in descriptions, binding and save rules made explicit.
+
+## Open field gates (small, when convenient)
+
+- Audit one workbook the owner *knows* contains Power Query and Data Model
+  flows; owner confirms the reported categories. Closes phase 4's last gap.
+- The repeated benchmark: one MCP catalog per client profile, three or more
+  repetitions per workflow, median and spread, order alternated. Until then no
+  percentage above is quoted as characteristic.
+
+## Candidates, strictly demand-gated
+
+Built only when real use shows a recurring need, in the order demand appears:
+
+- **Bounded read-only value inspection.** The largest open question. The first
+  real task needed range reads to find the bug, and ExcelTask returns no cell
+  values by design; today the original server fills that role. Either the
+  two-server split is the end state - the original for reading and exploring,
+  ExcelTask for edits that must not go wrong - or ExcelTask grows a bounded
+  read. Widening what the product promises never to return is not done lightly;
+  more real tasks decide.
+- **Macro session sharing.** The one measured regression: 28.1s against 26.4s,
+  because Plan and Apply each open their own Excel. Worth building only if
+  macro editing turns out to be frequent.
+- **Module-level edits.** Whole-procedure replacement cannot introduce a
+  module-level constant; one field occurrence, clean workaround, not yet demand.
+- **Multi-workbook audit.** Follow external links through several workbooks
+  into one dependency report. The natural growth of phase 4 once single-workbook
+  audits prove themselves on rich content.
+
+## Standing rules
+
+One tool. No CLI. No model selection anywhere. Schema bytes are budgeted and
+every operation earns its own. Receipts stay bounded and truthful - a truncated
+report says so, an uncertain outcome is `Unknown`, and no receipt ever carries
+cell values, formulas, VBA source, connection strings, or machine paths.

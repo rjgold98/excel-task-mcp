@@ -129,6 +129,15 @@ internal sealed record ProcessIdentity(int ProcessId, DateTime StartTimeUtc, str
         {
             return false;
         }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // Reading MainModule can fail on a process that is exiting. Without this the exception
+            // escapes ExcelSession.Close through its finally, losing the very result that proves
+            // whether owned Excel exited. The supervisor's own check deliberately errs the other
+            // way: this side asks "is there a matching process to act on", and the host asks "can I
+            // prove it exited", so an answer neither can verify must fail differently in each.
+            return false;
+        }
     }
 
     private static string GetExecutablePath(Process process) => process.MainModule?.FileName

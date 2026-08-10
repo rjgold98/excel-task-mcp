@@ -11,6 +11,12 @@ internal static class WorkbookWorkerProtocol
     internal const int MaxRequestBytes = 1024 * 1024;
     internal const int MaxFrameBytes = 16 * 1024;
     internal const int MaxTextLength = 128;
+
+    /// <summary>
+    /// Phase labels are progress annotations, not data. The supervisor both parses and validates
+    /// against this one bound, so a long label can never make a healthy run look malformed.
+    /// </summary>
+    internal const int MaxPhaseLength = 64;
     internal const int MaxResultItems = 20;
 
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)

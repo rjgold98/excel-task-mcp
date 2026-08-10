@@ -1,0 +1,458 @@
+# Tool-interface A/B study
+
+An empirical check on the three interface bets ExcelTask makes: **one union tool** rather
+than five, a **nested operation object** rather than flat fields, and **guidance-rich**
+parameter descriptions. Run entirely on the home machine against Opus 5 subagents, each
+acting as the model under test.
+
+## Method
+
+Each subagent sees one tool-surface variant (JSON Schema only) plus a set of independent
+tasks, and must decide the **single tool call it would make first** for each. It never sees
+the validation rules — those live with the scorer, so what is measured is purely the
+interface's effect on the decision.
+
+Calls are then replayed against an oracle transcribed from the shipped engine
+(`ExcelTaskEngine.cs`, `ExcelWorkbookRuntime.cs`), so "valid" means *the real server would
+have accepted this*, not *it looked reasonable*.
+
+Variants are built from three axes in `variants.py`:
+
+| Axis | Options |
+|---|---|
+| Grouping | one union tool (`one`) vs five separate tools (`many`) |
+| Syntax | nested operation object vs flat top-level fields |
+| Wording | terse / rich / rich+guardrails (`plus`) / plus live-binding (`live`) |
+
+## Round 1 — baseline suite (6 tasks, 6 variants, 3 reps = 108 decisions)
+
+Operation selection was **perfect: 108/108**. Every variant, including the terse ones,
+picked the right operation every time. All failures were in the *policy envelope* —
+mode, binding, save, overwrite, and the macro Plan→Apply contract.
+
+| Variant | Schema bytes | Clean first call |
+|---|---:|---:|
+| one_flat_rich | 3,773 | 1.00 |
+| one_nested_rich | 4,272 | 0.78 |
+| many_rich | 8,124 | 0.78 |
+| many_terse | 5,180 | 0.28 |
+| one_nested_terse | 2,686 | 0.17 |
+| one_flat_terse | 2,208 | 0.17 |
+
+Two conclusions. **Terse descriptions are catastrophic** — the same model, same tasks,
+drops from 0.78–1.00 to 0.17–0.28 purely because the rules stopped being written down.
+And **five separate tools cost 1.90× the schema bytes for identical accuracy**, which is
+the union-tool bet paying off.
+
+## Round 2 — hard suite (8 tasks, 4 variants, 3 reps = 96 decisions)
+
+Multi-operation requests, 180 MB–1 GB workbooks, and requests that brush the engine's
+limits. Operation selection was again **perfect (96/96)**.
+
+| Variant | Clean first call |
+|---|---:|
+| one_nested_rich | 0.83 |
+| many_rich | 0.75 |
+| one_flat_rich | 0.71 |
+| one_nested_terse | 0.38 |
+
+**The headline defect:** 21 of 32 failures came from two limits — `MaxFormulaRepairCells`
+(10,000) and `MaxFormulaRepairRanges` (16) — that the engine enforces but **no schema
+description mentioned**. Asked to repair `A2:H240000`, every rich variant passed all
+1,919,992 cells straight through. The model was not being careless; it was obeying an
+interface that never told it a ceiling existed.
+
+## Round 3 — stating the hidden guardrails
+
+Same 8 hard tasks, with three previously-undocumented rules written into the descriptions:
+the two caps, the `UseOpen` + `Copy` conflict, and audit-never-writes.
+
+| Variant | Clean, round 2 | Clean, round 3 | Schema bytes |
+|---|---:|---:|---:|
+| one_nested_plus | 0.83 | **1.00** | 4,272 → 5,036 |
+| one_flat_plus | 0.71 | **1.00** | 3,773 → 4,537 |
+
+Both went to a perfect score on every dimension. **Cost: 764 bytes (+18%). Benefit:
+every remaining hard-suite failure eliminated.** This is now applied to the shipped
+`Contracts.cs`.
+
+## Round 4 — success-path suite (8 tasks, 4 variants, 3 reps = 96 decisions)
+
+Rounds 1–3 leaned on refusal and narrowing behaviour, which measures error handling rather
+than throughput. Round 4 fixes that: **every task has a legal, achievable answer that does
+real work at or near the ceiling** — a 287-sheet/412 MB consolidation, 14 separate ranges
+near the 16-range limit, a series extended 2,489 rows deep, a real VBA procedure to author
+and run, a 900 MB audit. Nothing is a trap.
+
+Scoring is graded rather than pass/fail: range sets are scored by **F1 over covered cells**,
+so an answer is judged on the cells it actually touches, not on how it chose to spell them.
+
+| Variant | Kind | Scalars | Range F1 | Policy | VBA | Valid | Clean |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| many_plus | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | **1.00** |
+| one_nested_plus | 1.00 | 1.00 | 1.00 | 0.96 | 1.00 | 1.00 | 0.96 |
+| one_flat_plus | 1.00 | 1.00 | 1.00 | 0.96 | 1.00 | 1.00 | 0.96 |
+| one_nested_rich | 1.00 | 1.00 | 1.00 | 0.92 | 1.00 | 1.00 | 0.92 |
+
+Seven of the eight tasks scored a perfect 1.00 across every variant: every range exact,
+every sheet name right, every authored VBA procedure complete, parameterless, non-blocking
+and correct. **On large legal work the interface is not the bottleneck.**
+
+One task was the exception — see round 5.
+
+### A scoring bug worth recording
+
+`plan_preview` initially scored 0.00 for all 12 agents. Every one had answered `B4:M703`
+where the expected set was twelve single-column ranges. Those address **the identical
+8,400 cells**; the model had given the more compact equivalent and the grader was wrong.
+Switching from range-string identity to cell-coverage F1 fixed it, and the metric still
+penalises real errors (a solid `B7:AB646` block over alternating columns scores 0.68).
+
+This was the third scorer bug caught during the study, each of which had inverted a result
+before it was fixed. Oracle correctness deserves as much scrutiny as the thing under test.
+
+## Round 5 — the one remaining defect
+
+`live_inplace` is the only success-path task any variant got wrong. The request says the
+workbook is *already open with unsaved edits*; the correct call is `UseOpen` + `Same`.
+Some runs chose `AskIfOpen`, which is not illegal but guarantees a wasted confirmation
+round trip on a workbook whose state was already stated.
+
+The cause is the schema's own wording: **"Use AskIfOpen first."** The model was following
+the instruction. Round 5 adds the missing exception — use `UseOpen` directly when the
+request already says the workbook is open.
+
+| Wording | `live_inplace` correct | Clean (all tasks) |
+|---|---:|---:|
+| live-aware (`one_nested_live`, n=48) | **6/6** | **1.00** |
+| every variant without the clause (pooled) | 11/15 | — |
+
+Fisher exact two-sided **p = 0.281** — the direction is right but this is *not*
+statistically significant at n=6 vs 15, and it should not be reported as proven.
+
+It was applied anyway, on grounds that are mechanical rather than statistical: asking
+"is it open?" about a workbook the user has just said is open costs a guaranteed round
+trip every time it happens, the fix costs 85 schema bytes, and no other task regressed.
+A larger replication would be needed to put a real number on the frequency.
+
+### Corrections to round 1 and round 4
+
+Two things in the tables above are weaker than they first appear, and both matter.
+
+**Round 1 was mostly one rule.** 44 of its 51 failures (86%) were the same rejection:
+`Same-file Apply requires overwriteConfirmed`. The 0.17-vs-1.00 spread therefore measures
+"does the schema explain the overwrite gate" far more than it measures wording in general.
+It also means the `one_flat_rich` 1.00 vs `one_nested_rich` 0.78 gap is **not** a syntax
+effect — both carry the identical `overwriteConfirmed` description, so that difference is
+sampling noise on 18 decisions. Nested vs flat never separated on anything real.
+
+**Two round-4 tasks were not actually legal.** `ExcelTaskEngine.cs:754` rejects any
+extension whose *destination* exceeds `FormulaMutationPlanner.MaxMutations` (2,000 cells) —
+a much tighter cap than the 10,000-cell aggregate. `deep_extend` (destination 4,978 cells)
+and `sequence_first` (3,992) would both be rejected by the real engine. Every variant scored
+1.00 on them only because the scorer never implemented `MaxMutations`. They produced no
+false ranking — all variants scored identically — but the "7 of 8 tasks perfect" claim is
+properly "5 of 6 valid tasks", and the promise that every round-4 task had a legal success
+path was false for those two.
+
+## Round 6 — Sonnet 5 replication
+
+Rounds 1–5 ran on Opus 5. The model actually used day to day is **Sonnet 5**, and Opus
+scored near the ceiling on the success-path suite, so the interesting question was whether
+these findings hold on the cheaper model — or whether Opus was simply strong enough to
+paper over a bad interface. Both suites were re-run with Sonnet 5 subagents at high effort.
+
+**Hard suite (Sonnet 5, high):**
+
+| Variant | Clean, Opus | Clean, Sonnet |
+|---|---:|---:|
+| one_nested_plus (caps documented) | 1.00 | **1.00** |
+| one_flat_plus (caps documented) | 1.00 | **1.00** |
+| one_nested_rich (caps hidden) | 0.83 | 0.75 |
+| one_nested_terse | 0.38 | 0.46 |
+
+**Success-path suite (Sonnet 5, high):**
+
+| Variant | Clean, Opus | Clean, Sonnet |
+|---|---:|---:|
+| one_nested_live | 1.00 | **1.00** |
+| many_plus | 1.00 | **1.00** |
+| one_nested_plus | 0.98 | 0.92 |
+| one_nested_rich | 0.92 | 0.92 |
+
+Sonnet reproduces the Opus result almost exactly, including **operation selection perfect
+at 96/96** and the same seven-of-eight success-path tasks at a flat 1.00 — exact ranges
+across a 287-sheet workbook, correct non-blocking VBA, correct Plan-vs-Apply. The one
+weak spot is the same one: `live_inplace`.
+
+### Pooling both models
+
+| Finding | Pooled result | Fisher two-sided |
+|---|---|---:|
+| Documenting the caps | 48/48 clean vs 38/48 | **p = 0.0012** |
+| Naming the already-open exception | 9/9 correct vs 16/24 | p = 0.073 |
+
+The cap fix is now **significant across two models**. The live-binding fix strengthened
+from p = 0.281 to p = 0.073 — better, still short of conventional significance, and it
+matters more on Sonnet, which chose the wasteful `AskIfOpen` on 2 of 3 runs without the
+clause versus 1 of 3 for Opus. The honest reading is that the weaker the model, the more
+the missing exception costs, which is an argument for keeping it.
+
+**The most important negative result:** Sonnet 5 was not meaningfully worse than Opus 5 at
+driving this interface. Whatever this tool surface costs in accuracy, it is not recovered
+by paying for a larger model — so the interface work, not the model tier, is where the
+gains are.
+
+## What this changed in the product
+
+Two edits to `src/ExcelTask.Core/Contracts.cs`, both description-only — no behaviour
+change, 87 core tests still pass:
+
+1. **The caps are now documented** on `RepairRanges`, `Ranges` and `EvidenceRange`, and
+   the `UseOpen`+`Copy` conflict and audit-never-writes rule on `WorkbookBinding` / `Save`.
+   *Proven on both models* (p = 0.0012): eliminated every remaining hard-suite failure for
+   +18% schema bytes.
+2. **The already-open exception** on `WorkbookBinding`. *Directional* (p = 0.073); kept
+   because the cost is 85 bytes, nothing regressed, and the penalty is a guaranteed wasted
+   round trip every time it is hit.
+
+## Standing conclusions
+
+- **The three original bets hold.** One union tool matches five separate tools on accuracy
+  for roughly half the schema bytes; operation selection was perfect in **484/484**
+  decisions across every variant, every round and both models, including the terse ones.
+- **Model tier is not the lever.** Sonnet 5 matched Opus 5 on this interface. Spending on
+  a bigger model does not buy back what a vague schema costs.
+- **Grouping and syntax barely matter; wording dominates.** Nested vs flat never separated
+  by more than one decision. Rich vs terse separated by up to 0.83.
+- **Every failure in the entire study was a policy failure**, and every one traced to a
+  rule the engine enforced but the schema did not state. The lesson is narrow and
+  actionable: *if the server rejects on it, the description must say so.*
+- **On large legal work the interface is not the bottleneck.** Given the rules in writing,
+  Opus 5 scored 1.00 on 7 of 8 success-path tasks — exact ranges across 287-sheet
+  workbooks, correct non-blocking VBA, correct Plan-vs-Apply — with the sole exception
+  above.
+
+## The follow-on audit — 8 more rules still unstated
+
+The generalized lesson ("if the server rejects on it, the description must say so") is
+mechanically checkable without any model. Dumping the live `tools/list` schema and grepping
+it against every caller-actionable rejection reason in the engine gives:
+
+**Stated (10):** 16-range cap · 10,000-cell repair cap · 2,000-cell extend destination cap ·
+24-period cap · UseOpen+Copy conflict · audit never writes · already-open exception ·
+macro requires Isolated · macro Plan omits Apply fields · overwrite gate.
+
+**Enforced but still unstated (8):**
+
+| Gap | Engine rule |
+|---|---|
+| `RunAfterEdit` blocking calls | rejects a replacement containing `MsgBox`/`InputBox`/`Stop` |
+| VBA source length | `MacroProcedureText.MaxSourceCharacters` = 8,192 |
+| VBA line count | `MacroProcedureText.MaxLineCount` = 200 |
+| Path extensions | paths must be `.xlsx` or `.xlsm` |
+| Copy output extension | must match the target's extension |
+| Copy output path | must differ from the target path |
+| Isolated + Same | rejected when the target is open |
+| Auto-entry VBA | automatic-entry procedures cannot be edited |
+
+Closing these needs no A/B run — the rule is already proven at p = 0.0012. Worth noting
+that `RunAfterEdit` blocking was *tested* in round 2 (`macro_blocking`, 0.83 clean) and its
+failures are explained by exactly this gap.
+
+## Round 7 — end to end, against real Excel
+
+Rounds 1–6 were schema-comprehension tests: a model read a JSON Schema and wrote down the
+call it *would* make. Nothing opened Excel. Round 7 replaces that with the real thing —
+the built server, real MCP JSON-RPC over stdio, real `.xlsx` fixtures, and verification by
+reopening the workbook and checking every formula rather than by reading the receipt.
+
+The first thing it found was a product defect that no amount of schema testing could reach.
+
+### Defect: `Range()` address overflow in `ApplyFormulaWrites`
+
+A repair of a 3,000-row ledger was rejected with
+`"Workbook execution was rejected before changes were attempted."` — no reason, no logging,
+`CanRetry: false`. Plan succeeded everywhere Apply failed. The pattern was incoherent:
+
+| Range | Cells | Repairs | Result |
+|---|---:|---:|---|
+| `B2:H500` | 3,493 | 350 | Completed |
+| `B2500:H2999` | 3,500 | 350 | **Rejected** |
+| `B2:B3000` | 2,999 | 300 | **Rejected** |
+
+Identical repair counts, opposite outcomes; fewer cells failing than passing. It tracked
+neither cells, nor rows, nor repair count.
+
+Cause: `ApplyFormulaWrites` batched repairs into fixed groups of 64 and joined them into a
+single `Range("B10,B20,B30,…")` address. **Excel rejects that argument beyond 255
+characters**, so whether a batch fit depended on how many digits the row numbers had — the
+same work succeeded near row 1 and failed near row 2500. Every observation above follows
+from that: 50 addresses of `B10`–`B500` are ~250 chars, the same 50 as `B2500`–`B2990` are
+~300.
+
+Fix: batch by joined address length (≤ 255) instead of a fixed cell count. All previously
+failing ranges now complete, and file-level verification of a full three-chunk repair shows
+**2,093 of 2,093 inferable gaps filled with the exact expected formulas, 0 wrong, 0
+collateral damage**. (The other 7 of 2,100 sit on row 3000, the last data row, whose gaps
+have no lower neighbour — `FormulaPatternAnalyzer` correctly declines to infer them.)
+
+Two lessons worth keeping:
+
+- **Every schema-level result in this document assumed the engine executes correctly, and
+  it did not.** Interface measurement cannot substitute for end-to-end measurement.
+- The failure was invisible because `catch (Exception)` at `ExcelWorkbookRuntime.cs` discards
+  the reason and the worker's stderr is drained and thrown away. Diagnosing it required
+  temporarily echoing that stream. That diagnosability gap is still open.
+
+### Defect: silent under-repair at range boundaries
+
+The end-to-end A/B (below) exposed a second, worse defect. Runs that chunked a 3,000-row
+repair at round numbers — `B2:H1000`, `B1001:H2000`, `B2001:H3000` — finished with three
+`Completed` receipts and **rows 1000 and 2000 still unrepaired**.
+
+Cause: `AnalyzeFormulaRepairs` read only the requested range, but `FormulaPatternAnalyzer`
+infers a blank from the neighbour on each side. A gap on the last row of a chunk has its
+lower neighbour outside that chunk, so evidence was missing and the cell was skipped —
+silently, with no warning to the caller.
+
+This is the most serious finding in the study, because it is not a coding slip:
+
+- **Two deliberate design choices collided.** The caps force chunking; neighbour-based
+  inference needs data outside the chunk.
+- **The verification layer did not catch it.** Save → reopen → verify confirms the writes
+  the engine *intended* actually landed. It never compares intent to the caller's request,
+  so a plan that silently omitted cells verifies perfectly.
+- **The natural chunking is the dangerous one.** Round thousands are the obvious split, and
+  in this fixture every round thousand is a gap row.
+
+Fix: read evidence one cell beyond the requested range on each side, while restricting
+writes to the requested range. Replaying the exact failing chunking now fills rows 1000 and
+2000 (`=A1000*2`, `=A2000*2`) and reaches 2,093 of 2,093 inferable gaps, 0 wrong, 0
+collateral.
+
+### Diagnosability
+
+The catch in `ExecuteCore` discarded the exception, so any COM fault surfaced as
+`"Workbook execution was rejected before changes were attempted."` A `failure-detail` check
+now names the phase and the fault — verified reaching the caller as
+`Failed in phase 'session-open': InvalidOperationException: ...`.
+
+One correction to an earlier claim in this document's history: the receipt was never
+*empty*. Checks travel in the MCP response's `structuredContent`, and they were always
+reasonably detailed; the text block is only a one-line summary. What was genuinely missing
+was the exception behind a catch-all failure, which is what the new check supplies.
+
+### The end-to-end A/B result
+
+Both arms use the schema the server actually publishes; the only difference is the 595
+characters of guardrail text the study added. Six Sonnet 5 runs per pass, sequential
+(Excel cannot be driven in parallel), scored by reopening the workbook.
+
+| | calls | wasted first call | coverage | fully correct |
+|---|---:|---:|---:|---:|
+| **stated** (pass 1, before boundary fix) | 3.0 | 0/3 | 99.6% | 1/3 |
+| **unstated** (pass 1) | 4.7 | 3/3 | 100% | 3/3 |
+| **stated** (pass 2, after fixes) | 3.3 | 0/3 | 100% | **3/3** |
+| **unstated** (pass 2) | 4.7 | 3/3 | 100% | 3/3 |
+
+Pooled over all 12 runs: **3.17 calls vs 4.67, a 32% saving, exact permutation p = 0.0032**,
+and 0/6 vs 6/6 wasted first calls.
+
+The mechanism is not subtle. Every `unstated` run opens with `B2:H3000` — the whole
+20,993-cell block, twice the cap — and eats a rejection before recovering. Documenting the
+limit does not merely help the model recover faster; it stops the wasted round trip
+happening at all.
+
+The boundary fix also did what it was supposed to: `stated` went from 1/3 to **3/3** fully
+correct, and both arms now reach 100% coverage. The earlier completeness penalty is gone.
+
+### Still open
+
+`ExcelTaskRealExcelOnDemandTests` — the two tests asserting the owned Excel process is
+released — fail on this machine. They were confirmed **pre-existing**: with the boundary fix
+absent from the tree entirely, both still failed. Excel processes were repeatedly observed
+lingering and then exiting on their own, which points at a teardown race in the assertion
+rather than a true leak, but that is not yet confirmed. This is the supervised-worker bet,
+and it is currently unproven.
+
+## Round 8 — head to head against sbroenne/mcp-server-excel
+
+Both servers built locally, driven through identical client code, same fixture, same task,
+same Sonnet 5 harness. Two runs each, scored by reopening the workbook.
+
+| | tools | schema bytes | calls | tool time | cells repaired | correct |
+|---|---:|---:|---:|---:|---:|---:|
+| **ExcelTask** | 1 | 9,422 | 4.0 | 21.2 s | 2,093 / 2,100 | 2/2 |
+| **sbroenne** | 26 | 66,033 | 7.0 | 5.0 s | **2,100 / 2,100** | 2/2 |
+
+Three findings, and they do not all favour this project.
+
+**The one-tool bet is validated.** 7.0× smaller schema and 43% fewer round trips. sbroenne
+is session-based (`file open` → operate → `file close(save=true)`), so it pays a three-call
+floor before any work happens.
+
+**Verification is not free — it costs about 4× the execution time.** ExcelTask saves,
+reopens and re-verifies on every call; against a 3,000-row workbook that is 21.2 s versus
+5.0 s for a server that holds one session open and writes. That is the price of the
+"changes were saved and verified after reopening" guarantee, quantified here for the first
+time. Whether it is worth paying is a judgement call, but it should be made knowingly.
+
+**Neighbour inference has a structural coverage ceiling that a general write primitive does
+not.** Row 3000 is the last data row, so its gaps have no lower neighbour and
+`FormulaPatternAnalyzer` cannot infer them — ExcelTask leaves `B3000` blank and always will.
+sbroenne, told the rule, simply wrote `=A3000*2`. Earlier rounds in this document score
+2,093 / 2,100 as full credit and call the remainder "correctly not repairable". That is
+accurate for ExcelTask's design and misleading as a statement about the task: those cells
+are repairable, just not by inference alone.
+
+Caveat kept deliberately: repairing inferable blanks is ExcelTask's purpose-built operation
+and sbroenne assembled the same outcome from general primitives, so this is the
+specialist's home turf. The reverse is equally true — building monthly exhibits across
+multiple tables from a 10,000-row extract is routine for sbroenne and impossible for
+ExcelTask, whose five operations cannot create a sheet, write a value, or build a table.
+
+## Round 9 — failure-mode matrix, and per-call cost
+
+**Per-call overhead (A/B/C, identical 9,009-cell workload, only the call shape varies):**
+
+| variant | calls | wall time |
+|---|---:|---:|
+| A — 3 calls x 1 range | 3 | 21.3 s |
+| B — 1 call x 1 range | 1 | 7.6 s |
+| C — 1 call x 13 ranges | 1 | 7.3 s |
+
+Per-call overhead is **~6.9 s**; ranges within a call are free. Separately, 3,003 cells cost
+7.1 s and 9,009 cost 7.6 s, so per-cell work is ~0.06 ms. The cost model is almost entirely
+fixed-per-call, which means **the 10,000-cell cap is miscalibrated**: it is priced as though
+per-cell work were the risk, when the real cost is the call itself. Raising the aggregate cap
+would cut calls and wall time at near-zero execution cost, while keeping verification intact.
+
+**Failure modes, both servers, measuring what the supervision claim is actually about:**
+
+| scenario | ExcelTask | sbroenne | leaked Excel | file intact |
+|---|---|---|---:|---|
+| read-only target | `Unknown` - "saved, but lock not released" | clean refusal at open | 0 / 0 | yes / yes |
+| server killed mid-operation | no result; nothing corrupted | write errored, close lost | 0 / 0 | yes / yes |
+| worksheet does not exist | `Rejected` at preflight | opens, write fails, closes | 0 / 0 | yes / yes |
+
+Two things follow, and they revise earlier entries in this document.
+
+**The supervised-worker bet holds up better than round 8 suggested.** Zero leaked Excel
+processes and zero file corruption across every failure mode, including a hard kill
+mid-operation. The earlier doubt rested on flaky lifecycle tests and two `Unknown` statuses,
+not on observed leaks; under direct test, nothing leaked.
+
+**But there is no writability preflight for same-file saves.** `EnsureWritableCopyOutput`
+runs only when `Save == Copy`, so a read-only target is discovered only after Excel is open
+and the save attempted - producing `Unknown`, the worst possible answer for a caller, since
+it means "your file may or may not have changed." sbroenne refuses cleanly at open. Checking
+writability during preflight would turn this into a clean `Rejected`.
+
+## Reproducing
+
+Harness lives outside the repo (scratchpad `abtest/`): `variants.py` builds the surfaces,
+`tasks_hard.py` / `tasks_big.py` hold the suites, `generate_*.py` emit self-contained
+prompts, and `score_hard.py` / `score_big.py` replay decisions against the engine oracle.
+Agents are told not to read the task or scoring modules, so the rules never leak into the
+surface under test.

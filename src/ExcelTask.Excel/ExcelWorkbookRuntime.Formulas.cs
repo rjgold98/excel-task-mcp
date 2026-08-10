@@ -64,7 +64,7 @@ public sealed partial class ExcelWorkbookRuntime
         var count = Convert.ToInt32(Get(worksheets, "Count"), CultureInfo.InvariantCulture);
         for (var index = 1; index <= count; index++)
         {
-            var worksheet = references.Add(Get(worksheets, "Item", index));
+            var worksheet = references.Add(Item(worksheets, index));
             var worksheetName = Get(worksheet, "Name") as string;
             if (string.Equals(worksheetName, name, StringComparison.OrdinalIgnoreCase)) return true;
         }
@@ -78,16 +78,16 @@ public sealed partial class ExcelWorkbookRuntime
         updatePhase("worksheet-copy-reference-sheets");
         var referenceSheets = references.Add(Get(session.ReferenceWorkbook, "Worksheets"));
         updatePhase("worksheet-copy-reference-sheet");
-        var referenceSheet = references.Add(Get(referenceSheets, "Item", referenceSheetName));
+        var referenceSheet = references.Add(Item(referenceSheets, referenceSheetName));
         updatePhase("worksheet-copy-target-sheets");
         var targetSheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
         var count = Convert.ToInt32(Get(targetSheets, "Count"), CultureInfo.InvariantCulture);
         updatePhase("worksheet-copy-target-anchor");
-        var afterSheet = references.Add(Get(targetSheets, "Item", count));
+        var afterSheet = references.Add(Item(targetSheets, count));
         updatePhase("worksheet-copy-copy");
         Invoke(referenceSheet, "Copy", Type.Missing, afterSheet);
         updatePhase("worksheet-copy-copied-sheet");
-        var copiedSheet = references.Add(Get(targetSheets, "Item", count + 1));
+        var copiedSheet = references.Add(Item(targetSheets, count + 1));
         updatePhase("worksheet-copy-rename");
         Set(copiedSheet, "Name", newSheetName);
     }
@@ -119,21 +119,41 @@ public sealed partial class ExcelWorkbookRuntime
     {
         using var references = new ComReferenceScope();
         var worksheetCollection = references.Add(Get(workbook, "Worksheets"));
-        var worksheet = references.Add(Get(worksheetCollection, "Item", sourceWorksheetName));
+        var worksheet = references.Add(Item(worksheetCollection, sourceWorksheetName));
         var repairs = new List<ExpectedFormula>();
         var rangeResults = new List<RepairRangeResult>();
 
         foreach (var requestedRange in ranges)
         {
             var bounds = WorkbookRuntimeHelpers.GetBounds(requestedRange);
-            var range = references.Add(Get(worksheet, "Range", requestedRange.ToString()));
-            var formulaGrid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"), bounds.RowCount, bounds.ColumnCount);
+
+            // Inference needs the neighbours on each side, and a blank on the very edge of the
+            // requested range has one of them outside it. Reading only the requested range made
+            // such a cell unrepairable, so a caller who split a large area into chunks silently
+            // lost every gap that landed on a chunk boundary and still got "Completed".
+            // Evidence is read one cell wider; writes stay inside the requested range.
+            var evidence = new FormulaRangeBounds(
+                Math.Max(1, bounds.StartRow - 1),
+                Math.Max(1, bounds.StartColumn - 1),
+                Math.Min(1_048_576, bounds.EndRow + 1),
+                Math.Min(16_384, bounds.EndColumn + 1));
+            var evidenceAddress = $"{WorkbookRuntimeHelpers.ToA1Address(evidence.StartRow, evidence.StartColumn)}:{WorkbookRuntimeHelpers.ToA1Address(evidence.EndRow, evidence.EndColumn)}";
+
+            var range = references.Add(Get(worksheet, "Range", evidenceAddress));
+            var formulaGrid = WorkbookRuntimeHelpers.CreateFormulaGrid(Get(range, "FormulaR1C1"), evidence.RowCount, evidence.ColumnCount);
             var inferred = FormulaPatternAnalyzer.InferRepairs(formulaGrid);
-            rangeResults.Add(new RepairRangeResult(requestedRange, inferred.Count));
+
+            var repairCount = 0;
             foreach (var repair in inferred)
             {
-                repairs.Add(new ExpectedFormula(bounds.StartRow + repair.RowIndex, bounds.StartColumn + repair.ColumnIndex, repair.FormulaR1C1));
+                var row = evidence.StartRow + repair.RowIndex;
+                var column = evidence.StartColumn + repair.ColumnIndex;
+                if (row < bounds.StartRow || row > bounds.EndRow || column < bounds.StartColumn || column > bounds.EndColumn) continue;
+                repairs.Add(new ExpectedFormula(row, column, repair.FormulaR1C1));
+                repairCount++;
             }
+
+            rangeResults.Add(new RepairRangeResult(requestedRange, repairCount));
         }
 
         return FormulaExecutionPlan.Create(kind, targetWorksheetName, repairs, rangeResults);
@@ -143,7 +163,7 @@ public sealed partial class ExcelWorkbookRuntime
     {
         using var references = new ComReferenceScope();
         var sheets = references.Add(Get(workbook, "Worksheets"));
-        var sheet = references.Add(Get(sheets, "Item", task.WorksheetName));
+        var sheet = references.Add(Item(sheets, task.WorksheetName));
         var evidence = WorkbookRuntimeHelpers.GetBounds(task.EvidenceRange);
         var destination = WorkbookRuntimeHelpers.GetBounds(task.DestinationRange);
         var combinedAddress = $"{WorkbookRuntimeHelpers.ToA1Address(Math.Min(evidence.StartRow, destination.StartRow), Math.Min(evidence.StartColumn, destination.StartColumn))}:{WorkbookRuntimeHelpers.ToA1Address(Math.Max(evidence.EndRow, destination.EndRow), Math.Max(evidence.EndColumn, destination.EndColumn))}";
@@ -166,17 +186,40 @@ public sealed partial class ExcelWorkbookRuntime
         if (plan.Repairs.Count == 0) return;
         using var references = new ComReferenceScope();
         var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
-        var sheet = references.Add(Get(sheets, "Item", plan.WorksheetName));
+        var sheet = references.Add(Item(sheets, plan.WorksheetName));
         foreach (var group in plan.Repairs.GroupBy(repair => repair.FormulaR1C1, StringComparer.Ordinal))
         {
-            foreach (var batch in group.Chunk(64))
+            foreach (var address in BatchAddresses(group))
             {
-                var address = string.Join(",", batch.Select(repair => WorkbookRuntimeHelpers.ToA1Address(repair.Row, repair.Column)));
                 var target = references.Add(Get(sheet, "Range", address));
                 markMutationAttempted();
                 Set(target, "FormulaR1C1", group.Key);
             }
         }
+    }
+
+    /// <summary>
+    /// Excel rejects a Range address argument longer than 255 characters, so batches are bounded by
+    /// the joined address length rather than by a cell count. A fixed count cannot be safe: the same
+    /// number of cells produces a longer address further down the sheet, which made identical repairs
+    /// succeed near row 1 and fail near row 2500.
+    /// </summary>
+    private static IEnumerable<string> BatchAddresses(IEnumerable<ExpectedFormula> repairs)
+    {
+        const int MaxAddressLength = 255;
+        var builder = new StringBuilder();
+        foreach (var repair in repairs)
+        {
+            var address = WorkbookRuntimeHelpers.ToA1Address(repair.Row, repair.Column);
+            if (builder.Length > 0 && builder.Length + 1 + address.Length > MaxAddressLength)
+            {
+                yield return builder.ToString();
+                builder.Clear();
+            }
+            if (builder.Length > 0) builder.Append(',');
+            builder.Append(address);
+        }
+        if (builder.Length > 0) yield return builder.ToString();
     }
 
     private static bool FormulaPlansEqual(FormulaExecutionPlan left, FormulaExecutionPlan right) =>
@@ -211,7 +254,7 @@ public sealed partial class ExcelWorkbookRuntime
             verification = ExcelSession.OpenForVerification(path, observer);
             using var references = new ComReferenceScope();
             var sheets = references.Add(Get(verification.TargetWorkbook, "Worksheets"));
-            var sheet = references.Add(Get(sheets, "Item", worksheetName));
+            var sheet = references.Add(Item(sheets, worksheetName));
             foreach (var expected in expectedRepairs)
             {
                 var cell = references.Add(Get(sheet, "Cells", expected.Row, expected.Column));

@@ -92,11 +92,17 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Contains("omitted for Plan", schema, StringComparison.Ordinal);
         Assert.DoesNotContain("session", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("workbookData", schema, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("model", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("confirmationToken", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("formulaR1C1", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("formulaText", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("sourceText", schema, StringComparison.OrdinalIgnoreCase);
+
+        // The guard against a model-selection input bans property NAMES, not prose: Excel's Data
+        // Model now legitimately appears in the audit's description, and the thing this protects
+        // against is a field, not a word.
+        Assert.DoesNotContain(
+            EnumeratePropertyNames(tool.InputSchema),
+            name => name.Contains("model", StringComparison.OrdinalIgnoreCase));
 
         var request = ResolveReference(tool.InputSchema.GetProperty("properties").GetProperty("request"), tool.InputSchema);
         var properties = request.GetProperty("properties");
@@ -106,8 +112,11 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path.");
         AssertDescription(properties, "operation", "The required manual operation union. Supply exactly one payload matching kind.");
         AssertDescription(properties, "mode", "Plan previews without mutation; Apply performs the task after required confirmations.");
-        AssertDescription(properties, "workbookBinding", "Use AskIfOpen first; if confirmation is returned, resubmit with UseOpen or Isolated. EditMacroProcedure requires Isolated and rejects anything else.");
-        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path.");
+        // A/B measurement (docs/INTERFACE-AB-STUDY.md) showed both of these rules cost round trips
+        // when they were enforced but unstated: UseOpen+Copy is rejected, and asking AskIfOpen about
+        // a workbook the caller already said was open only ever returns a confirmation.
+        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.");
+        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows never writes: leave Same with no outputWorkbookPath.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same.");
         AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
 
@@ -118,21 +127,24 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
         AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
         AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
-        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options.");
+        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists queries, connections, macro components and procedures, the data model, pivots, and external links.");
 
         var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
-        AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed.");
+        AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed. At most 16 ranges and 10,000 cells per call; split a larger area across calls.");
 
         var repairExisting = ResolveReference(operationProperties.GetProperty("repairExistingWorksheet"), tool.InputSchema);
-        AssertDescription(repairExisting.GetProperty("properties"), "ranges", "One or more bounded A1 ranges where blank formulas may be repaired.");
+        AssertDescription(repairExisting.GetProperty("properties"), "ranges", "One or more bounded A1 ranges where blank formulas may be repaired. At most 16 ranges and 10,000 cells per call; split a larger area across calls.");
 
         var extendSeries = ResolveReference(operationProperties.GetProperty("extendFormulaSeries"), tool.InputSchema);
-        AssertDescription(extendSeries.GetProperty("properties"), "evidenceRange", "Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range.");
-        AssertDescription(extendSeries.GetProperty("properties"), "destinationRange", "Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range.");
+        AssertDescription(extendSeries.GetProperty("properties"), "evidenceRange", "Exactly two adjacent evidence columns for Right or rows for Down, expressed as one A1 range. Evidence and destination together must stay within 10,000 cells.");
+        AssertDescription(extendSeries.GetProperty("properties"), "destinationRange", "Immediately adjacent blank destination columns for Right or rows for Down, expressed as one A1 range. At most 24 periods and 2,000 destination cells, which binds before the 10,000-cell aggregate; split larger work across calls.");
 
         var editMacro = ResolveReference(operationProperties.GetProperty("editMacroProcedure"), tool.InputSchema);
         var editMacroProperties = editMacro.GetProperty("properties");
-        AssertDescription(editMacroProperties, "componentName", "Existing VBA component name containing the procedure to inspect or replace.");
+        // The routing sentence exists because the first real field use failed without it: the model
+        // was asked to fix a macro, had no way to learn the names this operation demands, and fell
+        // back to a different server entirely.
+        AssertDescription(editMacroProperties, "componentName", "Existing VBA component name containing the procedure to inspect or replace. If unknown, run AuditWorkbookFlows first; it lists every macro component and procedure.");
         AssertDescription(editMacroProperties, "procedureName", "Existing VBA procedure name to inspect or replace.");
         AssertDescription(editMacroProperties, "expectedProcedureSha256", "Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.");
         AssertDescription(editMacroProperties, "replacementSource", "Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.");
@@ -429,6 +441,36 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
             foreach (var item in value.EnumerateArray())
             {
                 AssertConformsToSchema(itemSchema, item, root, $"{path}[{index++}]");
+            }
+        }
+    }
+
+    /// <summary>Every property name a schema defines, at any depth, through objects and arrays.</summary>
+    private static IEnumerable<string> EnumeratePropertyNames(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (property.Name == "properties" && property.Value.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var defined in property.Value.EnumerateObject())
+                    {
+                        yield return defined.Name;
+                        foreach (var nested in EnumeratePropertyNames(defined.Value)) yield return nested;
+                    }
+                }
+                else
+                {
+                    foreach (var nested in EnumeratePropertyNames(property.Value)) yield return nested;
+                }
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                foreach (var nested in EnumeratePropertyNames(item)) yield return nested;
             }
         }
     }

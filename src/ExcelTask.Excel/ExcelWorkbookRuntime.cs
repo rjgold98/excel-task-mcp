@@ -67,6 +67,21 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             Checks: [new TaskCheck("target-path", true, "Target path was normalized and checked against the running object table.")]);
     }
 
+    /// <summary>
+    /// One bounded line naming the phase that failed and the fault behind it. Without this the
+    /// caller only ever saw "rejected before changes were attempted", which names neither, and a
+    /// COM fault could only be diagnosed by rebuilding the worker to print its own stderr - which
+    /// the supervisor drains and discards. Excel's own message is kept short and single-line; it
+    /// describes the fault, never workbook contents.
+    /// </summary>
+    private static string DescribeFailure(string phase, Exception exception)
+    {
+        var fault = exception is TargetInvocationException { InnerException: not null } wrapper ? wrapper.InnerException! : exception;
+        var message = fault.Message.ReplaceLineEndings(" ").Trim();
+        if (message.Length > 60) message = string.Concat(message.AsSpan(0, 60), "...");
+        return string.Create(CultureInfo.InvariantCulture, $"Failed in phase '{phase}': {fault.GetType().Name}: {message}");
+    }
+
     private static WorkbookExecutionOutcome ExecuteCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
     {
         if (plan.Request.Operation.Kind == ExcelOperationKind.EditMacroProcedure)
@@ -154,24 +169,12 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             SetPhase("session-open");
             session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
             SetPhase("preflight");
-            var preflight = plan.Request.Operation.Kind switch
-            {
-                ExcelOperationKind.RepairExistingWorksheet => PreflightWorksheetExists(session, plan.Request.Operation.RepairExistingWorksheet!.WorksheetName),
-                ExcelOperationKind.ExtendFormulaSeries => PreflightWorksheetExists(session, plan.Request.Operation.ExtendFormulaSeries!.WorksheetName),
-                _ => PreflightWorksheetCopy(session, plan.Request.Operation.CopyExhibit!.ReferenceWorksheet, plan.Request.Operation.CopyExhibit.NewWorksheetName)
-            };
+            var preflight = Preflight(session, plan.Request.Operation);
             checks.AddRange(preflight.Checks);
             if (!preflight.IsFeasible)
             {
-                var preflightCleanupVerified = session.Close();
-                session = null;
-                if (!preflightCleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned preflight Excel process did not exit."));
-                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook preflight could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
-                }
-
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook preflight did not permit the requested formula operation.", Checks: checks);
+                return ExcelSession.CloseAndProve(ref session, "preflight", checks)
+                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook preflight did not permit the requested formula operation.", Checks: checks);
             }
 
             SetPhase("formula-analysis");
@@ -181,44 +184,23 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
             if (plan.Request.Mode == ExcelTaskMode.Plan)
             {
-                var planCleanupVerified = session.Close();
-                session = null;
-                if (!planCleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The read-only planning session did not prove owned Excel exited."));
-                    return new WorkbookExecutionOutcome(
-                        ExcelTaskStatus.Unknown,
-                        "Workbook plan could not prove owned Excel cleanup.",
-                        Checks: checks,
-                        CanRetry: false,
-                        RetryReason: "Inspect the owned Excel process before retrying.");
-                }
-
-                return new WorkbookExecutionOutcome(
-                    ExcelTaskStatus.Planned,
-                    "Workbook plan is feasible; no Excel changes were made.",
-                    CreateFormulaChanges(formulaPlan, planning: true),
-                    checks);
+                return ExcelSession.CloseAndProve(ref session, "planning", checks)
+                    ?? new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Planned,
+                        "Workbook plan is feasible; no Excel changes were made.",
+                        CreateFormulaChanges(formulaPlan, planning: true),
+                        checks);
             }
 
             SetPhase("formula-revalidation");
-            var revalidatedPreflight = plan.Request.Operation.Kind switch
-            {
-                ExcelOperationKind.RepairExistingWorksheet => PreflightWorksheetExists(session, plan.Request.Operation.RepairExistingWorksheet!.WorksheetName),
-                ExcelOperationKind.ExtendFormulaSeries => PreflightWorksheetExists(session, plan.Request.Operation.ExtendFormulaSeries!.WorksheetName),
-                _ => PreflightWorksheetCopy(session, plan.Request.Operation.CopyExhibit!.ReferenceWorksheet, plan.Request.Operation.CopyExhibit.NewWorksheetName)
-            };
+            // The same preflight, deliberately repeated: it is evidence gathered immediately before
+            // mutation, not a cached result from before the plan was built.
+            var revalidatedPreflight = Preflight(session, plan.Request.Operation);
             if (!revalidatedPreflight.IsFeasible || !FormulaPlansEqual(formulaPlan, AnalyzeFormulaPlan(session, plan.Request.Operation)))
             {
                 checks.Add(new TaskCheck("formula-revalidation", false, "Workbook formula evidence changed before mutation; no changes were made."));
-                var cleanupVerified = session.Close();
-                session = null;
-                if (!cleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned revalidation Excel process did not exit."));
-                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook revalidation could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
-                }
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook evidence changed before mutation; no changes were made.", Checks: checks);
+                return ExcelSession.CloseAndProve(ref session, "revalidation", checks)
+                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook evidence changed before mutation; no changes were made.", Checks: checks);
             }
 
             if (RotWorkbookLocator.RequiresPreMutationIsolatedSameApplyRevalidation(
@@ -229,18 +211,11 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             {
                 checks.Add(new TaskCheck("isolated-target-revalidation", false,
                     "The exact target workbook was opened in another Excel application before mutation; no changes were made."));
-                var cleanupVerified = session.Close();
-                session = null;
-                if (!cleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit after isolated target revalidation."));
-                    return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook target revalidation could not prove owned Excel cleanup.", Checks: checks, CanRetry: false, RetryReason: "Inspect the owned Excel process before retrying.");
-                }
-
-                return new WorkbookExecutionOutcome(
-                    ExcelTaskStatus.Rejected,
-                    "The target workbook was opened before isolated same-file apply could begin; no changes were made.",
-                    Checks: checks);
+                return ExcelSession.CloseAndProve(ref session, "isolated target revalidation", checks)
+                    ?? new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Rejected,
+                        "The target workbook was opened before isolated same-file apply could begin; no changes were made.",
+                        Checks: checks);
             }
 
             var operation = plan.Request.Operation;
@@ -263,19 +238,8 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             if (noFormulaChanges && plan.Request.Save == SaveMode.Same)
             {
                 SetPhase("no-change-cleanup");
-                var noChangeCleanupVerified = session.Close();
-                session = null;
-                if (!noChangeCleanupVerified)
-                {
-                    checks.Add(new TaskCheck("owned-process-exit", false, "The owned no-change Excel process did not exit."));
-                    return new WorkbookExecutionOutcome(
-                        ExcelTaskStatus.Unknown,
-                        "Workbook analysis found no changes, but owned Excel cleanup could not be verified.",
-                        changes,
-                        checks,
-                        CanRetry: false,
-                        RetryReason: "Inspect the owned Excel process before retrying.");
-                }
+                var noChangeFailure = ExcelSession.CloseAndProve(ref session, "finding no changes", checks, changes);
+                if (noChangeFailure is not null) return noChangeFailure;
 
                 checks.Add(new TaskCheck("no-formula-changes", true, "No formula changes were required; Excel was not recalculated or saved."));
                 return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook analysis found no formula changes; no Excel changes were made.", changes, checks);
@@ -301,13 +265,11 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
             checks.Add(new TaskCheck("save", true, "Excel completed the requested save operation."));
             SetPhase("primary-cleanup");
-            var primaryCleanupVerified = session.Close();
-            session = null;
-            if (!primaryCleanupVerified)
+            var saveCleanupFailure = ExcelSession.CloseAndProve(ref session, "the primary save", checks, changes);
+            if (saveCleanupFailure is not null)
             {
-                checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit after the primary save."));
                 AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown, "Workbook changes could not be verified after owned Excel cleanup.", changes, checks, CanRetry: false, RetryReason: "Inspect workbook state before retrying.");
+                return saveCleanupFailure with { RetryReason = "Inspect workbook state before retrying." };
             }
 
             if (plan.Request.WorkbookBinding != WorkbookBinding.UseOpen && !WorkbookRuntimeHelpers.CanOpenExclusively(stagingPath ?? savedPath))
@@ -353,7 +315,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
             return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook changes were saved and verified after reopening.", changes, checks);
         }
-        catch (Exception)
+        catch (Exception exception)
         {
             var ownedCleanupFailed = false;
             if (session is not null)
@@ -368,6 +330,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             checks.Add(new TaskCheck("execution", false, mutationAttempted
                 ? "Excel execution did not complete during the current phase; the change was not fully verified."
                 : "Excel did not complete the requested read-only preflight."));
+            checks.Add(new TaskCheck("failure-detail", false, DescribeFailure(phase, exception)));
             if (ownedCleanupFailed) checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit during cleanup."));
             if (stagingCleanupFailed) checks.Add(new TaskCheck("staging-cleanup", false, "A staging workbook could not be deleted; inspect the output directory before retrying."));
             return new WorkbookExecutionOutcome(
@@ -387,28 +350,26 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         }
     }
 
-    private static object Get(object target, string member, params object?[] arguments) => target.GetType().InvokeMember(
-        member,
-        BindingFlags.GetProperty,
-        null,
-        target,
-        arguments,
-        CultureInfo.InvariantCulture) ?? throw new InvalidOperationException($"Excel did not return '{member}'.");
+    /// <summary>
+    /// Checks that the worksheets this operation needs exist and that its new name is free. Stated
+    /// once because it runs twice - before planning and again immediately before mutation - and two
+    /// copies of the same switch could drift into checking different things at those two moments.
+    /// </summary>
+    private static WorksheetCopyPreflight Preflight(ExcelSession session, NormalizedExcelOperation operation) => operation.Kind switch
+    {
+        ExcelOperationKind.RepairExistingWorksheet => PreflightWorksheetExists(session, operation.RepairExistingWorksheet!.WorksheetName),
+        ExcelOperationKind.ExtendFormulaSeries => PreflightWorksheetExists(session, operation.ExtendFormulaSeries!.WorksheetName),
+        _ => PreflightWorksheetCopy(session, operation.CopyExhibit!.ReferenceWorksheet, operation.CopyExhibit.NewWorksheetName)
+    };
 
-    private static void Set(object target, string member, object? value) => target.GetType().InvokeMember(
-        member,
-        BindingFlags.SetProperty,
-        null,
-        target,
-        [value],
-        CultureInfo.InvariantCulture);
+    // Late-bound access lives in ComAccess so the binding rules are stated once.
+    private static object Get(object target, string member, params object?[] arguments) => ComAccess.Get(target, member, arguments);
 
-    private static object? Invoke(object target, string member, params object?[] arguments) => target.GetType().InvokeMember(
-        member,
-        BindingFlags.InvokeMethod,
-        null,
-        target,
-        arguments,
-        CultureInfo.InvariantCulture);
+    private static void Set(object target, string member, object? value) => ComAccess.Set(target, member, value);
+
+    private static object? Invoke(object target, string member, params object?[] arguments) => ComAccess.Invoke(target, member, arguments);
+
+    /// <summary>Resolves a collection entry regardless of how the owning object model binds Item.</summary>
+    private static object Item(object collection, object index) => ComAccess.Item(collection, index);
 
 }
