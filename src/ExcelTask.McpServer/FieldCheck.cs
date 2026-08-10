@@ -299,22 +299,40 @@ internal static class FieldCheck
                 environment["excelVersion"] = Read(application, "Version");
                 environment["excelBuild"] = Read(application, "Build");
                 var addins = new List<string>();
+                // Every interface handed out here is released before the probe ends. A retained one
+                // keeps the probe's Excel alive past Quit, and the next activation then meets a
+                // half-dead instance - the likely shape of the CO_E_SERVER_EXEC_FAILURE seen on the
+                // work computer in 0.5.0.
                 var comAddins = application.GetType().InvokeMember("COMAddIns", BindingFlags.GetProperty, null, application, null, CultureInfo.InvariantCulture);
-                if (comAddins is not null)
+                try
                 {
-                    var count = Convert.ToInt32(comAddins.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, comAddins, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
-                    for (var index = 1; index <= count; index++)
+                    if (comAddins is not null)
                     {
-                        // Office exposes COMAddIns.Item as a method, unlike Excel's own collections
-                        // where Item is a parameterized property. Binding it as a property raises
-                        // DISP_E_MEMBERNOTFOUND and costs the whole add-in list.
-                        var addin = comAddins.GetType().InvokeMember("Item", BindingFlags.InvokeMethod, null, comAddins, [index], CultureInfo.InvariantCulture);
-                        if (addin is null) continue;
-                        if (Convert.ToBoolean(addin.GetType().InvokeMember("Connect", BindingFlags.GetProperty, null, addin, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture))
+                        var count = Convert.ToInt32(comAddins.GetType().InvokeMember("Count", BindingFlags.GetProperty, null, comAddins, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture);
+                        for (var index = 1; index <= count; index++)
                         {
-                            addins.Add(Read(addin, "ProgId"));
+                            // Office exposes COMAddIns.Item as a method, unlike Excel's own collections
+                            // where Item is a parameterized property. Binding it as a property raises
+                            // DISP_E_MEMBERNOTFOUND and costs the whole add-in list.
+                            var addin = comAddins.GetType().InvokeMember("Item", BindingFlags.InvokeMethod, null, comAddins, [index], CultureInfo.InvariantCulture);
+                            if (addin is null) continue;
+                            try
+                            {
+                                if (Convert.ToBoolean(addin.GetType().InvokeMember("Connect", BindingFlags.GetProperty, null, addin, null, CultureInfo.InvariantCulture), CultureInfo.InvariantCulture))
+                                {
+                                    addins.Add(Read(addin, "ProgId"));
+                                }
+                            }
+                            finally
+                            {
+                                if (Marshal.IsComObject(addin)) Marshal.FinalReleaseComObject(addin);
+                            }
                         }
                     }
+                }
+                finally
+                {
+                    if (comAddins is not null && Marshal.IsComObject(comAddins)) Marshal.FinalReleaseComObject(comAddins);
                 }
 
                 environment["connectedComAddins"] = addins.Count > 0 ? string.Join("; ", addins) : "none";

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.2 - 2026-08-10
+
+- Released every COM interface the environment probe obtains. A retained one
+  keeps the probe's Excel alive past `Quit`, and the next activation then meets a
+  half-dead instance - the likely shape of the `CO_E_SERVER_EXEC_FAILURE` that
+  stopped 0.5.0 on the work computer.
+- Moved the documented install location and `.vscode/mcp.json` out of `C:\Tools`
+  and under the home directory. The work computer refused to let the field agent
+  write to `C:\Tools`, which is ordinary on a managed machine.
+- Recorded the first work-computer comparison under
+  `docs/field-reports/2026-08-10-comparison/`: ExcelTask advertises 1 tool and
+  7,164 bytes against the original's 25 tools and 58,324 bytes, a ratio of 8.1x.
+
 ## 0.6.1 - 2026-08-10
 
 - `--field-check` now prints and writes a compact digest: about ten dense lines

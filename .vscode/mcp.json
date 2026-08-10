@@ -1,7 +1,7 @@
 {
   "servers": {
     "excel-task": {
-      "command": "C:\\Tools\\ExcelTask\\excel-task-mcp.exe"
+      "command": "${userHome}\\ExcelTask\\excel-task-mcp.exe"
     }
   }
 }

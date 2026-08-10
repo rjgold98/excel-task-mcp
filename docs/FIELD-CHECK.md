@@ -18,11 +18,12 @@ about the machine rather than treating it as a product failure.
 
 1. Download `ExcelTask-<version>-windows-x64.zip` from the
    [latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest)
-   and extract it, for example to `C:\Tools\ExcelTask`.
+   and extract it somewhere you can write without administrator rights, such as
+   `%USERPROFILE%\ExcelTask`. A managed computer commonly refuses `C:\Tools`.
 2. Run:
 
 ```powershell
-C:\Tools\ExcelTask\excel-task-mcp.exe --field-check
+%USERPROFILE%\ExcelTask\excel-task-mcp.exe --field-check
 ```
 
 To measure the original Excel MCP alongside it, add its launch command. Only its
@@ -30,7 +31,7 @@ handshake and tool list are read; no workbook operation is sent to it. Repeat
 `--compare-arg` once per argument the other server needs.
 
 ```powershell
-C:\Tools\ExcelTask\excel-task-mcp.exe --field-check --compare <other-server.exe> --compare-arg <arg>
+%USERPROFILE%\ExcelTask\excel-task-mcp.exe --field-check --compare <other-server.exe> --compare-arg <arg>
 ```
 
 Options: `--server <exe>` to measure a different build, `--output <dir>` to
@@ -109,15 +110,17 @@ work actually being done.
 ## Configuring ExcelTask side by side
 
 `.vscode/mcp.json` in this repository already points at
-`C:\Tools\ExcelTask\excel-task-mcp.exe`, and clients that sync a repository's
-MCP configuration will pick it up. To configure it elsewhere, use a distinct
-server key and the full executable path so the original install is untouched:
+`${userHome}\ExcelTask\excel-task-mcp.exe`, and clients that sync a repository's
+MCP configuration will pick it up. The home directory is used because a managed
+computer commonly refuses to let you write under `C:\`. To configure it
+elsewhere, use a distinct server key and the full executable path so the original
+install is untouched:
 
 ```json
 {
   "servers": {
     "excel-task": {
-      "command": "C:\\Tools\\ExcelTask\\excel-task-mcp.exe"
+      "command": "${userHome}\\ExcelTask\\excel-task-mcp.exe"
     }
   }
 }
