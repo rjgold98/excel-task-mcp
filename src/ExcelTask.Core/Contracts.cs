@@ -31,10 +31,10 @@ public sealed record ExtendFormulaSeriesOperation(
 /// </summary>
 public sealed record EditMacroProcedureOperation(
     [property: Description("Existing VBA component name containing the procedure to inspect or replace. If unknown, run AuditWorkbookFlows first; it lists every macro component and procedure.")] string ComponentName,
-    [property: Description("Existing VBA procedure name to inspect or replace.")] string ProcedureName,
+    [property: Description("Existing VBA procedure name to inspect or replace. Automatic-entry procedures such as Auto_Open cannot be edited.")] string ProcedureName,
     [property: Description("Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.")] string? ExpectedProcedureSha256 = null,
-    [property: Description("Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.")] string? ReplacementSource = null,
-    [property: Description("Apply only, and must be omitted for Plan. When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.")] bool RunAfterEdit = false);
+    [property: Description("Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name, at most 8,192 characters and 200 lines.")] string? ReplacementSource = null,
+    [property: Description("Apply only, and must be omitted for Plan. When true, Apply runs the replacement after the edit; the replacement must have zero parameters and must not contain MsgBox, InputBox, GetOpenFilename, GetSaveAsFilename, FileDialog, or Stop, which wait for a person.")] bool RunAfterEdit = false);
 
 /// <summary>
 /// Reports how one workbook's data flows fit together: its Power Query queries and where each one
@@ -96,12 +96,12 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null);
 
 public sealed record ExcelTaskRequest(
-    [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
+    [property: Description("Existing target workbook path, ending .xlsx or .xlsm.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
-    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
+    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
     [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
-    [property: Description("Required destination path when save is Copy; omit for Same.")] string? OutputWorkbookPath = null,
+    [property: Description("Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.")] string? OutputWorkbookPath = null,
     [property: Description("Explicit authorization required before Apply can overwrite an existing save destination.")] bool OverwriteConfirmed = false);
 
 public sealed record WorkbookInspectionRequest(

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.1 - 2026-08-10
+
+- Closed the interface study's follow-on audit: the eight rules the engine
+  enforced but the schema never stated are now all in the descriptions - the
+  VBA source bounds (8,192 characters, 200 lines), the blocking constructs a
+  run refuses, auto-entry procedures, the `.xlsx`/`.xlsm` path rule, the copy
+  output's differ-from-target and same-extension rules, and the Isolated+Same
+  rejection while the target is open. The fix class is measured: stating a rule
+  the server rejects on eliminated every related failure across two models and
+  cut end-to-end calls 32%.
+- The standing rules now match the shipped product: contents appear in a receipt
+  only when they are the explicit request, never incidentally - the earlier
+  absolute wording predated the bounded read and was already untrue of macro
+  Plan.
+- Roadmap carries the faithful-rebuild gaps the demand data surfaced: workbook
+  creation, blank worksheet creation, and open-workbook discovery.
+
 ## 0.10.0 - 2026-08-10
 
 ### Added - the second-most-requested operation

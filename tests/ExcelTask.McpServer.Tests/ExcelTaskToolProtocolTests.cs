@@ -111,15 +111,15 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Equal(
             ["targetWorkbookPath", "operation"],
             request.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
-        AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path.");
+        AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path, ending .xlsx or .xlsm.");
         AssertDescription(properties, "operation", "The required manual operation union. Supply exactly one payload matching kind.");
         AssertDescription(properties, "mode", "Plan previews without mutation; Apply performs the task after required confirmations.");
         // A/B measurement (docs/INTERFACE-AB-STUDY.md) showed both of these rules cost round trips
         // when they were enforced but unstated: UseOpen+Copy is rejected, and asking AskIfOpen about
         // a workbook the caller already said was open only ever returns a confirmation.
-        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.");
+        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.");
         AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.");
-        AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same.");
+        AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.");
         AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
 
         var operation = ResolveReference(properties.GetProperty("operation"), tool.InputSchema);
@@ -155,10 +155,14 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // was asked to fix a macro, had no way to learn the names this operation demands, and fell
         // back to a different server entirely.
         AssertDescription(editMacroProperties, "componentName", "Existing VBA component name containing the procedure to inspect or replace. If unknown, run AuditWorkbookFlows first; it lists every macro component and procedure.");
-        AssertDescription(editMacroProperties, "procedureName", "Existing VBA procedure name to inspect or replace.");
+        // The A/B study's follow-on audit found eight rules the engine enforced but the schema never
+        // stated; the fix class is proven (p = 0.0012, and end to end at 32% fewer calls). These
+        // pins hold the remaining ones in the schema: source bounds, blocked constructs for a run,
+        // auto-entry procedures, and the path rules asserted at the request level above.
+        AssertDescription(editMacroProperties, "procedureName", "Existing VBA procedure name to inspect or replace. Automatic-entry procedures such as Auto_Open cannot be edited.");
         AssertDescription(editMacroProperties, "expectedProcedureSha256", "Apply only, and must be omitted for Plan: SHA-256 fingerprint of the existing procedure, taken from the Plan receipt.");
-        AssertDescription(editMacroProperties, "replacementSource", "Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name.");
-        AssertDescription(editMacroProperties, "runAfterEdit", "Apply only, and must be omitted for Plan. When true, Apply runs the replacement procedure after the edit; the replacement must have zero parameters.");
+        AssertDescription(editMacroProperties, "replacementSource", "Apply only, and must be omitted for Plan: one complete replacement Sub or Function procedure with the requested name, at most 8,192 characters and 200 lines.");
+        AssertDescription(editMacroProperties, "runAfterEdit", "Apply only, and must be omitted for Plan. When true, Apply runs the replacement after the edit; the replacement must have zero parameters and must not contain MsgBox, InputBox, GetOpenFilename, GetSaveAsFilename, FileDialog, or Stop, which wait for a person.");
     }
 
     [Fact]

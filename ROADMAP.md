@@ -33,20 +33,6 @@ surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
 execution 13% slower, the advantage being entirely the removal of model
 coordination. One run per workflow; not yet a benchmark.
 
-## Next release: v0.8.0 (built, gated, held)
-
-Held only for coordination with in-flight interface work, then ships:
-
-- **Macro discovery.** The audit lists macro components and procedures, and the
-  schema routes unknown names to it. Built the day the first real task split
-  across both servers exactly at this gap - the field agent's verdict was "if
-  excel-task added a read-only list of modules and procedures, it'd stand
-  alone." See `docs/field-reports/2026-08-10-mixed-server-macro.md`.
-- **One-rejection macro policy.** Every unmet requirement in a single message;
-  field use paid one round trip per rule to learn them one at a time.
-- **Measured schema improvements** from the interface A/B study: bounds stated
-  in descriptions, binding and save rules made explicit.
-
 ## Open field gates (small, when convenient)
 
 - Audit one workbook the owner *knows* contains Power Query and Data Model
@@ -89,6 +75,21 @@ together:
 `screenshot` for verification (13), `range_format` (12), `table` beyond listing
 (11), Data Model and Power Query mutation (10 each).
 
+**Faithful-rebuild gaps the demand data surfaced, previously unlisted.** Three
+things the original can do that ExcelTask cannot do at all, each with real
+observed use:
+
+- **Create a workbook.** `file create` appeared in 9 sessions; every ExcelTask
+  operation requires an existing target. A bounded "create empty workbook at
+  this path" is small and removes a hard wall.
+- **Add a blank worksheet.** `worksheet create`, 7 sessions. `CopyExhibit` can
+  only copy an existing sheet; there is no way to add an empty one.
+- **Discover open workbooks.** `file list` appeared in 35 sessions on the
+  session-based server. ExcelTask's equivalent question - "what is open in Excel
+  right now" - is answerable per-target through `AskIfOpen` but not as a survey.
+  Demand here is partly an artifact of the other server's session model, so this
+  ranks below the two above; measure again after real ExcelTask use.
+
 **Not to be built.** `chart_config`, `pivottable_calc` and `worksheet_style` were
 never called once in five weeks; `chart`, `slicer` and `table_column` appeared in
 one session each. Roughly half of the original server's 230 operations show no
@@ -123,7 +124,14 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
 
 ## Standing rules
 
-One tool. No CLI. No model selection anywhere. Schema bytes are budgeted and
-every operation earns its own. Receipts stay bounded and truthful - a truncated
-report says so, an uncertain outcome is `Unknown`, and no receipt ever carries
-cell values, formulas, VBA source, connection strings, or machine paths.
+One tool. No CLI. No model selection anywhere. Schema bytes are budgeted, every
+operation earns its own, and a rule the engine rejects on must be stated in the
+schema - every failure in the interface study traced to one that was not.
+
+Receipts stay bounded and truthful: a truncated report says so, and an uncertain
+outcome is `Unknown`. Workbook contents appear in a receipt only when they are
+the explicit request - the range a read asked for, the one procedure a macro
+Plan named - and never incidentally. No receipt ever carries connection
+strings, machine paths, or content nobody asked for. Model-written formula text
+is never accepted; formulas are inferred from evidence in the sheet and
+verified after reopening.
