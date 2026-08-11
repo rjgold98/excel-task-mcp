@@ -1,6 +1,27 @@
 # Changelog
 
-## 0.15.0 - 2026-08-11
+## 0.15.1 - 2026-08-11
+
+First shipped build of the 0.15 line. 0.15.0 was tagged and then superseded
+before any artifact was published, for the reason below.
+
+### Fixed - the scan advertised less than it did
+
+- **The tool description now states the scan's new reach, and its silence.**
+  Smoke-testing the built 0.15.0 artifact caught it: the operation reported
+  defined names, tables and external links, and its description still described
+  only sheets and constant islands. The description is the interface the model
+  reads to decide what to call - this project measured description content
+  driving behaviour at p = 0.0012 - so a capability the schema does not
+  advertise is one that does not get used.
+- **The silence needed stating more than the additions did.** A caller who
+  scans, sees no macro listed, and concludes the workbook has none has been
+  misled by an omission rather than a wrong answer, which is harder to notice.
+  The description now says absence here is not evidence of absence, and routes
+  to `AuditWorkbookFlows`, which opens Excel and can answer.
+- Collapsed a duplicated schema pin - the same scan assertion appeared twice.
+
+## 0.15.0 - 2026-08-11 (tagged, not released)
 
 ### Added - the scan reports three more things, and stays silent about four
 
@@ -20,6 +41,14 @@
   operation that answered some categories behind a summary reading as complete
   would be a receipt that lies, so the scan does not answer them at all - use
   `AuditWorkbookFlows`, which opens Excel and can.
+- **The tool description says all of that**, including the silence. Practising
+  it is not enough: a caller who scans, sees no macro listed, and concludes the
+  workbook has none has been misled by an omission. The description now names
+  the three added categories and states outright that absence of a macro, query,
+  connection or model in a scan is not evidence of absence, routing to
+  `AuditWorkbookFlows` when it matters. A smoke test of the built artifact is
+  what caught this: the capability shipped, and the interface still advertised
+  the old one.
 
 ### Changed - the field survey, tested rather than adopted
 
