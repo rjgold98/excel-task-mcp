@@ -1082,6 +1082,99 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task ACopySaveApplyReportsItsWholeChoreographyInTheOnlySafeOrder()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "observed.xlsx");
+        var output = Path.Combine(directory, "observed-out.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            var observer = new RecordingRuntimeObserver();
+            using var runtime = new ExcelWorkbookRuntime(observer);
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("observed", ExcelTaskPlans.Write(
+                target, "Sheet1", [("A1", "1")], save: SaveMode.Copy, output: output)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+
+            // The ordering constraints that keep Excel and staging files from leaking, stated as
+            // facts rather than trusted to convention. Every mutation path must report this same
+            // shape, which is what makes the sequence safe to rewrite into one module.
+            AssertMutationChoreography(observer, "value-write", expectStaging: true);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task ASameSaveApplyReportsTheSameChoreographyWithoutStaging()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "observed-same.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1000.5 }, { 2000.25 } });
+            var observer = new RecordingRuntimeObserver();
+            using var runtime = new ExcelWorkbookRuntime(observer);
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("observed-same", ExcelTaskPlans.NumberFormat(
+                target, "Sheet1", "A1:A2", "0.0%")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            AssertMutationChoreography(observer, "number-format", expectStaging: false);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    /// <summary>
+    /// The invariants every Apply shares, whichever operation ran:
+    /// the mutation happens after the session opens; the save follows the mutation; owned Excel
+    /// cleanup is proven before verification opens the saved file (two processes on one file
+    /// otherwise); a staging path, when one exists, is announced before anything saves into it,
+    /// because the supervisor can only delete orphans it was told about; and both owned Excel
+    /// processes - primary and pre-launched verification - are announced the moment they exist.
+    /// </summary>
+    private static void AssertMutationChoreography(RecordingRuntimeObserver observer, string mutatePhase, bool expectStaging)
+    {
+        Assert.True(observer.IndexOf("phase:session-open") < observer.IndexOf($"phase:{mutatePhase}"),
+            "The mutation phase ran before the session opened.");
+        Assert.True(observer.IndexOf($"phase:{mutatePhase}") < observer.IndexOf("phase:save"),
+            "The save ran before the mutation.");
+        Assert.True(observer.IndexOf("phase:save") < observer.IndexOf("phase:primary-cleanup"),
+            "Cleanup began before the save.");
+        Assert.True(observer.IndexOf("phase:primary-cleanup") < observer.IndexOf("phase:reopen-verification"),
+            "Verification opened the file before owned Excel cleanup was proven.");
+
+        if (expectStaging)
+        {
+            Assert.True(observer.IndexOf("staging-path") <= observer.IndexOf("phase:save") + 1 &&
+                        observer.IndexOf("staging-path") < observer.IndexOf("phase:primary-cleanup"),
+                "The staging path was not announced when the save began - an orphan there would be invisible to the supervisor.");
+        }
+        else
+        {
+            Assert.Equal(0, observer.CountOf("staging-path"));
+        }
+
+        // Exactly two owned processes for an Apply: the primary and the pre-launched verification.
+        Assert.Equal(2, observer.CountOf("owned-process"));
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)
