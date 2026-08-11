@@ -99,9 +99,15 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
   after Excel is open, producing `Unknown` - the worst answer for a caller, since
   it means the file may or may not have changed. Preflight makes it a clean
   `Rejected`.
-- **The second Excel launch on a mutating Apply.** Measured at 274-482 ms of a
-  roughly one-second operation, and the largest remaining cost by far: launching
-  Excel is the entire budget, and everything done inside it is rounding error.
+- **The second Excel launch on a mutating Apply.** Now the largest measured cost
+  in the product by a wide margin. The full macro edit-run-save-verify sequence
+  is 1,035 ms of COM, and 610 ms of that is the two launches; the VBIDE work
+  everyone assumes is expensive - find, read, replace, run - is 21 ms. This also
+  retires the "macro session sharing" entry that used to sit here: the 28.1s
+  against 26.4s regression was attributed to Plan and Apply each opening their
+  own Excel, but four launches is about 1.2 seconds. The other 27 were never
+  Excel. They are worker startup, MCP round trips, and model coordination, and
+  the only lever on those is fewer calls.
   It cannot be deleted - verifying in the process that did the writing would be
   verifying against the memory that produced it - but it can be started early so
   it overlaps the write and save. Not built yet because a pre-launched instance

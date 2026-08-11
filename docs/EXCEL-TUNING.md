@@ -71,11 +71,42 @@ instance is invisible and has no window to update, no status bar to repaint, and
 negotiate with a printer driver. Adding them would be three more settings to reason about, three
 more things to restore, and no faster.
 
+## The macro path: one second, and 59% of it is launching Excel
+
+`tools/excel-macro-probe.ps1`, median of 3 trials, the full edit-run-save-verify sequence:
+
+| Step | Cost | Share |
+| --- | --- | --- |
+| launch | 284 ms | 27% |
+| configure | 29 ms | 3% |
+| open .xlsm | 63 ms | 6% |
+| **first touch of `VBProject`** | 77 ms | 7% |
+| find component | 6 ms | 1% |
+| read procedure | 6 ms | 1% |
+| replace procedure | 4 ms | 0% |
+| `Application.Run` | 5 ms | 0% |
+| save as .xlsm | 29 ms | 3% |
+| close and quit | 17 ms | 2% |
+| verification launch | 326 ms | 31% |
+| verification open | 82 ms | 8% |
+| verification read | 107 ms | 10% |
+| **total** | **1,035 ms** | |
+
+The VBIDE work that gets blamed for macro slowness - finding the component, reading the procedure,
+replacing it, running it - is **21 ms of 1,035**. There is nothing to optimize there. The two Excel
+launches are 610 ms, 59% of the whole sequence.
+
+This corrects the roadmap's standing attribution. The macro workflow was measured at 28.1s against
+the original server's 26.4s and recorded as a regression caused by "Plan and Apply each opening
+their own Excel". Four launches is about 1.2 seconds. The other 27 seconds were never Excel: they
+are worker startup, MCP round trips, and model coordination. Optimizing COM further cannot move
+that number - fewer round trips can, which is what the one-deep-tool design is already for.
+
 ## Where the remaining speed actually is
 
 A mutating Apply launches Excel **twice**: once to make the change, and once more - after proving
-the first process exited and released its file lock - to reopen the saved file and verify it. At
-roughly 350 ms a launch, that second launch is a quarter of the operation.
+the first process exited and released its file lock - to reopen the saved file and verify it. On
+the macro path that second launch alone is 31% of all Excel time, and the pair is 59%.
 
 It cannot simply be removed. Verifying in the process that just did the writing would be verifying
 against the same memory that produced them; the reopen is what makes the receipt evidence rather
