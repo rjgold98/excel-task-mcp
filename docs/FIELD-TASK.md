@@ -6,8 +6,20 @@ they named was superseded — issue #6 asked for `ExcelTask-0.14.1-...zip` from
 `releases/latest`, and by the time anyone read it `releases/latest` was four
 releases further on and contained no such file.
 
-**Target: the latest release.** Never a pinned version. `docs/FIELD-CHECK.md`
-describes what the check measures; this describes what to do and report.
+**Target: the latest release.** Never a pinned version.
+
+## What this run is for
+
+Three questions, in order of value. Everything else is confirmation.
+
+1. **Does workbook identity work on synced storage?** ExcelTask resolves a
+   workbook Excel reports as a SharePoint URL back to the local path you named.
+   That resolution has never executed anywhere — this machine is the only one
+   that can run it. Step 5.
+2. **What does the agent reach for instead of ExcelTask?** A previous session
+   made 216 PowerShell calls against 71 ExcelTask calls. Knowing which receipt
+   sent it away is worth more than any feature on the roadmap. Step 6.
+3. **Do all eleven operations still work on managed hardware?** Step 3.
 
 ## Boundaries
 
@@ -18,130 +30,336 @@ These bind, and they come from `docs/AGENT-BRIDGE.md`.
 - Never change Excel, Trust Center, or any security or system setting. If a
   policy blocks a step, **record the block verbatim and continue with the
   remaining steps**. A block is a result, not an obstacle to work around.
-- Touch only the disposable fixtures the check creates in temp. Never a real
-  business workbook.
+- Touch only the disposable fixtures the check creates in temp, and the one
+  disposable copy step 5 asks for. Never a real business workbook.
 - Do not reconfigure or interfere with any other MCP install. Measuring is fine.
 - Anything this task does not cover is a question for Ross, not an improvisation.
 
-## Step 1 — the automated check (required, ~3 min)
+---
 
-Download `ExcelTask-<latest>-windows-x64.zip` from
-<https://github.com/rjgold98/excel-task-mcp/releases/latest> and extract to
-`%USERPROFILE%\ExcelTask`. Use the home folder; a managed machine commonly
-refuses writes under `C:\`.
+## Step 1 — replace the installed build (~4 min)
+
+This is the step most likely to go wrong quietly. Windows will not let you delete
+a running `.exe`, and a self-contained build is ~231 files — so extracting over
+the top of an old one leaves stale files behind and can produce a mixed install
+that reports the new version while running old code. **Delete, then extract.**
+
+### 1a. Stop the server so its files are unlocked
+
+The MCP host keeps `excel-task-mcp.exe` running while the client is up.
+
+1. In the GitHub Copilot app, **disable the ExcelTask MCP server** (or quit the
+   app entirely — quitting is more reliable).
+2. Confirm nothing is holding the files:
 
 ```powershell
-%USERPROFILE%\ExcelTask\excel-task-mcp.exe --field-check
+Get-Process excel-task-mcp -ErrorAction SilentlyContinue
 ```
 
-Compiled .NET, not a script, specifically so Constrained Language Mode does not
-block it. It builds its own disposable workbooks in temp, changes no setting,
-and touches nothing of yours.
+Expect **no output**. If a process is listed, the client is still running it —
+quit the app and check again. Only if it persists after the app is closed:
 
-Report the digest verbatim, the exit code, and the three file paths.
+```powershell
+Stop-Process -Name excel-task-mcp -Force
+```
+
+3. Clear any stray Excel left from earlier runs, so the leak count means
+   something. **Do not do this if you have unsaved work open in Excel** — save
+   and close by hand first.
+
+```powershell
+Get-Process EXCEL -ErrorAction SilentlyContinue
+```
+
+If any are listed and none of them is yours:
+
+```powershell
+Stop-Process -Name EXCEL -Force
+```
+
+### 1b. Note what is installed now, then remove it
+
+```powershell
+(Get-Item "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe").VersionInfo.ProductVersion
+```
+
+That prints something like `0.16.0+6a7d4f7…` — the version **and** the exact
+commit it was built from, so there is no ambiguity about what was installed.
+
+Record that version — it is the "upgraded from" line in your report. Then:
+
+```powershell
+Remove-Item "$env:USERPROFILE\ExcelTask" -Recurse -Force
+```
+
+If that fails with a file-in-use error, something is still running it. Go back
+to 1a. **Do not** work around it by extracting to a different folder — the
+Copilot MCP config points at this path, and a second copy elsewhere means you
+will test one build while the client runs another.
+
+### 1c. Download the newest release
+
+Go to <https://github.com/rjgold98/excel-task-mcp/releases/latest> and download
+the asset named `ExcelTask-<version>-windows-x64.zip`. There is exactly one zip
+per release. A browser download to `%USERPROFILE%\Downloads` is fine and is
+usually the least friction on a managed machine.
+
+If the GitHub CLI is available, this is faster and avoids picking the wrong file:
+
+```powershell
+gh release download --repo rjgold98/excel-task-mcp --pattern "ExcelTask-*-windows-x64.zip" --dir "$env:USERPROFILE\Downloads" --clobber
+```
+
+### 1d. Extract
+
+Pick the archive explicitly rather than with a wildcard. After a second run there
+will be more than one release zip in `Downloads`, and `Expand-Archive` fails
+outright when its path matches several — this line takes the newest and prints
+which one it chose, so a stale zip cannot be extracted by accident.
+
+```powershell
+$zip = Get-ChildItem "$env:USERPROFILE\Downloads\ExcelTask-*-windows-x64.zip" | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$zip.Name
+Expand-Archive -Path $zip.FullName -DestinationPath "$env:USERPROFILE\ExcelTask" -Force
+```
+
+Use the home folder. A managed machine commonly refuses writes under `C:\`.
+
+Windows marks downloaded files as blocked, which can stop the executable from
+starting. Clear that:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\ExcelTask" -Recurse | Unblock-File
+```
+
+### 1e. Confirm you are on the build you think you are
+
+```powershell
+(Get-Item "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe").VersionInfo.ProductVersion
+(Get-ChildItem "$env:USERPROFILE\ExcelTask" -Recurse -File | Measure-Object).Count
+```
+
+The version must match the release you downloaded, and the file count is **231**
+for a v0.17.0 build — expect roughly that. A count in the single digits means the
+archive did not fully extract, and a count far above it means the old install was
+not removed first.
+
+**Report: the version you removed, the version you installed with its commit
+hash, and the file count.**
+
+---
+
+## Step 2 — re-enable the server in Copilot
+
+Turn the ExcelTask MCP server back on (or reopen the app). Confirm the client
+lists **one** tool, named `excel_task`. If it lists more than one, or none, stop
+and report that — it means the client is pointed at something other than this
+build.
+
+Nothing else in the Copilot configuration should change. The install path is the
+same as before precisely so no config edit is needed.
+
+---
+
+## Step 3 — the automated check (required, ~3 min)
+
+This is a compiled .NET executable, not a script, specifically so Constrained
+Language Mode does not block it. It builds its own disposable workbooks in temp,
+changes no setting, and touches nothing of yours.
+
+```powershell
+& "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check
+```
+
+It prints a digest of about fifteen lines and writes three files to
+`Desktop\ExcelTask-FieldCheck`.
+
+**What good looks like:** every operation row reads `Completed` or `Planned`,
+every row ends `leaked=0`, the last line reads `Coverage: all 11 operations
+exercised.`, and the digest ends `leaked=0 result=PASS`. Exit code `0`.
+
+```powershell
+$LASTEXITCODE
+```
+
+**Report: the digest verbatim, the exit code, and the three file paths.**
 
 ### Results that are interesting rather than bad
 
-- **`vbom=0`** — VBA project access is blocked by policy. Macro Plan returns no
-  hash and Apply is skipped. This is correct behaviour. Report it; change
-  nothing.
-- **`Coverage:`** — names any operation the run did not exercise. If it names
-  any, report it. A PASS covers only what ran.
-- **`syncRootsRegistered=0`** — nothing is synced, so the SharePoint identity
-  path could not be exercised and step 3 is the only way to settle it.
-- **`syncPathsResolving`** showing fewer than registered — the mapping on this
-  machine differs from what the resolver expects. This is a finding worth
-  stopping for; it means `UseOpen` on synced storage still refuses.
-- **`folder:*` showing `readOnlyAttribute=yes acceptsNewFile=no`** — a genuinely
-  unwritable folder, unlike the attribute-only case. Report which.
+Report each; change nothing.
+
+| Reading | Means |
+|---|---|
+| `vbom=0` | VBA project access is blocked by policy. Macro Plan returns no hash and Apply is skipped. **Correct behaviour**, and it tells the roadmap what is possible here. |
+| `syncRootsRegistered=0` | Nothing is synced. Step 5 cannot run, and that is itself the answer. |
+| `syncPathsResolving` less than registered | **A finding worth stopping for.** The mapping on this machine differs from what the resolver expects, so `UseOpen` on synced storage will still refuse. |
+| `folder:* readOnlyAttribute=yes acceptsNewFile=yes` | Expected, and confirms a fixed defect. Windows marks these folders; they are writable. |
+| `folder:* acceptsNewFile=no` | A genuinely unwritable folder. Report which. |
 
 ### Results that are bad
 
-- **Any `Unknown` status.** The one result worth stopping to investigate.
-  Capture the full check text for that row from the Markdown report.
+- **Any `Unknown` status.** The one result worth stopping to investigate. Open
+  the Markdown report and copy the full check text for that row.
 - **`leaked=` anything but 0.** Real since v0.14.1, where the counter was fixed
   to wait for Excel's asynchronous exit rather than counting a dying process.
   Report it with the surrounding rows.
+- **`Coverage:` naming any operation.** A PASS covers only what ran.
 
-## Step 2 — if anything fails or hangs (only then)
+---
+
+## Step 4 — only if something failed or hung
+
+Re-run with the trace on. The log states its own contract in its header: phases,
+durations, operation kinds, worksheet names, A1 ranges, workbook **file names
+only**, process ids, statuses. It never records cell values, formulas, VBA
+source, connection strings, or full paths.
 
 ```powershell
 $env:EXCELTASK_TRACE = "$env:USERPROFILE\exceltask-trace.log"
-%USERPROFILE%\ExcelTask\excel-task-mcp.exe --field-check
+& "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check
 Remove-Item Env:EXCELTASK_TRACE
 ```
 
-The log is safe to share by construction and states its own contract in its
-header. **A phase with no matching `phase end` is where it hung** — the single
+**A phase with no matching `phase end` is where it hung.** That is the single
 most useful line in the file, and no receipt can report it.
 
-## Step 3 — the OneDrive binding (required if `syncRootsRegistered` > 0, ~5 min)
+---
 
-The highest-value unproven thing in the product. Workbook identity resolves a
-service URL back to the local path through the sync client's registry mapping,
-and until this runs on a synced machine only the arithmetic around it is tested.
+## Step 5 — the OneDrive binding (the important one, ~5 min)
 
-With **a disposable copy** of any workbook inside a synced folder open in Excel,
-send a `ReadWorksheetRange` with `workbookBinding: "UseOpen"` against its
-**local** path.
+**Skip only if step 3 reported `syncRootsRegistered=0`.**
 
-Report: whether it bound or refused, and the **exact** refusal text if it
-refused. Before v0.16.0 this refused every time, reporting that the workbook
-name matched and the path did not.
+ExcelTask resolves a workbook Excel reports as a service URL back to the local
+path you named, through the sync client's registry mapping. Only the arithmetic
+around that is covered by tests — the lookup itself has never run anywhere.
+Before v0.16.0 this refused every time, reporting that the workbook name matched
+and the path did not.
 
-## Step 4 — the full test suite (required if the SDK is present, ~10 min)
+1. Take **a disposable copy** of any workbook that lives inside a synced OneDrive
+   or SharePoint folder. Copy it, rename the copy, and work only on the copy.
+   Never the original.
+2. Open the copy in Excel and leave it open.
+3. Through the Copilot client, ask ExcelTask for a **`ReadWorksheetRange`** on a
+   small range of that copy, using its **local** path (the one Explorer shows,
+   not a URL), with `workbookBinding` set to `UseOpen`.
+4. Then ask for a **`ScanWorkbookStructure`** on the same local path.
+
+**Report, exactly:**
+
+- whether the read bound to the open workbook or refused;
+- if it refused, the **complete refusal text**, pasted;
+- whether the scan succeeded (it reads the file directly, so it should work
+  regardless — if it fails while the read succeeds, that is a separate finding);
+- the local path's **shape only**, never the path itself: for example
+  "under the OneDrive root, two folders deep".
+
+Delete the disposable copy afterwards.
+
+---
+
+## Step 6 — the session analytics export (~5 min)
+
+A previous session made **216 PowerShell calls against 71 ExcelTask calls**, and
+the PowerShell was almost entirely one question asked over and over: *what
+workbook does Excel currently have open?* The agent tried PowerShell, then
+Python, then compiling C#. Knowing which receipt sends the agent away is the most
+valuable diagnostic available, and it is invisible from the server side.
+
+After you have finished steps 3 to 5, produce `ANALYTICS.md` from the local
+session event stream. **Metadata only** — no workbook values, no formula text, no
+VBA, no full paths, no prompt or reasoning content.
+
+1. Every tool call in time order: timestamp, tool name, duration in ms, status
+   (completed / errored / aborted). For `excel_task` calls also give the
+   operation kind, the mode, and the receipt status returned. **Not** arguments.
+2. Any `tool.execution_start` with no matching `tool.execution_complete`: which
+   tool, when, and what followed it.
+3. Every skill invocation: name, timestamp, duration.
+4. Every subagent: label, duration, whether it completed.
+5. **For each `excel_task` call, the tool names of the three calls immediately
+   before and after it.** This is the important one — it shows what the agent
+   reached for instead of the MCP.
+6. Any error or refusal text returned **by** `excel_task`, verbatim. These are
+   ExcelTask's own messages and carry no workbook content.
+7. Token count at each usage checkpoint, and what triggered any compaction or
+   truncation.
+
+Note if the client cannot export some of this. Raw reasoning traces are usually
+stored as opaque or encrypted blocks and are not expected to be recoverable —
+their absence is not a failure, and they are not needed.
+
+---
+
+## Step 7 — the test suite (only if the .NET SDK and a clone are present)
+
+Skip this entirely if either is missing, and say so. It is a developer-machine
+check that happens to be worth repeating here; it is not what this run is for.
+
+```powershell
+dotnet --version
+```
+
+If that fails, the SDK is absent — skip to reporting. Otherwise, from your local
+clone:
 
 ```powershell
 git -C <your local clone> pull
 dotnet test ExcelTask.slnx --filter "RunType!=OnDemand" -p:NuGetAudit=false
+```
+
+**Expected: 236 fast tests, zero failures** — Core 133, Excel 85, McpServer 18.
+The current counts are also in `ROADMAP.md` under Delivered, updated each
+release; if these disagree with the roadmap, trust the roadmap and report the
+difference.
+
+Then the full gate, which drives real Excel and takes about ten minutes:
+
+```powershell
 .\scripts\Test-Mvp.ps1 -IncludeExcel
 ```
 
-Report the pass/fail/skip counts **per assembly, verbatim**. "Tests passed"
-without counts will be sent back. Current expected counts are in `ROADMAP.md`
-under Delivered, which is updated every release.
+**Expected: 276 total, zero failures, and no Excel process left behind.**
+
+**Report the pass/fail/skip counts per assembly, verbatim.** "Tests passed"
+without counts will be sent back.
 
 If .NET is a per-user install, the harness needs `DOTNET_ROOT` in the child
 environment. That was fixed in v0.4.1; if a child-process runtime error appears,
 report its exact text.
 
-## Step 5 — optional: measure another server (~5 min)
+---
+
+## Step 8 — optional: measure another server (~5 min)
+
+Only the handshake and tool list of the other server are read. **No workbook
+operation is sent to it.**
 
 ```powershell
-%USERPROFILE%\ExcelTask\excel-task-mcp.exe --field-check --compare <other-server.exe>
+& "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check --compare <other-server.exe>
 ```
 
-Only the handshake and tool list of the other server are read; **no workbook
-operation is sent to it**. Repeat `--compare-arg <arg>` per argument it needs.
-This produces the tool-surface ratio — the context cost every session pays
-before any work is requested.
+Repeat `--compare-arg <arg>` once per argument it needs. This produces the
+tool-surface ratio — the context cost every session pays before any work is
+requested.
 
-## Step 6 — optional: the client comparison (~15 min)
-
-The automated half cannot see tokens or turns; only the client knows those. Pick
-three tasks resembling real work — one exhibit built from a modelled worksheet,
-one formula repair or extension, one macro edit — and run each twice, once with
-ExcelTask and once with the other server.
-
-Use whichever model is already selected. **Do not switch models between runs and
-do not force one**, which would make the runs incomparable.
-
-Record per run: wall-clock from pressing enter to the change being finished,
-tool calls, retries or self-corrections, whether the workbook ended up correct
-(verified by opening it), any stray `EXCEL.EXE` afterwards, and tokens only if
-the client exposes them. The first number matters most: prompt to work done.
+---
 
 ## Reporting
 
 Files on the work computer, paths to Ross, **no git operations**.
 
 1. The three generated field-check files, unedited.
-2. The trace log, if step 2 ran.
-3. One `SUMMARY.md` containing:
+2. The trace log, if step 4 ran.
+3. `ANALYTICS.md` from step 6.
+4. One `SUMMARY.md` containing:
+   - the version removed and the version installed, with the file count;
    - each command exactly as executed;
    - the digest verbatim and every exit code;
-   - test counts per assembly;
    - the environment table the check reports;
-   - the step 3 result, with exact text if it refused;
+   - **the step 5 result, with the complete refusal text if it refused**;
+   - test counts per assembly, or a note that the SDK or clone was absent;
    - the exact text of anything that failed — pasted, never summarized;
    - anything surprising the tooling did not capture.
+
+If you ran out of time, report what you completed rather than skipping ahead.
+Steps 3, 5 and 6 are the ones that matter; 7 and 8 are optional.
