@@ -52,6 +52,20 @@ public sealed partial class ExcelWorkbookRuntime
         /// Unknown as non-retryable. Forgetting any one of them silently weakens the guarantee that
         /// no Excel process is left behind, which is the product's central reliability claim.
         /// </summary>
+        /// <summary>
+        /// Gives this session up without touching Excel, for the one case where talking to it is
+        /// unsafe: its process has already been terminated to break a blocked call. Closing would
+        /// send Quit and Close to a server that no longer exists and then release its proxies,
+        /// which can fault hard enough to take this process down. Returns whether the owned process
+        /// is genuinely gone, so the caller still reports the truth rather than assuming it.
+        /// </summary>
+        public bool AbandonTerminatedProcess()
+        {
+            _closed = true;
+            _references.Abandon();
+            return _ownedProcess is null || !_ownedProcess.IsRunning;
+        }
+
         /// <param name="session">Set to null so a later close cannot double-run against a dead process.</param>
         /// <param name="what">Names the moment in the operation, for the failure detail only.</param>
         public static WorkbookExecutionOutcome? CloseAndProve(

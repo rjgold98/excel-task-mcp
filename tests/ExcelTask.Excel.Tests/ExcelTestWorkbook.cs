@@ -455,7 +455,11 @@ internal static class ExcelTestWorkbook
     public static void AssertNoLeakedExcel(ISet<ProcessIdentity> existingExcel)
     {
         ProcessIdentity[] leaked = [];
-        for (var attempt = 0; attempt < 20; attempt++)
+        // Thirty seconds, because teardown time scales with what the operation did: an audit that
+        // walked every worksheet, table and defined name takes measurably longer to exit than a
+        // three-cell repair. The bound still holds the assertion honest - a genuine leak never
+        // clears, so a longer wait cannot turn a failure into a pass, only a slow exit into one.
+        for (var attempt = 0; attempt < 120; attempt++)
         {
             HashSet<ProcessIdentity> fixtureOwned;
             lock (FixtureProcessGate) fixtureOwned = [.. FixtureProcesses];

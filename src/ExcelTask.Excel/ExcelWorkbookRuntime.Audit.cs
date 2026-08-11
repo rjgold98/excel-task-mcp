@@ -328,6 +328,70 @@ public sealed partial class ExcelWorkbookRuntime
 
                     Report("pivot", name, source, sheetName);
                 }
+
+                // Tables are the structured targets an analyst aims at by name; 11 of 46 real
+                // sessions listed them before working. The sheet-local address is safe to report.
+                try
+                {
+                    var tables = references.Add(Get(sheet, "ListObjects"));
+                    var tableCount = Convert.ToInt32(Get(tables, "Count"), CultureInfo.InvariantCulture);
+                    for (var tableIndex = 1; tableIndex <= tableCount; tableIndex++)
+                    {
+                        var table = references.Add(Item(tables, tableIndex));
+                        var tableName = (string)Get(table, "Name");
+                        var tableDetail = "table";
+                        try
+                        {
+                            var tableRange = references.Add(Get(table, "Range"));
+                            tableDetail = $"table at {(string)Get(tableRange, "Address")}";
+                        }
+                        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                        Report("table", tableName, tableDetail, sheetName);
+                    }
+                }
+                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+            }
+        });
+
+        // Defined names, in 12 of 46 real sessions the way a workbook's important ranges are found.
+        // The referred-to address is sheet-local and safe; an external reference is classified and
+        // reduced to its file name, because the full RefersTo string carries directories.
+        Section("named-ranges", () =>
+        {
+            var names = references.Add(Get(workbook, "Names"));
+            var nameCount = Convert.ToInt32(Get(names, "Count"), CultureInfo.InvariantCulture);
+            for (var index = 1; index <= nameCount; index++)
+            {
+                var definedName = references.Add(Item(names, index));
+                // Hidden names are Excel plumbing - filter databases, print areas gone stale - and
+                // reporting them would drown the twenty-item receipt in noise nobody asked for.
+                try
+                {
+                    if (!Convert.ToBoolean(Get(definedName, "Visible"), CultureInfo.InvariantCulture)) continue;
+                }
+                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+
+                var name = (string)Get(definedName, "Name");
+                var detail = "defined name";
+                string? dependsOn = null;
+                try
+                {
+                    var refersTo = (string)Get(definedName, "RefersTo");
+                    var bracket = refersTo.IndexOf('[', StringComparison.Ordinal);
+                    if (bracket >= 0)
+                    {
+                        var close = refersTo.IndexOf(']', bracket);
+                        detail = "refers to another workbook";
+                        if (close > bracket) dependsOn = refersTo[(bracket + 1)..close];
+                    }
+                    else
+                    {
+                        detail = $"refers to {refersTo.TrimStart('=')}";
+                    }
+                }
+                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+
+                Report("named-range", name, detail, dependsOn);
             }
         });
 

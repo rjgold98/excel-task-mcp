@@ -178,17 +178,30 @@ public sealed partial class ExcelWorkbookRuntime
             // The replacement never ran and nothing reached disk: the edit existed only inside the
             // Excel instance that has now ended, and the target workbook was never written. So this
             // is an ordinary rejection the caller can fix and retry, not an uncertain outcome.
-            try { session?.Close(); }
-            catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { }
+            //
+            // The session is abandoned rather than closed. Its process was already terminated to
+            // break the blocked call, so Quit and Close would be sent to a server that is gone and
+            // its proxies then released - which can fault hard enough to take this process down.
+            var exited = session?.AbandonTerminatedProcess() ?? true;
             session = null;
 
             checks.Add(new TaskCheck("macro-run", false, $"The macro did not compile, so it was not run: {exception.Message}"));
-            checks.Add(new TaskCheck("owned-process-exit", true, "The isolated Excel instance was ended to release the blocked call."));
-            return new WorkbookExecutionOutcome(
-                ExcelTaskStatus.Rejected,
-                "The replacement macro did not compile, so no changes were saved.",
-                Checks: checks,
-                MacroProcedure: snapshot is null ? null : CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted: false));
+            checks.Add(new TaskCheck("owned-process-exit", exited, exited
+                ? "The isolated Excel instance was ended to release the blocked call."
+                : "The isolated Excel instance was ended, but its process has not exited yet."));
+            return exited
+                ? new WorkbookExecutionOutcome(
+                    ExcelTaskStatus.Rejected,
+                    "The replacement macro did not compile, so no changes were saved.",
+                    Checks: checks,
+                    MacroProcedure: snapshot is null ? null : CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted: false))
+                : new WorkbookExecutionOutcome(
+                    ExcelTaskStatus.Unknown,
+                    "The replacement macro did not compile, and owned Excel cleanup could not be proven.",
+                    Checks: checks,
+                    CanRetry: false,
+                    RetryReason: "Inspect the owned Excel process before retrying.",
+                    MacroProcedure: snapshot is null ? null : CreateMacroReceipt(operation, snapshot, includeSource: false, runCompleted: false));
         }
         catch (Exception)
         {
@@ -342,9 +355,15 @@ public sealed partial class ExcelWorkbookRuntime
         }
 
         // A compile error means the sentry had to end this Excel instance, so no further COM call
-        // can succeed and there is nothing left to tidy up inside it.
+        // can succeed and there is nothing left to tidy up inside it. The references are abandoned
+        // rather than released: releasing a proxy whose server has been terminated can fault hard
+        // enough to take this process down, and there is nothing left on the other side to free.
         var compileError = dismissed.FirstOrDefault(dialog => dialog.Kind == ModalDialogKind.VbaCompileError);
-        if (compileError is not null) throw new MacroCompilationException(compileError.Message);
+        if (compileError is not null)
+        {
+            references.Abandon();
+            throw new MacroCompilationException(compileError.Message);
+        }
 
         var linesAfter = Convert.ToInt32(Get(module, "CountOfLines"), CultureInfo.InvariantCulture);
         if (linesAfter > linesBefore) Invoke(module, "DeleteLines", linesBefore + 1, linesAfter - linesBefore);

@@ -79,6 +79,46 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task VerificationReadsTheRepairedBlockAsOneOffsetBox()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "box.xlsx");
+        try
+        {
+            // Verification now reads the bounding box of the repairs in one array instead of one
+            // COM call per cell, which is hundreds of times cheaper but introduces index
+            // arithmetic that a single-cell or A1-anchored range would not exercise. This block
+            // starts at C3 and spans three columns, so a wrong origin or a 1-based array bound
+            // would read the wrong cell and fail verification rather than pass silently.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "C3:E6", new object?[,]
+            {
+                { "=ROW()", "=ROW()", "=ROW()" },
+                { "=ROW()", null,     "=ROW()" },
+                { null,     "=ROW()", null     },
+                { "=ROW()", "=ROW()", "=ROW()" }
+            });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("box-repair", ExcelTaskPlans.Repair(
+                target, "Sheet1", [new FormulaRepairRange("C3", "E6")], ExcelTaskMode.Apply, WorkbookBinding.Isolated)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+
+            // The three interior gaps, at three different offsets from the box origin.
+            Assert.True(ExcelTestWorkbook.HasFormula(target, "D4", "=ROW()"));
+            Assert.True(ExcelTestWorkbook.HasFormula(target, "C5", "=ROW()"));
+            Assert.True(ExcelTestWorkbook.HasFormula(target, "E5", "=ROW()"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ExecuteRepairsAnExistingWorksheet()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

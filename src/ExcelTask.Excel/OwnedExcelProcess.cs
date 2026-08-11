@@ -25,7 +25,12 @@ internal sealed class OwnedExcelProcess
         {
             using (process)
             {
+                // A process can exit between the enumeration above and the capture below. Every way
+                // that surfaces is ignored: Process.GetProcessById throws ArgumentException for an
+                // id already gone, and reading StartTime or the module path throws Win32Exception or
+                // InvalidOperationException on a process mid-exit.
                 try { identities.Add(ProcessIdentity.Capture(process.Id)); }
+                catch (ArgumentException) { }
                 catch (InvalidOperationException) { }
                 catch (System.ComponentModel.Win32Exception) { }
             }

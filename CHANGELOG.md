@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.8.1 - 2026-08-10
+
+### Fixed
+
+- **A macro compile error could take the whole server process down.** The dialog
+  sentry ends the owned Excel to break a call blocked behind a compile-error
+  dialog, and the code then closed the session normally - sending Quit and Close
+  to a server that no longer existed and releasing its proxies. Releasing a proxy
+  whose server has been terminated can fault hard enough to kill the host process,
+  reliably so once the VBA editor had been materialized by an earlier macro run.
+  Those references are now abandoned rather than released, and the receipt reports
+  whether the process genuinely exited instead of assuming it.
+
+### Changed - speed
+
+- **Formula verification reads the repaired block in one array instead of one COM
+  call per cell.** Measured on this machine: 3,000 individual cell reads cost
+  4,864 ms, the same cells read as a single range cost 13 ms. Verification was
+  the last chatty path; writes were already batched.
+
+### Added - discovery, from the demand data
+
+- The audit lists **tables** and **defined names**, which appeared in 11 and 12
+  of the owner's 46 real Excel sessions. With worksheets and macro procedures in
+  0.8.0, the discovery layer now covers what real work looks up before acting.
+
+### Measured, and deliberately not changed
+
+Excel's application settings were tested against a workload with a real
+dependency chain: `ScreenUpdating`, `Calculation = manual`, `PrintCommunication`
+and `AskToUpdateLinks` all landed within noise of the 425 ms baseline. They do
+not help because the architecture already avoids what they protect against -
+`Visible = false` subsumes screen updating, and writes are grouped rather than
+per-cell so calculation thrash never happens. `AskToUpdateLinks` is also
+unnecessary for correctness: opening with `UpdateLinks:=0` was verified to return
+the cached value with no prompt for both a stale link and a missing one.
+
 ## 0.8.0 - 2026-08-10
 
 Two product defects found by driving the built server against real Excel, the
