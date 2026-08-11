@@ -48,17 +48,38 @@ public static partial class MacroProcedureText
         return false;
     }
 
-    /// <summary>Replaces literal text with spaces so a construct name inside a string is not mistaken for code.</summary>
+    /// <summary>
+    /// Replaces literal text with spaces so a construct name inside a string is not mistaken for
+    /// code. VBA escapes a quote by doubling it, and toggling on every quote got that wrong: in
+    /// Debug.Print "Use ""MsgBox"" carefully" the flag fell to false across MsgBox, which was then
+    /// emitted as code and refused as a blocking construct. Quote parity means the error only ever
+    /// ran this way - a real call can never be blanked out - so it was a false refusal, never a
+    /// bypass. <see cref="StripComment"/> already had these three lines.
+    /// </summary>
     private static string StripStringLiterals(string line)
     {
         if (!line.Contains('"', StringComparison.Ordinal)) return line;
 
         var builder = new StringBuilder(line.Length);
         var quoted = false;
-        foreach (var character in line)
+        for (var index = 0; index < line.Length; index++)
         {
-            if (character == '"') quoted = !quoted;
-            builder.Append(quoted || character == '"' ? ' ' : character);
+            var character = line[index];
+            if (character == '"')
+            {
+                if (quoted && index + 1 < line.Length && line[index + 1] == '"')
+                {
+                    builder.Append("  ");
+                    index++;
+                    continue;
+                }
+
+                quoted = !quoted;
+                builder.Append(' ');
+                continue;
+            }
+
+            builder.Append(quoted ? ' ' : character);
         }
 
         return builder.ToString();
@@ -224,6 +245,14 @@ public static partial class MacroProcedureText
     // macro. Requiring that no member access precede it keeps the statement and drops the calls.
     // The others stay matched anywhere, because Application.FileDialog is exactly the usage worth
     // refusing.
-    [GeneratedRegex(@"\b(?:MsgBox|InputBox|GetOpenFilename|GetSaveAsFilename|FileDialog)\b|(?<![.!\w])Stop\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    //
+    // A modal UserForm and Application.Dialogs(...).Show belong here for the same reason, and they
+    // are the two that fell through every layer of the defence: the sentry filters on window class
+    // #32770, so a UserForm's ThunderDFrame is invisible to it, and a built-in dialog carries a
+    // Cancel button the sentry correctly declines to press. Nothing then answered them and nothing
+    // refused them, so the run stalled until the 110-second recovery deadline killed Excel and the
+    // caller got Unknown with no reason - precisely the outcome this class exists to prevent.
+    // .Show is required after the name so that merely passing a form around still compiles through.
+    [GeneratedRegex(@"\b(?:MsgBox|InputBox|GetOpenFilename|GetSaveAsFilename|FileDialog)\b|(?<![.!\w])Stop\b|\bUserForm\w*\s*\.\s*Show\b|\bDialogs\s*\(.*?\)\s*\.\s*Show\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex BlockingConstructRegex();
 }

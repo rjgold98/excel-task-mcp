@@ -25,6 +25,37 @@ internal static class WorkbookRuntimeHelpers
         StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Whether an identity Excel reported denotes the workbook the caller named.
+    ///
+    /// Usually that is exact path equality, and it stays exact. The exception is a workbook opened
+    /// from a synced OneDrive or SharePoint folder: Excel reports its service URL rather than the
+    /// local path, so a comparison against the caller's path found nothing and refused - correctly
+    /// for the question asked, uselessly for the one that mattered. The URL is resolved back
+    /// through the sync client's own mapping and then compared exactly, so nothing is guessed.
+    ///
+    /// Deliberately separate from <see cref="PathsEqual"/>, which compares two paths the caller
+    /// supplied. Only an identity Excel reported can be a URL.
+    /// </summary>
+    public static bool IdentifiesSameWorkbook(string? reportedIdentity, string targetPath)
+    {
+        if (string.IsNullOrWhiteSpace(reportedIdentity)) return false;
+
+        if (reportedIdentity.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+            reportedIdentity.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return OneDriveSyncMap.MatchesLocalPath(reportedIdentity, targetPath);
+        }
+
+        // A reported identity is not always a well-formed path - an unsaved workbook reports a bare
+        // name - and normalising one must not take down the search that would have found the file.
+        try { return PathsEqual(reportedIdentity, targetPath); }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// A file name with no directory, because a full path names the machine and the person.
     ///
     /// It lives here rather than on the diagnostic tracer because it is a redaction rule the

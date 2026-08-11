@@ -61,6 +61,13 @@ internal sealed class ModalDialogSentry : IDisposable
     private readonly Lock _gate = new();
     private readonly List<DismissedDialog> _dismissed = [];
 
+    /// <summary>
+    /// Dialog windows already acted on, so a dialog that takes a moment to close is not counted
+    /// again on the next pass. Touched only from the watch loop, so it needs no gate;
+    /// <see cref="_dismissed"/> does, because the macro path reads it from another thread.
+    /// </summary>
+    private readonly HashSet<IntPtr> _acted = [];
+
     private ModalDialogSentry(ProcessIdentity identity)
     {
         _identity = identity;
@@ -77,11 +84,34 @@ internal sealed class ModalDialogSentry : IDisposable
         get { lock (_gate) return _dismissed.ToArray(); }
     }
 
+    /// <summary>
+    /// Stops watching, and does not return while a pass could still act.
+    ///
+    /// The wait is generous because a pass already inside SendMessageTimeout budgets two seconds
+    /// per dialog on top of a process open for the identity re-check, and the old two-second wait
+    /// could expire underneath it. That was worse than a slow Dispose: it disposed the token source
+    /// while the loop was live, so the next Delay threw ObjectDisposedException past a catch that
+    /// only handles cancellation and faulted the loop unobserved - and it returned control to a
+    /// caller that goes straight into SaveAs while a sentry pass could still terminate owned Excel.
+    /// In the ordinary case the loop is parked in Delay and cancels in microseconds, so this costs
+    /// nothing; the wait only materialises when something really is wedged, which is when it should.
+    /// </summary>
     public void Dispose()
     {
         _stop.Cancel();
-        try { _loop.Wait(TimeSpan.FromSeconds(2)); }
-        catch (AggregateException) { }
+
+        bool finished;
+        try { finished = _loop.Wait(TimeSpan.FromSeconds(15)); }
+        catch (AggregateException) { finished = true; }
+
+        if (!finished)
+        {
+            // Never yank the token source out from under a live loop. An undisposed source holds no
+            // timer and no handle here, so leaving it is strictly cheaper than the race.
+            _ = _loop.ContinueWith(static task => _ = task.Exception, TaskScheduler.Default);
+            return;
+        }
+
         _stop.Dispose();
     }
 
@@ -110,14 +140,26 @@ internal sealed class ModalDialogSentry : IDisposable
             if (process.HasExited) return;
         }
 
+        // Handles whose windows are gone are dropped, so a recycled handle belonging to a genuinely
+        // new dialog is answered rather than mistaken for one already handled.
+        _acted.RemoveWhere(handle => !IsWindow(handle));
+
         foreach (var dialog in EnumerateDialogs((uint)_identity.ProcessId))
         {
-            if (!TryClassify(dialog, out var kind, out var message, out var buttonToClick)) continue;
-
-            lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
+            // Already acted on. Without this the same window was re-counted every 500 ms, so one
+            // MsgBox that took 1.6 s to close arrived in the receipt as three dialogs answered.
+            if (!_acted.Add(dialog)) continue;
+            if (!TryClassify(dialog, out var kind, out var message, out var buttonToClick))
+            {
+                // Not ours to answer - a Cancel-bearing dialog, say. Do not hold the handle, or a
+                // dialog that later becomes answerable would be skipped.
+                _acted.Remove(dialog);
+                continue;
+            }
 
             if (kind == ModalDialogKind.VbaCompileError)
             {
+                lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
                 // Measured behaviour: answering a compile error does not hand control back. VBA
                 // drops into break mode with the module open in the editor, and the automation call
                 // that is already blocked inside COM never returns. Ending this instance is the only
@@ -127,9 +169,20 @@ internal sealed class ModalDialogSentry : IDisposable
                 continue;
             }
 
-            // A timeout keeps a wedged UI thread from blocking the sentry itself, which would
-            // defeat the whole point of watching from outside the blocked call.
-            _ = SendMessageTimeout(buttonToClick, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out _);
+            // A timeout keeps a wedged UI thread from blocking the sentry itself, which would defeat
+            // the whole point of watching from outside the blocked call. Its return is evidence,
+            // not decoration: non-zero means the window procedure processed BM_CLICK, and zero is
+            // what SMTO_ABORTIFHUNG returns against exactly the hung thread this class exists for.
+            // Recording before the call, and discarding its result, is how a dialog nobody ever
+            // clicked reached the receipt as "answered".
+            //
+            // Delivery is the evidence, deliberately, rather than the window later disappearing:
+            // the macro path reads Dismissed the instant the run returns, so evidence that arrives
+            // a poll later arrives after the receipt is built and the dialog goes unreported.
+            var delivered = SendMessageTimeout(
+                buttonToClick, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out _) != IntPtr.Zero;
+            if (delivered) lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
+            else _acted.Remove(dialog);
         }
     }
 
@@ -288,6 +341,9 @@ internal sealed class ModalDialogSentry : IDisposable
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr handle);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr handle);
 
     [DllImport("user32.dll")]
     private static extern int GetDlgCtrlID(IntPtr handle);

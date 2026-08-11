@@ -127,16 +127,7 @@ public sealed partial class ExcelWorkbookRuntime
         {
             var bounds = WorkbookRuntimeHelpers.GetBounds(requestedRange);
 
-            // Inference needs the neighbours on each side, and a blank on the very edge of the
-            // requested range has one of them outside it. Reading only the requested range made
-            // such a cell unrepairable, so a caller who split a large area into chunks silently
-            // lost every gap that landed on a chunk boundary and still got "Completed".
-            // Evidence is read one cell wider; writes stay inside the requested range.
-            var evidence = new FormulaRangeBounds(
-                Math.Max(1, bounds.StartRow - 1),
-                Math.Max(1, bounds.StartColumn - 1),
-                Math.Min(1_048_576, bounds.EndRow + 1),
-                Math.Min(16_384, bounds.EndColumn + 1));
+            var evidence = EvidenceBoundsFor(bounds);
             var evidenceAddress = $"{WorkbookRuntimeHelpers.ToA1Address(evidence.StartRow, evidence.StartColumn)}:{WorkbookRuntimeHelpers.ToA1Address(evidence.EndRow, evidence.EndColumn)}";
 
             var range = references.Add(Get(worksheet, "Range", evidenceAddress));
@@ -158,6 +149,26 @@ public sealed partial class ExcelWorkbookRuntime
 
         return FormulaExecutionPlan.Create(kind, targetWorksheetName, repairs, rangeResults);
     }
+
+    /// <summary>
+    /// The rectangle read as evidence for a requested repair range: one cell wider on every side,
+    /// clamped to the sheet.
+    ///
+    /// Inference needs the neighbours on each side, and a blank on the very edge of the requested
+    /// range has one of them outside it. Reading only the requested range made such a cell
+    /// unrepairable, so a caller who split a large area into chunks silently lost every gap that
+    /// landed on a chunk boundary and still got Completed. Writes stay inside the requested range;
+    /// only the reading widens.
+    ///
+    /// Separated from the COM path so the widening itself can be asserted. In the widest fixture in
+    /// the suite every gap already has both neighbours inside the requested range, so deleting the
+    /// +/-1 left the whole suite green while silent data loss came back.
+    /// </summary>
+    internal static FormulaRangeBounds EvidenceBoundsFor(FormulaRangeBounds bounds) => new(
+        Math.Max(1, bounds.StartRow - 1),
+        Math.Max(1, bounds.StartColumn - 1),
+        Math.Min(1_048_576, bounds.EndRow + 1),
+        Math.Min(16_384, bounds.EndColumn + 1));
 
     private static FormulaExecutionPlan AnalyzeFormulaExtension(object workbook, NormalizedExtendFormulaSeriesOperation task)
     {
@@ -203,8 +214,13 @@ public sealed partial class ExcelWorkbookRuntime
     /// the joined address length rather than by a cell count. A fixed count cannot be safe: the same
     /// number of cells produces a longer address further down the sheet, which made identical repairs
     /// succeed near row 1 and fail near row 2500.
+    ///
+    /// Internal rather than private so the bound can be asserted directly. Every repair fixture in
+    /// the suite is small enough to produce one batch, so the split this exists for never ran under
+    /// test: reintroducing a fixed cell count would have left the whole suite green while the
+    /// recorded failure came back exactly as described above.
     /// </summary>
-    private static IEnumerable<string> BatchAddresses(IEnumerable<ExpectedFormula> repairs)
+    internal static IEnumerable<string> BatchAddresses(IEnumerable<ExpectedFormula> repairs)
     {
         const int MaxAddressLength = 255;
         var builder = new StringBuilder();
@@ -322,7 +338,7 @@ public sealed partial class ExcelWorkbookRuntime
         return true;
     }
 
-    private sealed record ExpectedFormula(int Row, int Column, string FormulaR1C1);
+    internal sealed record ExpectedFormula(int Row, int Column, string FormulaR1C1);
 
     private sealed record RepairRangeResult(FormulaRepairRange Range, int RepairCount);
 

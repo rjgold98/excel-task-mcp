@@ -1,5 +1,104 @@
 # Changelog
 
+## 0.16.0 - 2026-08-11
+
+Driven by an architecture review and a field log from a real day's work. Seven
+adversarial verifiers were run against the review's findings first, and all
+seven came back *partly true* - the inventories held, the stated consequences
+were routinely overstated. What follows is the corrected set.
+
+### Added - a workbook opened from OneDrive or SharePoint can be found again
+
+- **An identity Excel reports as a service URL now resolves against the local
+  path the caller named.** A workbook opened from a synced folder does not
+  report the path a person sees in Explorer; its `FullName` is
+  `https://tenant.sharepoint.com/...`, so exact-path matching found nothing and
+  refused. A field session produced four consecutive refusals in a row, each
+  reporting that the workbook name matched and the path did not, against the
+  storage the owner keeps everything in.
+- **The identity is still exact, not fuzzy.** The caller's path is resolved
+  through the sync client's own published mapping (`MountPoint` and
+  `UrlNamespace` under `HKCU\Software\SyncEngines\Providers\OneDrive`) and then
+  compared exactly. A same-named workbook in a different library still does not
+  match, and a sibling folder sharing a name prefix - `OneDrive - Contoso Ltd`
+  against a root of `OneDrive - Contoso` - cannot resolve into it. Where nothing
+  is synced, every caller behaves exactly as before.
+- The mapping and comparison are pinned by tests; the registry lookup itself
+  cannot be exercised on a machine that syncs nothing, so **that half is still
+  unverified in the field**. One `UseOpen` against a OneDrive-backed workbook
+  will settle it.
+
+### Fixed - the dialog sentry reported answers it had not given
+
+- **A dialog is recorded only once its click was delivered.** The record was
+  appended *before* the button was pressed, and `SendMessageTimeout`'s return
+  was discarded - and `SMTO_ABORTIFHUNG` returns immediately without delivering
+  the click against exactly the wedged UI thread the sentry exists to handle. A
+  dialog nobody ever clicked reached the receipt as answered.
+- **One dialog counts once.** With no per-window memory the loop re-counted the
+  same window every 500 ms, so a single message box that took 1.6 seconds to
+  close arrived as three dialogs answered.
+- **`Dispose` no longer disposes the cancellation source under a live loop.** A
+  pass can exceed the old two-second wait easily, after which the loop faulted
+  unobserved on its next delay and - worse - control returned to a caller that
+  goes straight into `SaveAs` while a sentry pass could still terminate owned
+  Excel. In the ordinary case the loop is parked and cancels in microseconds.
+- **A modal `UserForm` is now refused rather than waited on.** It fell through
+  both layers: the sentry filters on window class `#32770`, so a UserForm's
+  `ThunderDFrame` is invisible to it, and `Application.Dialogs(...).Show` shows
+  a Cancel button the sentry correctly declines to press. Nothing answered them
+  and nothing refused them, so a run stalled until the 110-second recovery
+  deadline killed Excel and the caller got `Unknown` with no reason.
+- **A doubled quote no longer refuses a legitimate macro.** VBA escapes a quote
+  by doubling it; the literal stripper toggled on every quote, so in
+  `Debug.Print "Use ""MsgBox"" carefully"` the word inside was emitted as code
+  and the request refused for a construct it never contained. Quote parity means
+  this only ever ran that way - a false refusal, never a bypass.
+
+### Fixed - the supervisor's cleanup net skipped the path that knows
+
+- **The sweep now triggers on what the worker reported, not on whether it
+  reported cleanly.** `cleanupRequired` was set on every silent failure but not
+  when the worker returned a well-formed result - and `CloseAndProve` produces a
+  perfectly well-formed result carrying `owned-process-exit: false`. So the
+  independent exit re-check and the orphaned-staging deletion were both skipped
+  on the one path that had already detected the problem.
+- **Findings from the sweep now reach the receipt.** The checks list was left
+  null on that path, so anything the sweep discovered was silently dropped.
+- A clean `Completed` result still pays for no sweep, which a test asserts.
+
+### Changed - omission is now a compile error, not a silent gap
+
+- **One `OperationCatalog` replaces the hand-kept payload array.** An operation
+  missing from that array was not merely uncounted - it became unreachable,
+  because the request failed the arity check before reaching its own validation.
+  Two operations shipped that way. The catalog's switch has no default arm, so
+  adding a kind without handling it fails the build; this was verified by adding
+  a twelfth kind and confirming `error CS8509`, not assumed.
+- **The worker's trace switch lost its `_ => "no options"` default** for the
+  same reason: a new operation silently traced as having no options, with no
+  compile error and no failing test.
+- **The field check now reports what it did not exercise.** It shipped covering
+  five of eleven operations - everything from the first four releases, nothing
+  from the last four - and still printed PASS. The step list stays hand-written,
+  since each step needs its own fixture, but a gap is now named in the report.
+  These are also the first tests over that ~900-line shipped component.
+
+### Fixed - two repaired defects could have returned without turning the suite red
+
+- **The formula-repair batch bound is asserted directly.** Excel refuses a range
+  address longer than 255 characters, so batches are bounded by joined address
+  length rather than cell count - but every fixture in the suite produces a
+  single batch, so the split never ran. Swapping the bound back for any fixed
+  count would have left the suite green while identical repairs succeeded near
+  row 1 and threw near row 2500.
+- **The evidence widening is asserted directly.** Repair inference reads one
+  cell wider than the requested range, because a gap on a chunk boundary has one
+  neighbour outside it. In the widest fixture every gap already has both
+  neighbours inside, so deleting the widening left the suite green while a
+  chunked caller silently lost every boundary gap and still received
+  `Completed`.
+
 ## 0.15.2 - 2026-08-11
 
 ### Fixed - the scan reported half the defined names and leaked the rest

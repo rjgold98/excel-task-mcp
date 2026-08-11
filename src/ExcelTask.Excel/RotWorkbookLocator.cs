@@ -182,7 +182,7 @@ internal sealed class RotWorkbookLocator : IDisposable
     {
         if (string.IsNullOrWhiteSpace(displayName)) return false;
         var candidate = displayName[0] == '!' ? displayName[1..] : displayName;
-        return WorkbookRuntimeHelpers.PathsEqual(candidate, targetPath);
+        return WorkbookRuntimeHelpers.IdentifiesSameWorkbook(candidate, targetPath);
     }
 
     private static bool HasMatchingFullName(object candidate, string targetPath)
@@ -190,7 +190,7 @@ internal sealed class RotWorkbookLocator : IDisposable
         try
         {
             var fullName = candidate.GetType().InvokeMember("FullName", BindingFlags.GetProperty, null, candidate, null, CultureInfo.InvariantCulture) as string;
-            return fullName is not null && WorkbookRuntimeHelpers.PathsEqual(fullName, targetPath);
+            return WorkbookRuntimeHelpers.IdentifiesSameWorkbook(fullName, targetPath);
         }
         catch (COMException)
         {

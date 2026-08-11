@@ -703,25 +703,11 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
-        // One entry per payload, and every operation must appear. A payload left out of this list is
-        // not merely uncounted - it becomes unreachable, because a request carrying only that
-        // payload fails the arity check below and never reaches its own validation. Two operations
-        // shipped that way once; EveryOperationKindHasACountedPayload now guards against it.
-        object?[] payloads =
-        [
-            operation.CopyExhibit,
-            operation.RepairExistingWorksheet,
-            operation.ExtendFormulaSeries,
-            operation.EditMacroProcedure,
-            operation.AuditWorkbookFlows,
-            operation.ReadWorksheetRange,
-            operation.WriteWorksheetValues,
-            operation.FindReplace,
-            operation.Create,
-            operation.SetNumberFormat,
-            operation.ScanWorkbookStructure
-        ];
-        var payloadCount = payloads.Count(payload => payload is not null);
+        // Counted by asking each kind for its own payload rather than by restating the union here.
+        // The hand-kept array this replaced shipped two operations unreachable: a payload missing
+        // from it was not merely uncounted, the request failed arity before reaching its own
+        // validation. OperationCatalog cannot lose one silently - see its summary.
+        var payloadCount = OperationCatalog.SuppliedPayloadCount(operation);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";

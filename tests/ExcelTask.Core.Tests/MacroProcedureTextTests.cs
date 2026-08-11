@@ -72,6 +72,13 @@ public sealed class MacroProcedureTextTests
     [InlineData("Public Sub RefreshModel()\n    If Range(\"A1\").Value2 = 0 Then Stop\nEnd Sub", "Stop")]
     [InlineData("Public Sub RefreshModel()\n    Range(\"A1\").Value2 = 1: Stop\nEnd Sub", "Stop")]
     [InlineData("Public Sub RefreshModel()\n    Dim f\n    f = Application.GetOpenFilename()\nEnd Sub", "GetOpenFilename")]
+    // Both of these used to fall through every layer. The dialog sentry filters on window class
+    // #32770, so a UserForm's ThunderDFrame is invisible to it, and a built-in dialog carries a
+    // Cancel button the sentry correctly refuses to press - so nothing answered them and nothing
+    // refused them, and the run stalled until the recovery deadline killed Excel.
+    [InlineData("Public Sub RefreshModel()\n    UserForm1.Show\nEnd Sub", "UserForm1.Show")]
+    [InlineData("Public Sub RefreshModel()\n    UserForm1.Show vbModal\nEnd Sub", "UserForm1.Show")]
+    [InlineData("Public Sub RefreshModel()\n    Application.Dialogs(xlDialogSaveAs).Show\nEnd Sub", "Dialogs(xlDialogSaveAs).Show")]
     public void DetectsConstructsThatWaitForAPerson(string source, string expected)
     {
         Assert.True(MacroProcedureText.TryFindBlockingConstruct(source, out var construct));
@@ -88,6 +95,13 @@ public sealed class MacroProcedureTextTests
     [InlineData("Public Sub RefreshModel()\n    timer.Stop\nEnd Sub")]
     [InlineData("Public Sub RefreshModel()\n    Application.Speech.Stop\nEnd Sub")]
     [InlineData("Public Sub RefreshModel()\n    Call recorder.Stop()\nEnd Sub")]
+    // VBA escapes a quote by doubling it. Toggling on every quote dropped out of the literal
+    // halfway through, so the word inside was emitted as code and the macro was refused for a
+    // construct it never contained.
+    [InlineData("Public Sub RefreshModel()\n    Debug.Print \"Use \"\"MsgBox\"\" carefully\"\nEnd Sub")]
+    [InlineData("Public Sub RefreshModel()\n    Range(\"A1\").Value2 = \"a \"\"Stop\"\" sign\"\nEnd Sub")]
+    // Holding a form is not showing one.
+    [InlineData("Public Sub RefreshModel()\n    Dim form As UserForm1\n    Set form = New UserForm1\nEnd Sub")]
     public void DoesNotMistakeStringsCommentsOrSimilarNamesForBlockingCode(string source)
     {
         Assert.False(MacroProcedureText.TryFindBlockingConstruct(source, out var construct));

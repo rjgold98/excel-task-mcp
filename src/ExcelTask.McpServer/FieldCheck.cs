@@ -23,6 +23,27 @@ internal sealed record ToolSurface(
     double HandshakeSeconds,
     string? Error);
 
+/// <summary>
+/// Reports any operation this run never exercised.
+///
+/// The check shipped once covering five of eleven operations - everything from the first four
+/// releases and nothing from the last four - so a field session validated the half already proven
+/// and reported PASS. The step list is written by hand and always will be, because each step needs
+/// its own fixture and arguments; what it must not do is stay silent about what it skipped. Labels
+/// carry the operation name, so the set of kinds exercised can be read back off the results and
+/// compared against the catalog the engine dispatches on.
+/// </summary>
+internal static class FieldCheckCoverage
+{
+    public static IReadOnlyList<string> UncoveredKinds(IEnumerable<OperationResult> operations)
+    {
+        var labels = operations.Select(operation => operation.Label).ToArray();
+        return [.. OperationCatalog.AllKinds
+            .Select(kind => kind.ToString())
+            .Where(name => !labels.Any(label => label.StartsWith(name, StringComparison.Ordinal)))];
+    }
+}
+
 internal sealed record OperationResult(
     string Label,
     string Status,
@@ -122,6 +143,7 @@ internal static class FieldCheck
 
             Write("[4/4] Exercising each operation on disposable workbooks...");
             await RunOperationsAsync(serverPath, work, macroNote is null, fixtures, operations, notes);
+            ReportCoverageGaps(operations, notes);
         }
         catch (Exception exception)
         {
@@ -138,6 +160,26 @@ internal static class FieldCheck
         // operation did, and this figure is the product's central claim.
         var leaked = FieldCheckFixtures.CountLeakedAfterSettling(preExisting, fixtures.OwnedProcesses, TimeSpan.FromSeconds(30));
         return WriteReport(outputDirectory, serverPath, environment, surfaces, operations, notes, leaked);
+    }
+
+    /// <summary>
+    /// Says out loud what this run did not exercise. A check that silently covers a subset reports
+    /// PASS for the whole product, which is exactly how it once validated five of eleven operations
+    /// and said nothing.
+    /// </summary>
+    private static void ReportCoverageGaps(List<OperationResult> operations, List<string> notes)
+    {
+        var total = OperationCatalog.AllKinds.Count;
+        var uncovered = FieldCheckCoverage.UncoveredKinds(operations);
+        if (uncovered.Count == 0)
+        {
+            Write($"      Coverage: all {total} operations exercised.");
+            return;
+        }
+
+        var list = string.Join(", ", uncovered);
+        notes.Add($"This run exercised {total - uncovered.Count} of {total} operations. Not exercised: {list}. A PASS covers only what ran.");
+        Write($"      Coverage: {uncovered.Count} of {total} operation(s) not exercised - {list}");
     }
 
     private static async Task RunOperationsAsync(

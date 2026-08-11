@@ -271,6 +271,58 @@ public sealed class SupervisedWorkbookRuntimeTests
     }
 
     [Fact]
+    public async Task AWorkerThatReportsItsOwnFailedCleanupStillGetsTheSupervisorsSweep()
+    {
+        // The sibling test above covers a worker that goes SILENT. This covers the path that
+        // actually happens: ExcelSession.CloseAndProve detects that owned Excel did not exit and
+        // returns a perfectly well-formed result frame saying so. That took the success branch,
+        // where cleanupRequired was never set - so the supervisor's independent exit re-check and
+        // its orphaned-staging deletion were both skipped on the one path that already knew
+        // something was wrong.
+        var identity = new SupervisedExcelIdentity(4321, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");
+        var processes = new ExactMatchOnlyProcessObserver(identity, exitResult: false);
+        var session = new FakeWorkerSession(
+            new SupervisedWorkerFrame(Accepted: true),
+            new SupervisedWorkerFrame(ExcelIdentity: identity),
+            new SupervisedWorkerFrame(Execution: new WorkbookExecutionOutcome(
+                ExcelTaskStatus.Unknown,
+                "Excel saved the workbook, but the owned process did not exit.",
+                Checks: [new TaskCheck("save", true, "Saved."), new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit.")])));
+        using var runtime = CreateRuntime(new FakeWorkerClient(session), processes);
+
+        var outcome = await runtime.ExecuteAsync(CreatePlan(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Unknown, outcome.Status);
+        Assert.Equal(1, processes.AttemptCount);
+
+        // The worker's own checks survive, and the sweep does not duplicate the one it already made.
+        Assert.Contains(outcome.Checks!, check => check.Name == "save" && check.Passed);
+        Assert.Single(outcome.Checks!, check => check.Name == "owned-process-exit");
+    }
+
+    [Fact]
+    public async Task ACleanWorkerResultDoesNotPayForASweepItDoesNotNeed()
+    {
+        // The trigger is the reported outcome, so a Completed result with every check passing must
+        // not touch the process observer at all - the sweep costs a process open per identity.
+        var identity = new SupervisedExcelIdentity(4321, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");
+        var processes = new ExactMatchOnlyProcessObserver(identity);
+        var session = new FakeWorkerSession(
+            new SupervisedWorkerFrame(Accepted: true),
+            new SupervisedWorkerFrame(ExcelIdentity: identity),
+            new SupervisedWorkerFrame(Execution: new WorkbookExecutionOutcome(
+                ExcelTaskStatus.Completed,
+                "Workbook changes were saved and verified after reopening.",
+                Checks: [new TaskCheck("save", true, "Saved."), new TaskCheck("reopen-verification", true, "Verified.")])));
+        using var runtime = CreateRuntime(new FakeWorkerClient(session), processes);
+
+        var outcome = await runtime.ExecuteAsync(CreatePlan(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, outcome.Status);
+        Assert.Equal(0, processes.AttemptCount);
+    }
+
+    [Fact]
     public async Task UseOpenNeverInspectsTheReportedExcelProcessForCleanup()
     {
         var identity = new SupervisedExcelIdentity(1234, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");

@@ -104,6 +104,9 @@ public static class WorkbookWorkerHost
                    $"overwriteConfirmed={plan.OverwriteConfirmed} target={DiagnosticTrace.FileNameOnly(plan.TargetWorkbookPath)} " +
                    $"output={DiagnosticTrace.FileNameOnly(plan.OutputWorkbookPath)}");
 
+        // Only CS8524 - a value outside the enum's named members - is suppressed. CS8509, a named
+        // member with no arm, stays an error, which is the whole point of removing the default.
+#pragma warning disable CS8524
         var detail = operation.Kind switch
         {
             ExcelOperationKind.ReadWorksheetRange => $"sheet={operation.ReadWorksheetRange!.WorksheetName} range={operation.ReadWorksheetRange.Range} formulas={operation.ReadWorksheetRange.Formulas}",
@@ -116,8 +119,13 @@ public static class WorkbookWorkerHost
             ExcelOperationKind.CopyExhibit => $"referenceSheet={operation.CopyExhibit!.ReferenceWorksheet} newSheet={operation.CopyExhibit.NewWorksheetName} repairRanges={operation.CopyExhibit.RepairRanges.Count}",
             ExcelOperationKind.EditMacroProcedure => $"component={operation.EditMacroProcedure!.ComponentName} procedure={operation.EditMacroProcedure.ProcedureName} run={operation.EditMacroProcedure.RunAfterEdit}",
             ExcelOperationKind.ScanWorkbookStructure => "direct file scan, no Excel",
-            _ => "no options"
+            // Listed rather than defaulted. A `_ =>` arm here meant a new operation silently traced
+            // as "no options" - no compile error, no test failure, just a diagnostic that quietly
+            // stopped describing the thing it exists to describe. Naming the option-less kinds
+            // makes omission a build failure instead.
+            ExcelOperationKind.AuditWorkbookFlows => "no options"
         };
+#pragma warning restore CS8524
         trace.Note($"  {detail}");
     }
 

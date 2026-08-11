@@ -69,26 +69,31 @@ public sealed class SupervisedWorkbookRuntime : IWorkbookRuntime, IDisposable
         var stagingArtifacts = new List<string>(4);
         var cleanupRequired = false;
         var sessionStopped = false;
-        List<TaskCheck>? unknownChecks = null;
+
+        // The checks list the cleanup sweep may append to. It is handed to the returned outcome by
+        // reference, so a failure the sweep finds after the result is built still reaches the
+        // caller. Both return paths populate it - the Unknown one below, and the worker-reported
+        // one, which used to leave it null and silently drop everything the sweep found.
+        List<TaskCheck>? receiptChecks = null;
 
         SupervisedRunResult UnknownResult(string summary)
         {
-            unknownChecks ??=
+            receiptChecks ??=
             [
                 new TaskCheck("worker-supervision", false, "The accepted operation requires workbook reconciliation.")
             ];
             return new SupervisedRunResult(null, new WorkbookExecutionOutcome(
                 ExcelTaskStatus.Unknown,
                 summary,
-                Checks: unknownChecks,
+                Checks: receiptChecks,
                 CanRetry: false,
                 RetryReason: "Inspect workbook state before retrying."));
         }
 
         void AddCleanupFailure(string name, string message)
         {
-            if (unknownChecks is null || unknownChecks.Any(check => string.Equals(check.Name, name, StringComparison.Ordinal))) return;
-            unknownChecks.Add(new TaskCheck(name, false, message));
+            if (receiptChecks is null || receiptChecks.Any(check => string.Equals(check.Name, name, StringComparison.Ordinal))) return;
+            receiptChecks.Add(new TaskCheck(name, false, message));
         }
 
         try
@@ -195,7 +200,22 @@ public sealed class SupervisedWorkbookRuntime : IWorkbookRuntime, IDisposable
                         cleanupRequired = true;
                         return UnknownResult("The private workbook worker returned a result but did not prove process exit.");
                     }
-                    return new SupervisedRunResult(null, NormalizeExecution(frame.Execution));
+                    // The sweep runs on what the worker REPORTED, not on whether it reported
+                    // cleanly. A worker that completes its protocol and hands back Unknown - or any
+                    // failed check - has just told us it could not finish cleaning up, which is
+                    // exactly when an independent exit re-check and orphaned-staging deletion are
+                    // wanted. Gating them on a silent worker meant they never ran on the one path
+                    // that knows: CloseAndProve produces a well-formed result carrying
+                    // owned-process-exit false, and it took this branch every time.
+                    var reported = NormalizeExecution(frame.Execution);
+                    if (NeedsCleanupSweep(reported))
+                    {
+                        cleanupRequired = true;
+                        receiptChecks = [.. reported.Checks ?? []];
+                        reported = reported with { Checks = receiptChecks };
+                    }
+
+                    return new SupervisedRunResult(null, reported);
                 }
             }
 
@@ -254,6 +274,15 @@ public sealed class SupervisedWorkbookRuntime : IWorkbookRuntime, IDisposable
     private static SupervisedRunResult BeforeAcceptance(WorkbookWorkerOperation operation, string message) => operation == WorkbookWorkerOperation.Execute
         ? new(null, Rejected(message))
         : new(null, null);
+
+    /// <summary>
+    /// Whether the supervisor should second-guess a result the worker returned cleanly. Cheap when
+    /// there is nothing to sweep: a rejection that never started Excel reports no identities and no
+    /// staging artifacts, so both loops are empty.
+    /// </summary>
+    private static bool NeedsCleanupSweep(WorkbookExecutionOutcome outcome) =>
+        outcome.Status is ExcelTaskStatus.Unknown or ExcelTaskStatus.Partial ||
+        (outcome.Checks?.Any(check => !check.Passed) ?? false);
 
     private static WorkbookExecutionOutcome NormalizeExecution(WorkbookExecutionOutcome outcome) => outcome.Status == ExcelTaskStatus.Unknown
         ? outcome with { CanRetry = false, RetryReason = "Inspect workbook state before retrying." }
