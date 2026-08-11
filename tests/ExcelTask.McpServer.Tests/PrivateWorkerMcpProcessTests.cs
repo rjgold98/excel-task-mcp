@@ -78,7 +78,7 @@ public sealed class PrivateWorkerMcpProcessTests
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -133,7 +133,7 @@ public sealed class PrivateWorkerMcpProcessTests
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 

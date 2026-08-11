@@ -140,6 +140,68 @@ The honest position is not "cross-platform" but something better-defined and mor
 combination — the file-format servers cannot verify with Excel at all, and the COM servers cannot
 answer without one.
 
+## Beating each one specifically
+
+The axes above are the mechanism. This is the scoreboard, one competitor at a time. Every row
+marked *projected* is arithmetic from the measurements in this document, not an observed result.
+
+### sbroenne/mcp-server-excel — the incumbent
+
+Same mechanism (C#, live COM), so fidelity is a tie and neither side wins on "does Excel really do
+it." It wins today on **capability** (Power Query, DAX, PivotTables, charts) and on offering a CLI
+mode its own benchmark says costs 64% fewer tokens than its MCP mode.
+
+- **Win on context cost — already true, and it publishes the number itself.** ~163 K tokens of tool
+  schemas per request against ~16 KB. Nothing needs building; it needs *showing*, which is the
+  field gate's job.
+- **Win on trust — already true.** It has no verification after write, no proof the Excel process
+  exited, and its lifecycle model could not even be characterised from its documentation.
+- **Do not chase its capability list.** Half of it was never called once in 46 sessions. Chasing it
+  is how you acquire its token problem.
+- **Take its one good idea.** The CLI-vs-MCP token gap is real and is an argument for putting
+  detail behind MCP resources rather than in the tool schema.
+
+### xlwings-mcp-server — the closest architecture
+
+Python, live COM, Windows-only, same fundamental bet. It wins on **per-call speed** by keeping Excel
+sessions alive, and on **extensibility** because Python is easier to move in than C# plus COM.
+
+- **Win on speed without adopting sessions.** Its advantage is avoiding the launch; yours is
+  avoiding the *verification* launch, which the trace shows is the bigger number — 2,359 ms against
+  522 ms. File-based verification takes roughly 44% off the four accelerable operations *(projected)*
+  while keeping statelessness, which is what makes a leak impossible in the first place.
+- **Win on safety — already true.** Sessions held open with TTL eviction is a leak surface with no
+  proof-of-exit behind it.
+
+### haris-musa/excel-mcp-server — openpyxl
+
+Wins outright on **portability** (no Excel, any OS, headless, CI) and on raw speed for file edits.
+
+- **Do not try to beat it at being headless.** It will always win that, because it gave up Excel.
+- **Beat it on the claim it cannot make.** It cannot recalculate, run a macro, or refresh a query -
+  ever. Your position is *every read works anywhere; every mutation is verified by real Excel*, and
+  it can only ever offer the first half.
+- **Narrow the gap where it costs nothing.** The scan is already pure ZIP and XML; extending
+  file-based reads means the portable half of that sentence becomes literally true.
+
+### negokaz/excel-mcp-server — Go, 7 tools
+
+The closest philosophical relative: it also believes in a small surface, and its single-binary npm
+distribution is genuinely better packaging than a 39 MB zip.
+
+- **Win decisively on correctness.** It writes any `=`-prefixed string verbatim to `SetFormula`,
+  with no validation, no recalculation, and no read-back, then reports success. That is the exact
+  silent-wrongness failure this project exists to prevent, and it is worth stating plainly in any
+  comparison.
+- **Learn from its distribution.** Install friction is a real axis and it beats you there.
+
+### The competitor not yet surveyed
+
+Microsoft's own first-party direction — Copilot in Excel, or a Graph workbook MCP — would be
+supported, cross-platform and cloud-native, and would undercut both camps at once. The survey found
+nothing, but it also did not look hard. **This is the one that should be checked before another
+multi-week investment**, because it is the only one that could make the whole category moot.
+
 ## The order
 
 1. **Run the work-computer field gate.** Every claim here is theory until the numbers come from the

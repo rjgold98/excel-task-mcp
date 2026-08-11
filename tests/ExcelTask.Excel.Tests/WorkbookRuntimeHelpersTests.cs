@@ -36,7 +36,7 @@ public sealed class WorkbookRuntimeHelpersTests
         finally
         {
             WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -60,7 +60,7 @@ public sealed class WorkbookRuntimeHelpersTests
         finally
         {
             WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -84,7 +84,7 @@ public sealed class WorkbookRuntimeHelpersTests
         finally
         {
             WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -155,7 +155,7 @@ public sealed class WorkbookRuntimeHelpersTests
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -187,7 +187,7 @@ public sealed class WorkbookRuntimeHelpersTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -214,7 +214,7 @@ public sealed class WorkbookRuntimeHelpersTests
         }
         finally
         {
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 

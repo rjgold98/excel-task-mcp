@@ -38,7 +38,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -74,7 +74,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -114,7 +114,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -137,7 +137,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -169,7 +169,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -201,7 +201,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -223,7 +223,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -275,7 +275,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         {
             // Editing VBA materializes the VBE, which is the most likely way this workflow could
             // strand an Excel process, so the macro case asserts cleanup explicitly.
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -331,7 +331,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -385,7 +385,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -446,7 +446,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -489,7 +489,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -516,7 +516,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -547,7 +547,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -595,7 +595,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -635,7 +635,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -674,7 +674,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -728,7 +728,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -770,7 +770,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -809,7 +809,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -842,7 +842,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -877,7 +877,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -908,7 +908,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -940,7 +940,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -977,7 +977,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1013,7 +1013,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1043,7 +1043,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1077,7 +1077,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1113,7 +1113,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1148,7 +1148,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1188,7 +1188,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1220,7 +1220,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1247,7 +1247,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }
@@ -1326,7 +1326,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
             ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
         }
     }

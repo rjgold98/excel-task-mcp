@@ -56,7 +56,7 @@ public sealed class WorkbookStructureScanTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -102,7 +102,7 @@ public sealed class WorkbookStructureScanTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -190,7 +190,7 @@ public sealed class WorkbookStructureScanTests
         }
         finally
         {
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 

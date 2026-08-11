@@ -81,7 +81,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
             ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -147,7 +147,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
             ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -212,7 +212,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
             ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -328,7 +328,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
             ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
-            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 

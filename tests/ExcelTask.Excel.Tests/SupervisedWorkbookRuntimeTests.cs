@@ -51,7 +51,7 @@ public sealed class SupervisedWorkbookRuntimeTests
         finally
         {
             Directory.SetCurrentDirectory(originalDirectory);
-            Directory.Delete(alternateDirectory, recursive: true);
+            TempDirectory.Remove(alternateDirectory);
         }
     }
 
@@ -316,7 +316,7 @@ public sealed class SupervisedWorkbookRuntimeTests
         {
             if (File.Exists(exact)) File.Delete(exact);
             if (File.Exists(unrelated)) File.Delete(unrelated);
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
@@ -348,7 +348,7 @@ public sealed class SupervisedWorkbookRuntimeTests
         finally
         {
             if (File.Exists(exact)) File.Delete(exact);
-            Directory.Delete(directory, recursive: true);
+            TempDirectory.Remove(directory);
         }
     }
 
