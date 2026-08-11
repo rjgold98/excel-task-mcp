@@ -1,4 +1,4 @@
-# ExcelTask 0.15.1
+# ExcelTask 0.15.2
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles

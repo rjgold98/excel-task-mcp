@@ -106,6 +106,111 @@ public sealed class WorkbookStructureScanTests
         }
     }
 
+    [Fact]
+    public async Task EveryDefinedNameIsReportedAndNoneOfThemCarriesAPathOrAValue()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "names.xlsx");
+
+        try
+        {
+            // Six members, because the shipped version reported three of them: ReadElementContentAsString
+            // advances past the element, and the enclosing Read() advanced again, so every second
+            // definedName was stepped over - under a summary that read as complete. One member
+            // cannot express that, which is exactly why the first test could not see it.
+            WriteDefinedNameFixture(target);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("names", ExcelTaskPlans.Scan(target)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Planned,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            var names = outcome.Audit!.Items.Where(item => item.Kind == "scan-defined-name").ToList();
+
+            Assert.Equal(
+                ["LocalRange", "LocalCell", "QuotedSheet", "ExternalBook", "TextConstant", "NumericConstant"],
+                names.Select(item => item.Name));
+
+            // A plain local reference is shape, and reporting it is the point of the operation.
+            Assert.Equal("Data!$B$2:$B$4", names[0].Detail);
+            Assert.Equal("Data!$B$2", names[1].Detail);
+            Assert.Equal("'My Sheet'!$A$1", names[2].Detail);
+
+            // Everything else is described, never echoed.
+            Assert.Equal("external workbook Q4-Patients.xlsx", names[3].Detail);
+            Assert.Equal("text constant", names[4].Detail);
+            Assert.Equal("numeric constant", names[5].Detail);
+
+            // The guarantee itself, asserted over the whole receipt rather than field by field: no
+            // item may carry a directory, a machine, a person, or a stored value.
+            foreach (var item in outcome.Audit.Items)
+            {
+                Assert.DoesNotContain("Confidential", item.Detail, StringComparison.OrdinalIgnoreCase);
+                Assert.DoesNotContain(":\\", item.Detail, StringComparison.Ordinal);
+                Assert.DoesNotContain("Acme Regional Health", item.Detail, StringComparison.Ordinal);
+                Assert.DoesNotContain("0.0725", item.Detail, StringComparison.Ordinal);
+            }
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+        }
+    }
+
+    /// <summary>
+    /// Six defined names spanning every shape one can hold: local range, local cell, quoted sheet,
+    /// a reference into another workbook carrying its full path, a text literal, and a number.
+    /// </summary>
+    private static void WriteDefinedNameFixture(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+
+        Add(archive, "[Content_Types].xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+            </Types>
+            """);
+
+        Add(archive, "_rels/.rels", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+            </Relationships>
+            """);
+
+        Add(archive, "xl/workbook.xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>
+              <definedNames>
+                <definedName name="LocalRange">Data!$B$2:$B$4</definedName>
+                <definedName name="LocalCell">Data!$B$2</definedName>
+                <definedName name="QuotedSheet">'My Sheet'!$A$1</definedName>
+                <definedName name="ExternalBook">'C:\Users\someone\Confidential\PHI\[Q4-Patients.xlsx]Roster'!$A$1:$Z$999</definedName>
+                <definedName name="TextConstant">"Acme Regional Health LLC"</definedName>
+                <definedName name="NumericConstant">0.0725</definedName>
+              </definedNames>
+            </workbook>
+            """);
+
+        Add(archive, "xl/_rels/workbook.xml.rels", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+            </Relationships>
+            """);
+
+        Add(archive, "xl/worksheets/sheet1.xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:A1"/><sheetData/></worksheet>
+            """);
+    }
+
     /// <summary>A package carrying a table, a defined name, and an external link relationship.</summary>
     private static void WriteFeatureFixture(string path)
     {

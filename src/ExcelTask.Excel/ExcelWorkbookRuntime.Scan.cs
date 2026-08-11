@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO.Compression;
+using System.Text.RegularExpressions;
 using System.Xml;
 using ExcelTask.Core;
 
@@ -157,18 +158,74 @@ public sealed partial class ExcelWorkbookRuntime
     {
         var items = new List<WorkbookFlowItem>();
         using var reader = XmlReader.Create(workbookEntry.Open(), ScanReaderSettings());
-        while (reader.Read())
+
+        // Deliberately not `while (reader.Read())`. ReadElementContentAsString already advances past
+        // the element it consumed, so an enclosing Read() steps over whatever follows it. That
+        // reported six defined names as three - every second one - under a summary that read as
+        // complete, which is the one failure this operation exists to avoid making.
+        while (!reader.EOF)
         {
-            if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "definedName") continue;
+            if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "definedName")
+            {
+                reader.Read();
+                continue;
+            }
+
             var name = reader.GetAttribute("name") ?? "(unnamed)";
-            // A defined name's value is a reference, not workbook content, and it is the whole
-            // point of reporting one - a caller planning a fix needs to know where it points.
-            var target = reader.ReadElementContentAsString();
-            items.Add(new WorkbookFlowItem("scan-defined-name", name, target.Length == 0 ? "(empty reference)" : target));
+            items.Add(new WorkbookFlowItem(
+                "scan-defined-name", name, DescribeDefinedName(reader.ReadElementContentAsString())));
         }
 
         return items;
     }
+
+    /// <summary>
+    /// What a defined name points at, described without copying what it holds.
+    ///
+    /// A defined name's stored value is not always a reference, which the first version of this
+    /// assumed. It can be a numeric constant, a text literal, a formula, or a reference into another
+    /// workbook - and that last one carries the other workbook's full path, naming a machine, a
+    /// person, and a directory layout. Echoing the value verbatim put all four into a receipt from
+    /// the one operation that documents itself as reporting shape and never contents, while
+    /// ScanExternalLinks forty lines below was already reducing exactly this class of data to a
+    /// bare file name. Same file, same hazard, opposite handling.
+    ///
+    /// So a plain local reference is shape and survives intact - it is why reporting defined names
+    /// is useful at all. Anything naming another workbook is reduced to that workbook's file name.
+    /// Anything else is reported by category, never by value.
+    /// </summary>
+    private static string DescribeDefinedName(string target)
+    {
+        target = target.Trim();
+        if (target.Length == 0) return "(empty reference)";
+
+        var open = target.IndexOf('[', StringComparison.Ordinal);
+        var close = open >= 0 ? target.IndexOf(']', open + 1) : -1;
+        if (close > open)
+        {
+            // [1]Sheet1!$A$1 indexes the external-link table and names no file; a bracketed name
+            // does, and it arrives wrapped in the source workbook's full path.
+            var workbook = target[(open + 1)..close].Trim();
+            return workbook.Length == 0 || workbook.All(char.IsAsciiDigit)
+                ? "external workbook reference"
+                : $"external workbook {WorkbookRuntimeHelpers.FileNameOnly(workbook)}";
+        }
+
+        if (target.Contains('\\', StringComparison.Ordinal) || target.Contains('/', StringComparison.Ordinal))
+        {
+            return "external workbook reference";
+        }
+
+        if (LocalReferencePattern().IsMatch(target)) return target;
+        if (target.StartsWith('"')) return "text constant";
+        return double.TryParse(target, NumberStyles.Any, CultureInfo.InvariantCulture, out _)
+            ? "numeric constant"
+            : "formula";
+    }
+
+    /// <summary>One sheet-qualified cell or rectangular range and nothing else - the shape that is safe to report as written.</summary>
+    [GeneratedRegex(@"^'?[^'\[\]!]{1,31}'?!\$?[A-Za-z]{1,3}\$?[0-9]{1,7}(:\$?[A-Za-z]{1,3}\$?[0-9]{1,7})?$", RegexOptions.CultureInvariant)]
+    private static partial Regex LocalReferencePattern();
 
     private static List<WorkbookFlowItem> ScanTables(ZipArchive archive)
     {
@@ -205,7 +262,7 @@ public sealed partial class ExcelWorkbookRuntime
                 if (string.IsNullOrEmpty(target)) continue;
                 // The file name only. The full target is a path on someone's machine or a share,
                 // and the audit holds the same line for the same reason.
-                items.Add(new WorkbookFlowItem("scan-external-link", DiagnosticTrace.FileNameOnly(target.Replace('/', '\\')), "linked workbook"));
+                items.Add(new WorkbookFlowItem("scan-external-link", WorkbookRuntimeHelpers.FileNameOnly(target), "linked workbook"));
             }
         }
 

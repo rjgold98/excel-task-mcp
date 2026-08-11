@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.15.2 - 2026-08-11
+
+### Fixed - the scan reported half the defined names and leaked the rest
+
+- **Every defined name is now reported.** `ScanWorkbookStructure` returned every
+  *second* one: `ReadElementContentAsString` advances past the element it reads,
+  and the enclosing `while (reader.Read())` advanced again, stepping over the
+  next. Six defined names in a file were reported as three, under a summary
+  reading "4 item(s)" - a receipt that reads complete and is not, which is the
+  one outcome this operation exists to avoid. Reproduced against the published
+  0.15.1 binary, not inferred.
+- **A defined name no longer carries a path or a value into the receipt.** Its
+  stored value is not always a reference - it can be a constant, a text literal,
+  a formula, or a reference into another workbook, and that last one arrives
+  wrapped in the other workbook's full path. A name pointing at
+  `C:\...\Confidential\PHI\[Q4-Patients.xlsx]Roster` put that path, and a rate
+  constant put its value, into a receipt from the one operation that documents
+  itself as reporting shape and never contents. Forty lines below in the same
+  file, `ScanExternalLinks` was already reducing exactly this to a bare file
+  name. A local reference still survives intact, because that is what makes
+  reporting defined names useful; anything naming another workbook is reduced to
+  that workbook's file name, and anything else is reported by category alone.
+- **The test now pins the guarantee rather than an example.** The shipped test
+  asserted one benign defined name, so neither fault was expressible in it. The
+  replacement uses six spanning every shape a defined name can hold, and asserts
+  over the whole receipt that no item carries a directory, a machine, a person,
+  or a stored value.
+- **The redaction rule moved out of the diagnostic tracer.** `FileNameOnly` now
+  lives in `WorkbookRuntimeHelpers`; the tracer calls it. A privacy guarantee
+  the receipts depend on must not be reachable only through a module whose own
+  docstring says it is temporary and built to be deleted.
+
+### Fixed - the write preflight refused the folders workbooks actually live in
+
+- **A directory carrying `FILE_ATTRIBUTE_READONLY` is no longer treated as
+  unwritable.** On a directory that attribute is a shell marker for a customized
+  folder, not a permission - on an ordinary Windows profile, Documents,
+  Downloads, Desktop and the OneDrive root all carry it while being perfectly
+  writable. Every `Save=Copy` and every `Create` into those folders was refused
+  before Excel started, with a reason that was not true. It also missed the real
+  case, because a genuinely unwritable directory is ACL-denied and carries no
+  attribute at all: false on the common case, blind on the true one. The check
+  now creates a file and deletes it - the same question the save will ask, asked
+  early, which is the point of a preflight.
+
 ## 0.15.1 - 2026-08-11
 
 First shipped build of the 0.15 line. 0.15.0 was tagged and then superseded

@@ -24,6 +24,50 @@ internal static class WorkbookRuntimeHelpers
         NormalizePath(right).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
         StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// A file name with no directory, because a full path names the machine and the person.
+    ///
+    /// It lives here rather than on the diagnostic tracer because it is a redaction rule the
+    /// receipts depend on, and the tracer documents itself as temporary and built to be deleted.
+    /// A privacy guarantee must not be reachable only through a module scheduled for removal.
+    /// </summary>
+    public static string FileNameOnly(string? path) => string.IsNullOrWhiteSpace(path)
+        ? "(none)"
+        : Path.GetFileName(path.Replace('/', Path.DirectorySeparatorChar));
+
+    /// <summary>
+    /// Whether a directory will accept a new file, answered by trying it.
+    ///
+    /// The attribute cannot answer this, which is what the previous version got wrong.
+    /// FILE_ATTRIBUTE_READONLY on a *directory* is a shell marker for a customized folder, not a
+    /// permission: on an ordinary Windows profile, Documents, Downloads, Desktop and the OneDrive
+    /// root all carry it while being perfectly writable. Testing it refused every copy-save and
+    /// every create into the folders people actually keep workbooks in - and still missed the real
+    /// case, because a genuinely unwritable directory is ACL-denied and carries no attribute at all.
+    /// False on the common case, blind on the true one.
+    ///
+    /// So this asks the question the save will ask, early, which is the entire point of a preflight.
+    /// DeleteOnClose means a crash between create and delete leaves nothing behind.
+    /// </summary>
+    public static bool DirectoryAcceptsNewFile(string directory)
+    {
+        var probe = Path.Combine(directory, $".exceltask-probe-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            using var stream = new FileStream(
+                probe, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose);
+            return true;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     public static bool CanOpenExclusively(string path)
     {
         try
@@ -87,9 +131,9 @@ internal static class WorkbookRuntimeHelpers
 
         var parent = Directory.GetParent(path)?.FullName;
         if (parent is null || !Directory.Exists(parent)) throw new InvalidOperationException("The new workbook's directory does not exist.");
-        if ((File.GetAttributes(parent) & FileAttributes.ReadOnly) != 0)
+        if (!DirectoryAcceptsNewFile(parent))
         {
-            throw new InvalidOperationException("The new workbook's directory is read-only.");
+            throw new InvalidOperationException("The new workbook's directory will not accept a new file.");
         }
     }
 
@@ -104,9 +148,9 @@ internal static class WorkbookRuntimeHelpers
 
         var parent = Directory.GetParent(normalized)?.FullName;
         if (parent is null || !Directory.Exists(parent)) throw new InvalidOperationException("Copy output directory does not exist.");
-        if ((File.GetAttributes(parent) & FileAttributes.ReadOnly) != 0)
+        if (!DirectoryAcceptsNewFile(parent))
         {
-            throw new InvalidOperationException("Copy output directory is read-only.");
+            throw new InvalidOperationException("Copy output directory will not accept a new file.");
         }
 
         if (File.Exists(normalized) && !CanOpenExclusively(normalized))

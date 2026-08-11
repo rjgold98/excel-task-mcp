@@ -116,10 +116,12 @@ public sealed class DiagnosticTrace
         }
     }
 
-    /// <summary>A file name with no directory, because a full path names the machine and the person.</summary>
-    public static string FileNameOnly(string? path) => string.IsNullOrWhiteSpace(path)
-        ? "(none)"
-        : Path.GetFileName(path);
+    /// <summary>
+    /// A file name with no directory, because a full path names the machine and the person.
+    /// One rule, owned by <see cref="WorkbookRuntimeHelpers"/> - the receipts redact with the same
+    /// call, and a guarantee they depend on must not live in a module built to be deleted.
+    /// </summary>
+    public static string FileNameOnly(string? path) => WorkbookRuntimeHelpers.FileNameOnly(path);
 
     private void Write(string line) => WriteLines([
         line.Length == 0

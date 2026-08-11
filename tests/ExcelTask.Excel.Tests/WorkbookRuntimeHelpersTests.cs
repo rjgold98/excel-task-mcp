@@ -5,6 +5,49 @@ namespace ExcelTask.Excel.Tests;
 public sealed class WorkbookRuntimeHelpersTests
 {
     [Fact]
+    public void ADirectoryCarryingTheReadOnlyAttributeStillAcceptsACopyOutputAndACreate()
+    {
+        // The attribute on a *directory* is a shell marker for a customized folder, not a
+        // permission. Windows sets it on Documents, Downloads, Desktop and the OneDrive root of an
+        // ordinary profile - all of them writable, and all of them where workbooks actually live.
+        // Testing it refused every copy-save and every create into those folders, before Excel had
+        // even started, with a reason that was not true.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var info = new DirectoryInfo(directory) { Attributes = FileAttributes.Directory | FileAttributes.ReadOnly };
+        try
+        {
+            Assert.True(info.Attributes.HasFlag(FileAttributes.ReadOnly), "The fixture must reproduce the marked folder.");
+            Assert.True(WorkbookRuntimeHelpers.DirectoryAcceptsNewFile(directory));
+
+            WorkbookRuntimeHelpers.EnsureWritableCopyOutput(Path.Combine(directory, "out.xlsx"));
+            WorkbookRuntimeHelpers.EnsureCreatableWorkbook(Path.Combine(directory, "new.xlsx"));
+
+            // And the probe leaves nothing behind, on either path.
+            Assert.Empty(Directory.GetFileSystemEntries(directory));
+        }
+        finally
+        {
+            try { info.Attributes = FileAttributes.Directory; } catch (IOException) { }
+            TempDirectory.Remove(directory);
+        }
+    }
+
+    [Fact]
+    public void ADirectoryThatDoesNotExistIsStillRefusedForBothDestinations()
+    {
+        // The replacement must not become permissive: the probe answers "will this accept a file",
+        // and a missing directory answers no before the probe is ever reached.
+        var missing = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"), "nested");
+
+        Assert.False(WorkbookRuntimeHelpers.DirectoryAcceptsNewFile(missing));
+        Assert.Throws<InvalidOperationException>(() =>
+            WorkbookRuntimeHelpers.EnsureWritableCopyOutput(Path.Combine(missing, "out.xlsx")));
+        Assert.Throws<InvalidOperationException>(() =>
+            WorkbookRuntimeHelpers.EnsureCreatableWorkbook(Path.Combine(missing, "new.xlsx")));
+    }
+
+    [Fact]
     public void StagingPathUsesTheFinalWorkbookDirectoryAndExtension()
     {
         var finalPath = Path.Combine(Path.GetTempPath(), "ExcelTask", "output.xlsm");
