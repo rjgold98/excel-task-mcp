@@ -137,6 +137,78 @@ public sealed partial class ExcelWorkbookRuntime
             }
         }
 
+        items.AddRange(ScanDefinedNames(workbookEntry));
+        items.AddRange(ScanTables(archive));
+        items.AddRange(ScanExternalLinks(archive));
+        return items;
+    }
+
+    /// <summary>
+    /// The three categories beyond sheets that the package answers in plain XML.
+    ///
+    /// Deliberately only these three. A part-by-part inventory of a workbook carrying every
+    /// feature found that macro components live in a binary OLE compound file, the data model in
+    /// an opaque blob, and Power Query inside base64 of a nested ZIP under an undocumented
+    /// DataMashup element. Those stay with AuditWorkbookFlows, which opens Excel and asks. Guessing
+    /// at them here would put a wrong answer about VBA or a connection into a receipt that reads
+    /// as complete - the one outcome worth more than the seconds saved.
+    /// </summary>
+    private static List<WorkbookFlowItem> ScanDefinedNames(ZipArchiveEntry workbookEntry)
+    {
+        var items = new List<WorkbookFlowItem>();
+        using var reader = XmlReader.Create(workbookEntry.Open(), ScanReaderSettings());
+        while (reader.Read())
+        {
+            if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "definedName") continue;
+            var name = reader.GetAttribute("name") ?? "(unnamed)";
+            // A defined name's value is a reference, not workbook content, and it is the whole
+            // point of reporting one - a caller planning a fix needs to know where it points.
+            var target = reader.ReadElementContentAsString();
+            items.Add(new WorkbookFlowItem("scan-defined-name", name, target.Length == 0 ? "(empty reference)" : target));
+        }
+
+        return items;
+    }
+
+    private static List<WorkbookFlowItem> ScanTables(ZipArchive archive)
+    {
+        var items = new List<WorkbookFlowItem>();
+        foreach (var entry in archive.Entries.Where(entry =>
+                     entry.FullName.StartsWith("xl/tables/", StringComparison.Ordinal) &&
+                     entry.FullName.EndsWith(".xml", StringComparison.Ordinal)))
+        {
+            using var reader = XmlReader.Create(entry.Open(), ScanReaderSettings());
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "table") continue;
+                var name = reader.GetAttribute("displayName") ?? reader.GetAttribute("name") ?? "(unnamed)";
+                items.Add(new WorkbookFlowItem("scan-table", name, $"range {reader.GetAttribute("ref") ?? "(unknown)"}"));
+                break;
+            }
+        }
+
+        return items;
+    }
+
+    private static List<WorkbookFlowItem> ScanExternalLinks(ZipArchive archive)
+    {
+        var items = new List<WorkbookFlowItem>();
+        foreach (var entry in archive.Entries.Where(entry =>
+                     entry.FullName.StartsWith("xl/externalLinks/_rels/", StringComparison.Ordinal) &&
+                     entry.FullName.EndsWith(".rels", StringComparison.Ordinal)))
+        {
+            using var reader = XmlReader.Create(entry.Open(), ScanReaderSettings());
+            while (reader.Read())
+            {
+                if (reader.NodeType != XmlNodeType.Element || reader.LocalName != "Relationship") continue;
+                var target = reader.GetAttribute("Target");
+                if (string.IsNullOrEmpty(target)) continue;
+                // The file name only. The full target is a path on someone's machine or a share,
+                // and the audit holds the same line for the same reason.
+                items.Add(new WorkbookFlowItem("scan-external-link", DiagnosticTrace.FileNameOnly(target.Replace('/', '\\')), "linked workbook"));
+            }
+        }
+
         return items;
     }
 

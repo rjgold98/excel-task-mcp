@@ -1,4 +1,4 @@
-# ExcelTask 0.14.0
+# ExcelTask 0.14.1
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -182,7 +182,7 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.14.0 is the current stable release: formula, exhibit, macro editing,
+Version 0.14.1 is the current stable release: formula, exhibit, macro editing,
 discovery, range reading, constant writes, find/replace, creation, number
 formats, and structure scanning without Excel.
 It does not yet set fonts, fills, borders or widths, refresh Power Query or data
@@ -194,3 +194,26 @@ Authentication or IRM can still require a person; a macro dialog or timeout is
 Macro editing is verified against desktop Excel on a machine where VBA project
 access is trusted. On a managed computer that policy is set by the organization,
 so the first work-computer run should be treated as the real gate.
+
+## Where Microsoft stands on this, stated plainly
+
+ExcelTask automates desktop Excel through COM. Microsoft's
+[KB 257757](https://support.microsoft.com/en-us/help/257757/considerations-for-server-side-automation-of-office)
+says outright that it "does not recommend or support server-side Automation of Office," and points
+at Open XML file manipulation as "the recommended and supported method for handling changes to
+Office files from a service."
+
+That guidance is aimed at unattended server-side use. ExcelTask's intended shape - an interactive
+desktop, a signed-in person, a chat in front of them - is client-side automation, which is not what
+the KB withholds support from. Anyone considering it as an unattended service should read the KB as
+written and decide accordingly.
+
+The same KB names the hazard this design spends most of its complexity on: "A modal dialog box on a
+non-interactive desktop cannot be dismissed. Therefore, that thread stops responding (hangs)
+indefinitely." That is the failure the supervised worker, the hard deadline, the dialog sentry, and
+the proof-of-exit exist to bound - not to eliminate, since nothing can, but to make it a reported
+`Unknown` rather than a hung process holding your workbook.
+
+`ScanWorkbookStructure` is the one operation on Microsoft's recommended path: it reads the Open XML
+package directly and starts no Excel at all. See [docs/LANDSCAPE.md](docs/LANDSCAPE.md) for how
+that trade-off compares against the other spreadsheet MCP servers.

@@ -29,6 +29,31 @@ internal sealed class FieldCheckFixtures
     /// </summary>
     public static HashSet<ProcessIdentity> SnapshotExcelProcesses() => OwnedExcelProcess.SnapshotExcelProcesses();
 
+    /// <summary>
+    /// Counts the Excel processes the product left behind, waiting for a dying one to finish dying.
+    ///
+    /// Excel exits asynchronously, and the diagnostic trace measured its teardown at about 2.8
+    /// seconds. A single snapshot taken shortly after an operation therefore counts an Excel on its
+    /// way out as one that was abandoned - which made this check report leaked=2 result=FAIL on a
+    /// machine whose full gate proves zero leaks across 241 tests. The tell was that the running
+    /// count fell back to zero between operations. A genuine leak never clears, so waiting can turn
+    /// a slow exit into a pass but can never hide a real leak.
+    /// </summary>
+    public static int CountLeakedAfterSettling(
+        ISet<ProcessIdentity> before,
+        IReadOnlyCollection<ProcessIdentity> harnessOwned,
+        TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var leaked = SnapshotExcelProcesses()
+                .Count(identity => !before.Contains(identity) && !harnessOwned.Contains(identity));
+            if (leaked == 0 || DateTime.UtcNow >= deadline) return leaked;
+            Thread.Sleep(250);
+        }
+    }
+
     public void CreateFormulaFixtures(string targetPath, string referencePath)
     {
         var application = Start();

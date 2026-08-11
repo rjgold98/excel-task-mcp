@@ -41,7 +41,9 @@ deadline, and proof-of-exit exist to bound. Qualification that matters here: Exc
 use — an interactive desktop with a person in the chat loop — is closer to supported client-side
 automation; the unsupported status attaches to unattended operation.
 
-As of v0.14.0, ExcelTask is the only surveyed server in **both** camps: `ScanWorkbookStructure`
+As of v0.14.0, ExcelTask is the only server *in this survey* that sits in **both** camps — a
+five-server sample, so read it as "no counterpart found here", not as a uniqueness claim:
+`ScanWorkbookStructure`
 reads the OOXML ZIP directly — the other camp's mechanism, adopted for the one job it is
 unambiguously better at (read-only structure, no process, no teardown cost) — while every
 mutation stays on live Excel for fidelity.
@@ -69,10 +71,28 @@ Outlier does not mean wrong. The two loudest corroborations come from outside:
   recommends consolidating discrete operations into fewer comprehensive tools, and attributes a
   state-of-the-art SWE-bench result in part to "precise refinements to tool descriptions."
   Honest scale note: Anthropic's examples consolidate ~3 tools into 1; 25-into-1 extends the
-  direction of the guidance, it is not restated by it. And the description-quality study found
-  fixing descriptions raised task success a median +5.85pp — while increasing execution steps
-  +67% median, which supports "richer schemas raise success" and complicates "richer schemas cut
-  round trips."
+  direction of the guidance, it is not restated by it.
+
+**The one finding that looked like it contradicted us, checked.** The description-quality study
+found augmented descriptions raised task success a median +5.85pp *while increasing execution
+steps +67.46%* — which reads as a direct refutation of this project's round-7 result that stating
+the rules cut calls 32% (p = 0.0032). Going to the paper's methodology rather than its abstract,
+it does not refute it, for two reasons worth keeping straight:
+
+- **Different unit.** The paper defines steps as "the average number of steps required for an FM
+  to complete each task … e.g., the number of calls to FMs made by the agent" — model
+  invocations, not MCP tool calls. Our 32% is tool calls. In an agent loop the two correlate, so
+  this softens the tension rather than dissolving it.
+- **Different baseline and intervention.** Their baseline was descriptions *as found in the wild*,
+  97.1% of which carried a defect, and augmentation added purpose, guidelines, limitations,
+  parameter detail and worked examples. Ours held an already-rich schema fixed and varied only
+  whether rules the engine *rejects on* were stated. Adding examples and guidance plausibly invites
+  more deliberation; stating a cap the caller would otherwise breach removes a guaranteed rejection.
+
+The honest position: both results can hold, and this project has only ever measured the narrow
+intervention. If ExcelTask's descriptions ever grow examples and usage guidance, this study is the
+warning that the cost may show up as more model turns, and it should be measured then rather than
+assumed away.
 
 ## The road not taken, fairly stated
 
@@ -120,8 +140,12 @@ the 25-claim verification budget — treat as sourced leads, not confirmed findi
   verification 0-3, so the stateless-vs-session comparison against it is uncharacterized.
 - **Google Sheets MCPs, official Microsoft MCP/Copilot work, Office.js, Graph workbook API,
   LibreOffice UNO** — not covered by surviving claims.
-- **haris-musa's tool count** — a "33 tools" claim failed 0-3; its granular-catalog *pattern* is
-  confirmed, its number is not.
+- ~~**haris-musa's tool count**~~ — closed on the spot-check. The "33 tools" figure failed
+  verification, but the project's own
+  [TOOLS.md](https://github.com/haris-musa/excel-mcp-server/blob/main/TOOLS.md) documents **31**,
+  including a dedicated `validate_formula_syntax` tool and a separate `apply_formula` - which is
+  the granular-catalog pattern and the syntax-check-then-accept formula stance, both from source.
+  (The "5-function blocklist" detail is still unsourced; TOOLS.md does not mention one.)
 
 ## Refuted during verification — do not reuse
 

@@ -61,6 +61,113 @@ public sealed class WorkbookStructureScanTests
     }
 
     [Fact]
+    public async Task ReportsTheThreeCategoriesThePackageAnswersInPlainXmlAndNoneOfTheOpaqueOnes()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "features.xlsx");
+
+        try
+        {
+            WriteFeatureFixture(target);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("features", ExcelTaskPlans.Scan(target)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Planned,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            var items = outcome.Audit!.Items;
+
+            var name = Assert.Single(items, item => item.Kind == "scan-defined-name");
+            Assert.Equal("MyRange", name.Name);
+            Assert.Equal("Data!$B$2:$B$4", name.Detail);
+
+            var table = Assert.Single(items, item => item.Kind == "scan-table");
+            Assert.Equal("Table1", table.Name);
+            Assert.Contains("A1:B4", table.Detail, StringComparison.Ordinal);
+
+            // The link's file name, never the directory it sits in - a full external target names
+            // someone's machine or share, and the audit holds the same line.
+            var link = Assert.Single(items, item => item.Kind == "scan-external-link");
+            Assert.Equal("Ref.xlsx", link.Name);
+            Assert.DoesNotContain("\\", link.Name, StringComparison.Ordinal);
+
+            // And nothing invented for the categories the package cannot honestly answer. A wrong
+            // answer about VBA or a connection is worth more than the seconds a guess would save.
+            Assert.DoesNotContain(items, item => item.Kind.Contains("macro", StringComparison.Ordinal));
+            Assert.DoesNotContain(items, item => item.Kind.Contains("quer", StringComparison.Ordinal));
+            Assert.DoesNotContain(items, item => item.Kind.Contains("model", StringComparison.Ordinal));
+            Assert.DoesNotContain(items, item => item.Kind.Contains("connection", StringComparison.Ordinal));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    /// <summary>A package carrying a table, a defined name, and an external link relationship.</summary>
+    private static void WriteFeatureFixture(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+
+        Add(archive, "[Content_Types].xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+              <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+              <Default Extension="xml" ContentType="application/xml"/>
+              <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+            </Types>
+            """);
+
+        Add(archive, "_rels/.rels", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+            </Relationships>
+            """);
+
+        Add(archive, "xl/workbook.xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+              <sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>
+              <definedNames><definedName name="MyRange">Data!$B$2:$B$4</definedName></definedNames>
+            </workbook>
+            """);
+
+        Add(archive, "xl/_rels/workbook.xml.rels", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+            </Relationships>
+            """);
+
+        Add(archive, "xl/worksheets/sheet1.xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B4"/><sheetData>
+            <row r="1"><c r="A1" t="str"><v>Name</v></c><c r="B1" t="str"><v>Amt</v></c></row>
+            <row r="2"><c r="A2" t="str"><v>a</v></c><c r="B2"><v>1</v></c></row>
+            </sheetData></worksheet>
+            """);
+
+        Add(archive, "xl/tables/table1.xml", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Table1" displayName="Table1" ref="A1:B4"/>
+            """);
+
+        Add(archive, "xl/externalLinks/_rels/externalLink1.xml.rels", """
+            <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+            <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+              <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLinkPath" Target="file:///C:/Work/Shared/Ref.xlsx" TargetMode="External"/>
+            </Relationships>
+            """);
+
+        // Present and deliberately unreported: a binary VBA project the scan must not guess about.
+        var vba = archive.CreateEntry("xl/vbaProject.bin");
+        using (var stream = vba.Open()) stream.Write([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+    }
+
+    [Fact]
     public async Task AnEncryptedOrDamagedFileIsACleanRejectionThatNamesTheRoadStillOpen()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

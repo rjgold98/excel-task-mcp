@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.14.1 - 2026-08-11
+
+### Fixed - the field check could fail a machine that had leaked nothing
+
+- **The work-computer check now covers all eleven operations, not five.** It
+  tested CopyExhibit, ExtendFormulaSeries, AuditWorkbookFlows and two macro
+  edits - everything from the first four releases and nothing from the last
+  four. A field session would have validated the half that was already proven.
+  It now also exercises ScanWorkbookStructure, ReadWorksheetRange,
+  WriteWorksheetValues, FindReplace (Plan and Apply), SetNumberFormat, and
+  Create, each on its own disposable copy so one failure cannot decide the next
+  one's result.
+- **The leak count waits for a dying Excel instead of counting it.** Both leak
+  snapshots were one-shot reads taken 700 ms and 800 ms after an operation,
+  against a teardown the diagnostic trace measured at about 2,814 ms. On a
+  machine whose full gate proves zero leaks across 241 tests, the check reported
+  `leaked=2 result=FAIL`. The tell was that the running count fell back to zero
+  between operations - a genuine leak never clears. Both counts now settle with
+  a bounded retry, so a slow exit passes and a real leak still fails. This is
+  the same false positive fixed in the test harness in 0.13.0; the field check
+  never received it.
+
+  This mattered more than an ordinary bug: the number it got wrong is the
+  product's central claim, on the one machine whose verdict counts.
+
 ## 0.14.0 - 2026-08-11
 
 ### Added - the first operation that never starts Excel

@@ -141,13 +141,22 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
 
 **Open from earlier evidence, unranked by this data:**
 
-- **The four seconds inside a macro Apply that nobody has accounted for.** One
-  Apply is 5,244 ms end to end; the COM it performs is 1,035 ms. That gap is now
-  the largest known cost in the product, and it is twelve times the launch
-  overlap just shipped. Attributing it needs timing inside the runtime, where the
-  phase observer already sits - and nothing here should be optimized before that
-  exists. An attempt to blame Excel's process teardown was confounded by the
-  probe itself and is recorded as invalid rather than quietly dropped.
+- ~~**The four seconds inside a macro Apply that nobody has accounted for.**~~
+  **Attributed, v0.14.0.** This entry demanded a measurement before anything was
+  optimized; `EXCELTASK_TRACE` supplied one. A `SetNumberFormat` apply on a
+  12-row sheet: 44 ms of Excel work, 398 ms session open, **2,814 ms closing
+  owned Excel and proving it exited, 2,297 ms reopening to verify** - 92% of
+  5,573 ms is teardown plus verification. The old guess in this entry (worker
+  startup, MCP round trips, model coordination) was wrong for this operation.
+
+  Neither cost is waste: proving the process exited is the product's central
+  claim, and the reopen is what makes a receipt mean anything. So this becomes a
+  narrower question rather than a closed one - **why does proving exit take 2.8
+  seconds?** `WaitForExitOrTerminate` allows Excel 10 s before escalating, so the
+  observed 2.8 s is Excel genuinely taking that long to die, not a timeout.
+  Whether that is reducible without weakening the proof is untested. **Gate:**
+  the same trace, run across the macro and copy paths, to confirm the split holds
+  where the work is heavier before anything is tuned.
 
   This also retires the "macro session sharing" entry that used to sit here: the
   28.1s against 26.4s regression was blamed on Plan and Apply each opening their
@@ -156,6 +165,94 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
   the only lever on those is fewer calls. See `docs/EXCEL-TUNING.md`.
 - **Multi-workbook audit.** Follow external links through several workbooks into
   one dependency report.
+
+## What the field survey changes
+
+`docs/LANDSCAPE.md` compared ExcelTask against every spreadsheet MCP server the
+survey could find. Most of it argues for holding course, and that is worth
+stating before the parts that argue for change - a competitive survey that only
+ever generates work has not been read critically.
+
+**Confirmed, no action.** The incumbent's own README benchmark reports ~163K
+tokens in MCP mode against ~59K in CLI mode, attributing the gap to "MCP sends
+26 tool schemas to the LLM (~100K+ tokens)". That is this project's founding bet,
+measured and published by the other side. Likewise the headless C# path (EPPlus,
+ClosedXML) evaluates formulas in .NET but as partial re-implementations of Excel
+semantics, which is the fidelity gap that keeps mutations on live COM. Neither
+finding asks for a change; both retire a recurring doubt.
+
+**1. Let the audit answer from the file when the workbook is closed.**
+`ScanWorkbookStructure` measured 1.2 s against `AuditWorkbookFlows`'s 4.6 s on
+the same workbook, because it starts no Excel. Much of what the audit reports -
+worksheets, their dimensions, defined names, tables, external link targets - is
+in the Open XML package too. The audit's *interface* would not change; only its
+implementation, on the closed-workbook path.
+
+  The gate this entry originally set - a part-by-part inventory of what the
+  package can answer - **has been run.** A workbook was built carrying a table, a
+  defined name, an external link, a Power Query and a VBA module, then opened as
+  a ZIP and read part by part:
+
+  | audit category | package part | verdict |
+  |---|---|---|
+  | `worksheet` | `xl/worksheets/*.xml` | plain XML - **answerable** |
+  | `table` | `xl/tables/table1.xml` | plain XML - **answerable** |
+  | `named-range` | `xl/workbook.xml` `<definedNames>` | plain XML - **answerable** |
+  | `external-link` | `xl/externalLinks/*.xml` | plain XML - **answerable** |
+  | `pivot`, `connection` | `xl/pivotTables/`, `xl/connections.xml` | plain XML when present; absent from the probe, so **untested** |
+  | `query` | `customXml/item1.xml` | a `<DataMashup>` element wrapping **base64 of a nested ZIP** - reachable in principle, undocumented and brittle in practice |
+  | `macro-component`, `macro-procedure` | `xl/vbaProject.bin` | **binary OLE compound file** - needs a real parser |
+  | `model-table/-relationship/-measure` | binary model part | **not answerable** |
+
+  So the honest shape of the win is narrower than "make the audit fast": four
+  categories are cleanly answerable, and they happen to be the four a caller most
+  often needs to plan with. Macros, the data model and Power Query are not, and
+  chasing them means writing an OLE parser and depending on an undocumented
+  nested-archive format to report on the two things - VBA and connections - where
+  a wrong answer is most expensive.
+
+  **Therefore the recommendation is not a hybrid audit.** A single operation that
+  silently answered a subset while keeping the same summary would be a receipt
+  that reads complete and is not - the worst outcome available, and this project
+  has already shipped one defect from two sources of truth disagreeing. The
+  better shape is what already exists: `ScanWorkbookStructure` stays a separate,
+  honestly-named fast path, and gains the three cheap categories it does not yet
+  report (tables, defined names, external links) so a caller can plan from one
+  1.2-second call and reach for the audit only when it needs macros, queries or
+  the model. **Gate:** none - this is additive to an operation that already
+  exists and carries no risk of disagreeing with the audit, because it would stop
+  short of every category the audit alone can answer.
+
+**2. The formula refusal has a middle, and the field has mapped it.** Every
+surveyed competitor accepts model-written formula text; ExcelTask refuses and
+infers instead. The survey found the design space is not binary: SheetMind
+constrains generation to a closed BNF grammar of seven operations, and
+Microsoft's SheetBrain accepts model-written Python but runs it sandboxed. The
+grammar option is the one compatible with this project's stance - a caller could
+name a *shape* (sum this contiguous range into that cell) which the engine
+composes and verifies, without any model-authored text ever reaching a cell.
+
+  This remains the largest open product question, and the gate has not moved:
+  `set-formulas` was 15 of 46 sessions, and how much of it `ExtendFormulaSeries`
+  and `RepairExistingWorksheet` already cover is still unmeasured. **Gate:** that
+  measurement first. A grammar built before it would be guessing at which shapes
+  matter, which is the same error as building all of `range_format`.
+
+**3. Verification now has outside grounding, and should be cited.** Nothing in
+the survey has a counterpart to reopen-and-verify or proof-of-exit. Independently,
+a 2026 study of verified tool calls found a postcondition-wrapped agent held 100%
+task success under injected faults while an unverified baseline fell to 64%. That
+is the closest academic parallel to what this server does on every Apply, and it
+belongs in the design rationale rather than only in a survey appendix.
+
+**4. Nothing here argues for more tools.** The description-quality study found
+97.1% of 856 real-world tool descriptions carry a defect and 56% never state the
+tool's purpose. ExcelTask's answer to that is one tool whose every rejection rule
+is stated and A/B tested. The survey's one apparent contradiction - that richer
+descriptions raised execution steps 67% - was checked at the source and measures
+model invocations against wild-caught defective descriptions, not tool calls
+against an already-rich schema. It is a warning about a road not yet taken
+(adding examples and usage guidance), not evidence against the road taken.
 
 ## Standing rules
 

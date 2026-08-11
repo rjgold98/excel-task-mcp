@@ -134,8 +134,9 @@ internal static class FieldCheck
             try { if (Directory.Exists(work)) Directory.Delete(work, recursive: true); } catch (IOException) { }
         }
 
-        var leaked = FieldCheckFixtures.SnapshotExcelProcesses()
-            .Count(identity => !preExisting.Contains(identity) && !fixtures.OwnedProcesses.Contains(identity));
+        // The headline number, so it gets the longest wait: teardown time scales with what the
+        // operation did, and this figure is the product's central claim.
+        var leaked = FieldCheckFixtures.CountLeakedAfterSettling(preExisting, fixtures.OwnedProcesses, TimeSpan.FromSeconds(30));
         return WriteReport(outputDirectory, serverPath, environment, surfaces, operations, notes, leaked);
     }
 
@@ -184,6 +185,62 @@ internal static class FieldCheck
         await RunAsync(client, fixtures, operations, "AuditWorkbookFlows (Apply)", new ExcelTaskRequest(
             target,
             new ExcelOperation(ExcelOperationKind.AuditWorkbookFlows, AuditWorkbookFlows: new AuditWorkbookFlowsOperation()),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
+
+        // The operations added since the first field check. Without these the check validated five
+        // of eleven operations and nothing shipped in the four most recent releases - a work-computer
+        // session spent proving the half that was already proven.
+        await RunAsync(client, fixtures, operations, "ScanWorkbookStructure (Plan)", new ExcelTaskRequest(
+            target,
+            new ExcelOperation(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new ScanWorkbookStructureOperation()),
+            ExcelTaskMode.Plan, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
+
+        await RunAsync(client, fixtures, operations, "ReadWorksheetRange (Apply)", new ExcelTaskRequest(
+            target,
+            new ExcelOperation(
+                ExcelOperationKind.ReadWorksheetRange,
+                ReadWorksheetRange: new ReadWorksheetRangeOperation("Model", "A1:D4")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
+
+        // Everything below writes, so each one works on its own copy: a failure in one must not
+        // decide the next one's result.
+        var writeTarget = System.IO.Path.Combine(work, "write-target.xlsx");
+        System.IO.File.Copy(target, writeTarget, overwrite: true);
+        await RunAsync(client, fixtures, operations, "WriteWorksheetValues (Apply)", new ExcelTaskRequest(
+            writeTarget,
+            new ExcelOperation(
+                ExcelOperationKind.WriteWorksheetValues,
+                WriteWorksheetValues: new WriteWorksheetValuesOperation("Model", [new WorksheetCellValue("A4", "FieldCheck")])),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+        await RunAsync(client, fixtures, operations, "FindReplace (Plan)", new ExcelTaskRequest(
+            writeTarget,
+            new ExcelOperation(
+                ExcelOperationKind.FindReplace,
+                FindReplace: new FindReplaceOperation("Model", "FieldCheck", Range: "A1:D10")),
+            ExcelTaskMode.Plan, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
+
+        await RunAsync(client, fixtures, operations, "FindReplace (Apply)", new ExcelTaskRequest(
+            writeTarget,
+            new ExcelOperation(
+                ExcelOperationKind.FindReplace,
+                FindReplace: new FindReplaceOperation("Model", "FieldCheck", "FieldChecked", "A1:D10")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+        await RunAsync(client, fixtures, operations, "SetNumberFormat (Apply)", new ExcelTaskRequest(
+            writeTarget,
+            new ExcelOperation(
+                ExcelOperationKind.SetNumberFormat,
+                SetNumberFormat: new SetNumberFormatOperation("Model", "A1:B2", "#,##0.00")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+        // Creation names a path that must not exist, so it is the one operation the check must be
+        // careful never to leave behind for a second run.
+        var createdWorkbook = System.IO.Path.Combine(work, "created.xlsx");
+        if (System.IO.File.Exists(createdWorkbook)) System.IO.File.Delete(createdWorkbook);
+        await RunAsync(client, fixtures, operations, "Create (Workbook+Sheet)", new ExcelTaskRequest(
+            createdWorkbook,
+            new ExcelOperation(ExcelOperationKind.Create, Create: new CreateOperation(CreateKind.Workbook, "Summary")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
 
         if (!macroReady) return;
@@ -254,9 +311,8 @@ internal static class FieldCheck
         }
 
         timer.Stop();
-        await Task.Delay(700);
-        var leaked = FieldCheckFixtures.SnapshotExcelProcesses()
-            .Count(identity => !before.Contains(identity) && !fixtures.OwnedProcesses.Contains(identity));
+        // Waits for a dying Excel rather than counting it. Bounded, so a genuine leak still reports.
+        var leaked = FieldCheckFixtures.CountLeakedAfterSettling(before, fixtures.OwnedProcesses, TimeSpan.FromSeconds(20));
 
         operations.Add(new OperationResult(label, status, Math.Round(timer.Elapsed.TotalSeconds, 2), leaked, summary, checks, error));
         Write($"      {label,-34} {status,-16} {timer.Elapsed.TotalSeconds,6:F1}s  leaked={leaked}");
