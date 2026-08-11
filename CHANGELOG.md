@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 - 2026-08-11
 
 ### Added - the first operation that never starts Excel
 
