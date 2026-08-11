@@ -34,6 +34,9 @@ All four original phases landed and were field-validated on the work computer on
 9. **Number formats** (v0.12.0): one format code across one bounded range, read
    back in session and again from the reopened file. Only the number format -
    the one part of `range_format` the write operation itself made necessary.
+10. **Writability preflight** (v0.11.0): a read-only same-file target is refused
+    before Excel is ever started, so it is a clean `Rejected` rather than the
+    `Unknown` a failed save produced. On every one of the five write paths.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -129,17 +132,8 @@ never called once in five weeks; `chart`, `slicer` and `table_column` appeared i
 one session each. Roughly half of the original server's 230 operations show no
 demand at all - which is most of the 8.1x schema ExcelTask does not carry.
 
-**Not to be built.** `chart_config`, `pivottable_calc` and `worksheet_style` were
-never called once in five weeks; `chart`, `slicer` and `table_column` appeared in
-one session each. Roughly half of the original server's 230 operations show no
-demand at all - which is most of the 8.1x schema ExcelTask does not carry.
-
 **Open from earlier evidence, unranked by this data:**
 
-- **Writability preflight for same-file saves.** A read-only target is found only
-  after Excel is open, producing `Unknown` - the worst answer for a caller, since
-  it means the file may or may not have changed. Preflight makes it a clean
-  `Rejected`.
 - **The four seconds inside a macro Apply that nobody has accounted for.** One
   Apply is 5,244 ms end to end; the COM it performs is 1,035 ms. That gap is now
   the largest known cost in the product, and it is twelve times the launch
@@ -152,12 +146,7 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
   28.1s against 26.4s regression was blamed on Plan and Apply each opening their
   own Excel, but four launches is about 1.2 seconds. The other 27 were never
   Excel - they are worker startup, MCP round trips, and model coordination, and
-  the only lever on those is fewer calls.
-  It cannot be deleted - verifying in the process that did the writing would be
-  verifying against the memory that produced it - but it can be started early so
-  it overlaps the write and save. Not built yet because a pre-launched instance
-  is a new way to leak an Excel process on every early-return path, which is the
-  one thing this project claims never happens. See `docs/EXCEL-TUNING.md`.
+  the only lever on those is fewer calls. See `docs/EXCEL-TUNING.md`.
 - **Multi-workbook audit.** Follow external links through several workbooks into
   one dependency report.
 
