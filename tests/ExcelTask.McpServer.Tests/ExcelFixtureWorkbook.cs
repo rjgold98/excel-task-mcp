@@ -223,6 +223,50 @@ internal sealed record ExcelProcessIdentity(ProcessIdentity Identity)
 
     public static ExcelProcessIdentity Capture(int processId) => new(ProcessIdentity.Capture(processId));
 
+    /// <summary>
+    /// Snapshots once the process table has stopped moving, so a dying Excel from the previous test
+    /// is not omitted from this one's baseline and then reported as this one's leak.
+    /// </summary>
+    public static HashSet<ExcelProcessIdentity> SnapshotSettledExcel()
+    {
+        var previous = SnapshotExcelProcesses();
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            Thread.Sleep(250);
+            var current = SnapshotExcelProcesses();
+            if (current.SetEquals(previous)) return current;
+            previous = current;
+        }
+
+        return previous;
+    }
+
+    /// <summary>
+    /// Asserts the product left no Excel process behind, waiting for one to clear.
+    ///
+    /// The Excel-project fixture has done this since 0.9.0 and this one did not: it snapshotted
+    /// once, the instant the test body returned. Excel exits asynchronously, so an instance the
+    /// product had already told to quit could still be alive for that single reading - and the whole
+    /// suite run under `dotnet test` on the solution runs both Excel assemblies at once, which makes
+    /// the other assembly's fixtures look like this one's leaks. Four tests failed that way and none
+    /// of them had leaked anything. `scripts/Test-Mvp.ps1` serializes the two projects for exactly
+    /// this reason; the assertion should not depend on the caller remembering to.
+    ///
+    /// A genuine leak never clears, so waiting cannot turn a failure into a pass.
+    /// </summary>
+    public static void AssertNoLeakedExcel(ISet<ExcelProcessIdentity> existingExcel)
+    {
+        ExcelProcessIdentity[] leaked = [];
+        for (var attempt = 0; attempt < 120; attempt++)
+        {
+            leaked = [.. SnapshotExcelProcesses().Where(process => !existingExcel.Contains(process))];
+            if (leaked.Length == 0) return;
+            Thread.Sleep(250);
+        }
+
+        Assert.Empty(leaked);
+    }
+
     public static bool TryOpenMatching(ExcelProcessIdentity identity, out Process process) =>
         ProcessIdentity.TryOpenMatching(identity.Identity, out process);
 

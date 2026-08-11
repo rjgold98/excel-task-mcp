@@ -775,6 +775,213 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task FindReplaceRewritesOnlyConstantsAndProvesThemAfterReopening()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "find.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // A2 holds a formula whose *result* contains the search text. It must be reported as a
+            // match and left exactly as it was, which is the rule this operation turns on.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,]
+            {
+                { "FY25 Budget" },
+                { "=\"FY25 \" & \"Actual\"" },
+                { "Prior FY25" }
+            });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("find", ExcelTaskPlans.FindReplace(
+                target, "Sheet1", "FY25", "FY26", "A1:A3")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "formula-cells-untouched" && check.Passed);
+
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", "FY26 Budget"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A3", "Prior FY26"));
+            Assert.True(ExcelTestWorkbook.HasFormula(target, "A2", "=\"FY25 \" & \"Actual\""));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task FindReplacePlanListsTheMatchesAndChangesNothingOnDisk()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "find-plan.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,]
+            {
+                { "FY25 Budget" }, { "Other" }, { "Prior FY25" }
+            });
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("find-plan", ExcelTaskPlans.FindReplace(
+                target, "Sheet1", "FY25", range: "A1:A3", mode: ExcelTaskMode.Plan)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Planned, outcome.Status);
+            Assert.NotNull(outcome.Range);
+            Assert.Equal(2, outcome.Range.NonEmptyCells);
+            Assert.Equal(["A1", "A3"], outcome.Range.Cells.Select(cell => cell.Address));
+            Assert.Equal(stampBefore, (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task FindReplaceHonoursWholeCellAndCaseWithoutTreatingAsteriskAsAWildcard()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "find-exact.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Excel's own Find would treat "NET*" as a wildcard and match all four. Matching in code
+            // means the asterisk is a character, which is what the caller wrote.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A4", new object?[,]
+            {
+                { "NET*" }, { "NETTING" }, { "net*" }, { "NET* extra" }
+            });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("find-exact", ExcelTaskPlans.FindReplace(
+                target, "Sheet1", "NET*", "REV", "A1:A4", wholeCell: true, matchCase: true)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", "REV"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", "NETTING"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A3", "net*"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A4", "NET* extra"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task FindReplaceRefusesTheWholeRequestWhenOneResultWouldBecomeAFormula()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "find-formula.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Removing "x" from "x=1" leaves "=1", which Excel stores as a formula. The replacement
+            // itself is a legal constant, so only composing the result can catch it - and it must
+            // stop A1 changing too, or a refusal would leave the sheet half rewritten.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { "xy" }, { "x=1" } });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("find-formula", ExcelTaskPlans.FindReplace(
+                target, "Sheet1", "x", string.Empty, "A1:A2")), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "formula-text-refused" && !check.Passed);
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", "xy"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", "x=1"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task CreateMakesAnEmptyWorkbookAndRefusesToOverwriteOne()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "created.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            using var runtime = new ExcelWorkbookRuntime();
+            var created = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("create", ExcelTaskPlans.Create(target, CreateKind.Workbook)), CancellationToken.None);
+
+            Assert.True(created.Status == ExcelTaskStatus.Completed,
+                $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.True(File.Exists(target));
+
+            // The second attempt is the point: "create" must never quietly mean "replace".
+            var again = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("create-again", ExcelTaskPlans.Create(target, CreateKind.Workbook)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, again.Status);
+            Assert.Contains(again.Checks ?? [], check => check.Name == "workbook-inputs" && !check.Passed);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task CreateAddsAWorksheetAfterTheLastAndProvesItAfterReopening()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "add-sheet.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan(
+                "add-sheet", ExcelTaskPlans.Create(target, CreateKind.Worksheet, "Q3 Actuals")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+
+            // Added after the last sheet, so it never displaces the one the workbook opens on.
+            var audit = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("audit", ExcelTaskPlans.Audit(target)), CancellationToken.None);
+            var worksheets = (audit.Audit?.Items ?? []).Where(item => item.Kind == "worksheet").ToArray();
+            Assert.Equal("Q3 Actuals", worksheets[^1].Name);
+
+            var again = await runtime.ExecuteAsync(new ExcelTaskPlan(
+                "add-again", ExcelTaskPlans.Create(target, CreateKind.Worksheet, "Q3 Actuals")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, again.Status);
+            Assert.Contains(again.Checks ?? [], check => check.Name == "worksheet-name" && !check.Passed);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)

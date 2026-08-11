@@ -50,7 +50,15 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         observer.OnPhase("inspection");
         var targetPath = WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath);
         var referencePath = string.IsNullOrWhiteSpace(request.ReferenceWorkbookPath) ? null : WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
-        WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
+        if (request.TargetMustExist)
+        {
+            WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
+        }
+        else
+        {
+            WorkbookRuntimeHelpers.EnsureCreatableWorkbook(targetPath);
+        }
+
         if (referencePath is not null) WorkbookRuntimeHelpers.EnsureReadableWorkbook(referencePath, "Reference workbook");
         var copyOutputExists = request.Save == SaveMode.Copy &&
                                !string.IsNullOrWhiteSpace(request.OutputWorkbookPath) &&
@@ -123,19 +131,51 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteWriteCore(plan, observer);
         }
 
+        // Same reason as the write above: both carry their own save, verification and gates, and
+        // neither wants the formula plan the shared path below builds.
+        if (plan.Request.Operation.Kind == ExcelOperationKind.FindReplace)
+        {
+            if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
+            {
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                    "Copy saves are not supported when applying to a live workbook.",
+                    Checks: [new TaskCheck("live-copy-save", false, "Use the confirmed same-file save mode or isolated copy mode.")]);
+            }
+
+            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.Save == SaveMode.Same && !plan.Request.OverwriteConfirmed)
+            {
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                    "Same-file saves require explicit overwrite confirmation.",
+                    Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
+            }
+
+            return ExecuteFindReplaceCore(plan, observer);
+        }
+
+        // A creation writes the target it names and is refused a copy destination during validation,
+        // so the overwrite gate below would ask it to confirm replacing a file it has already
+        // guaranteed does not exist.
+        if (plan.Request.Operation.Kind == ExcelOperationKind.Create)
+        {
+            return ExecuteCreateCore(plan, observer);
+        }
+
         try
         {
             WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");
             if (NeedsReferenceWorkbook(plan.Request))
                 WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.Operation.CopyExhibit!.ReferenceWorkbookPath), "Reference workbook");
             if (plan.Request.Save == SaveMode.Copy) WorkbookRuntimeHelpers.EnsureWritableCopyOutput(plan.Request.OutputWorkbookPath);
+            // A read-only target found here is a clean rejection; found after the save it is Unknown.
+            if (plan.Request.Save == SaveMode.Same && plan.Request.Mode == ExcelTaskMode.Apply)
+                WorkbookRuntimeHelpers.EnsureWritableSameTarget(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath));
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
             return new WorkbookExecutionOutcome(
                 ExcelTaskStatus.Rejected,
                 "Workbook inputs cannot be safely executed.",
-                Checks: [new TaskCheck("workbook-inputs", false, "Workbook paths or output location are not ready for execution.")]);
+                Checks: [new TaskCheck("workbook-inputs", false, exception.Message)]);
         }
 
         if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)

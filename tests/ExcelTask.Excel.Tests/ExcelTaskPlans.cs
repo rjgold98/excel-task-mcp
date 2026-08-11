@@ -55,6 +55,44 @@ internal static class ExcelTaskPlans
                 worksheet,
                 [.. cells.Select(cell => new NormalizedWorksheetCellValue(cell.Address, cell.Value))])));
 
+    public static NormalizedExcelTaskRequest FindReplace(
+        string target,
+        string worksheet,
+        string find,
+        string? replaceWith = null,
+        string? range = null,
+        bool wholeCell = false,
+        bool matchCase = false,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        SaveMode save = SaveMode.Same,
+        string? output = null,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        save,
+        output,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.FindReplace,
+            FindReplace: new NormalizedFindReplaceOperation(
+                worksheet, find, replaceWith, range is null ? null : ToRange(range), wholeCell, matchCase)));
+
+    public static NormalizedExcelTaskRequest Create(
+        string target,
+        CreateKind kind,
+        string? worksheet = null,
+        ExcelTaskMode mode = ExcelTaskMode.Apply) => new(
+        target,
+        mode,
+        WorkbookBinding.Isolated,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.Create,
+            Create: new NormalizedCreateOperation(kind, worksheet)));
+
     public static NormalizedExcelTaskRequest Copy(
         string target,
         string reference,

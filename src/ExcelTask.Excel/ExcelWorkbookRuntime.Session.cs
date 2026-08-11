@@ -210,6 +210,39 @@ public sealed partial class ExcelWorkbookRuntime
             }
         }
 
+        /// <summary>
+        /// Starts an owned Excel holding one new, unsaved workbook. It is the only session that opens
+        /// no file, so it takes the same owned-process capture as every other and skips nothing:
+        /// the process is reported the moment it exists, and closing it still has to be proven.
+        /// </summary>
+        public static ExcelSession OpenNewWorkbook(IExcelWorkbookRuntimeObserver observer)
+        {
+            var beforeStart = OwnedExcelProcess.SnapshotExcelProcesses();
+            var app = CreateApplication();
+            try
+            {
+                var ownedProcess = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                observer.OnOwnedProcessCaptured(ownedProcess.Identity);
+                ConfigureOwnedApplication(app);
+                var workbooks = Get(app, "Workbooks");
+                try
+                {
+                    var created = ComAccess.Invoke(workbooks, "Add") ?? throw new InvalidOperationException("Excel did not return a new workbook.");
+                    return new ExcelSession(app, created, created, ownsApplication: true, closeTarget: true, closeReference: false, ownedProcess);
+                }
+                finally
+                {
+                    ComReferences.Release(workbooks);
+                }
+            }
+            catch
+            {
+                if (OwnedExcelProcess.IsNewlyOwned(app, beforeStart)) TryQuit(app);
+                ComReferences.Release(app);
+                throw;
+            }
+        }
+
         public static ExcelSession OpenForVerification(string path, IExcelWorkbookRuntimeObserver observer)
         {
             var prepared = PrepareForVerification(observer);

@@ -17,7 +17,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
         var target = Path.Combine(directory, "read.xlsx");
-        var existingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+        var existingExcel = ExcelProcessIdentity.SnapshotSettledExcel();
         var fixtureProcesses = new List<ExcelProcessIdentity>();
         Directory.CreateDirectory(directory);
 
@@ -80,8 +80,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         finally
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
-            var remainingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
-            Assert.DoesNotContain(remainingExcel, process => !existingExcel.Contains(process));
+            ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
@@ -93,7 +92,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         var target = Path.Combine(directory, "target.xlsx");
         var reference = Path.Combine(directory, "reference.xlsx");
         var output = Path.Combine(directory, "output.xlsx");
-        var existingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+        var existingExcel = ExcelProcessIdentity.SnapshotSettledExcel();
         var fixtureProcesses = new List<ExcelProcessIdentity>();
         Directory.CreateDirectory(directory);
 
@@ -147,8 +146,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         finally
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
-            var remainingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
-            Assert.DoesNotContain(remainingExcel, process => !existingExcel.Contains(process));
+            ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
@@ -163,7 +161,7 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         const string procedure = "WriteMarker";
         const string originalSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"original\"\nEnd Sub";
         const string replacementSource = "Public Sub WriteMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"ran\"\nEnd Sub";
-        var existingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+        var existingExcel = ExcelProcessIdentity.SnapshotSettledExcel();
         var fixtureProcesses = new List<ExcelProcessIdentity>();
         Directory.CreateDirectory(directory);
 
@@ -213,11 +211,117 @@ public sealed class ExcelTaskRealExcelOnDemandTests
         finally
         {
             Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
-            var remainingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
-            Assert.DoesNotContain(remainingExcel, process => !existingExcel.Contains(process));
+            ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
+
+    [Fact]
+    public async Task CreateThenFindReplaceRunThroughTheRealToolBoundaryAndReleaseOwnedExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(directory, "created.xlsx");
+        var existingExcel = ExcelProcessIdentity.SnapshotSettledExcel();
+        var fixtureProcesses = new List<ExcelProcessIdentity>();
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "ExcelTask-real-create-test",
+                Command = TestServer.ServerPath,
+                WorkingDirectory = directory,
+                InheritEnvironmentVariables = false,
+                EnvironmentVariables = TestServer.EnvironmentVariables(),
+                ShutdownTimeout = TimeSpan.FromSeconds(2)
+            });
+            await using var client = await McpClient.CreateAsync(
+                transport,
+                new McpClientOptions { ClientInfo = new() { Name = "ExcelTask-RealCreate-TestClient", Version = "1.0.0" } });
+
+            // The sequence a caller with nowhere to start actually needs: make a workbook, add a
+            // sheet, put something on it, then change it. Every step through the real boundary,
+            // because these four are the only ones that can compose into new work.
+            Assert.False(File.Exists(target));
+            var created = await client.CallToolAsync("excel_task", CreateArguments(target, CreateKind.Workbook));
+            Assert.False(created.IsError);
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), created.StructuredContent!.Value.GetProperty("status").GetString());
+            Assert.True(File.Exists(target));
+
+            // Creation refuses an overwrite outright, so it never asks to confirm one.
+            Assert.False(created.StructuredContent!.Value.GetProperty("confirmation").GetProperty("required").GetBoolean());
+
+            var sheet = await client.CallToolAsync("excel_task", CreateArguments(target, CreateKind.Worksheet, "Rollforward"));
+            Assert.False(sheet.IsError);
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), sheet.StructuredContent!.Value.GetProperty("status").GetString());
+
+            var written = await client.CallToolAsync(
+                "excel_task",
+                new Dictionary<string, object?>
+                {
+                    ["request"] = new ExcelTaskRequest(
+                        target,
+                        new ExcelOperation(
+                            ExcelOperationKind.WriteWorksheetValues,
+                            WriteWorksheetValues: new WriteWorksheetValuesOperation(
+                                "Rollforward", [new("A1", "FY25 Opening"), new("A2", "FY25 Closing")])),
+                        ExcelTaskMode.Apply,
+                        WorkbookBinding.Isolated,
+                        SaveMode.Same,
+                        null,
+                        OverwriteConfirmed: true)
+                });
+            Assert.False(written.IsError);
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), written.StructuredContent!.Value.GetProperty("status").GetString());
+
+            var replaced = await client.CallToolAsync(
+                "excel_task",
+                new Dictionary<string, object?>
+                {
+                    ["request"] = new ExcelTaskRequest(
+                        target,
+                        new ExcelOperation(
+                            ExcelOperationKind.FindReplace,
+                            FindReplace: new FindReplaceOperation("Rollforward", "FY25", "FY26", "A1:A2")),
+                        ExcelTaskMode.Apply,
+                        WorkbookBinding.Isolated,
+                        SaveMode.Same,
+                        null,
+                        OverwriteConfirmed: true)
+                });
+
+            Assert.False(replaced.IsError);
+            var receipt = replaced.StructuredContent!.Value;
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), receipt.GetProperty("status").GetString());
+
+            // The match list is the one thing find/replace returns, so it has to survive the worker
+            // protocol and both bounding seams the same way a read's contents do.
+            var range = receipt.GetProperty("range");
+            Assert.Equal(2, range.GetProperty("cells").GetArrayLength());
+            Assert.Equal(
+                ["FY26 Opening", "FY26 Closing"],
+                range.GetProperty("cells").EnumerateArray().Select(cell => cell.GetProperty("text").GetString()));
+        }
+        finally
+        {
+            Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
+            ExcelProcessIdentity.AssertNoLeakedExcel(existingExcel);
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static Dictionary<string, object?> CreateArguments(string target, CreateKind kind, string? worksheetName = null) => new()
+    {
+        ["request"] = new ExcelTaskRequest(
+            target,
+            new ExcelOperation(ExcelOperationKind.Create, Create: new CreateOperation(kind, worksheetName)),
+            ExcelTaskMode.Apply,
+            WorkbookBinding.Isolated,
+            SaveMode.Same,
+            null,
+            OverwriteConfirmed: kind == CreateKind.Worksheet)
+    };
 
     private static Dictionary<string, object?> MacroArguments(
         string target,

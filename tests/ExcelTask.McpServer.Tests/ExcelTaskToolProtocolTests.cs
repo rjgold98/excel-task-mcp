@@ -77,12 +77,13 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var tool = Assert.Single(listed.Tools);
         Assert.Equal("excel_task", tool.Name);
         // The budget forces every operation to earn its bytes: 8 KB for the first four, 9 KB when
-        // the audit became the fifth, 11 KB for the range read, 13 KB for the value write. The two
-        // reads and writes of cells also carry an output schema, being the only operations that
-        // return workbook contents. It must not grow to make room for wordier prose - only for a
-        // new operation, or for a rule the caller cannot act without, which field measurement
-        // showed cost two round trips when it was left out of the schema.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 13 * 1024);
+        // the audit became the fifth, 11 KB for the range read, 13 KB for the value write, 15 KB
+        // for find/replace and create together. The two reads and writes of cells also carry an
+        // output schema, being the only operations that return workbook contents. It must not grow
+        // to make room for wordier prose - only for a new operation, or for a rule the caller cannot
+        // act without, which field measurement showed cost two round trips when it was left out of
+        // the schema.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 15 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -111,16 +112,19 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Equal(
             ["targetWorkbookPath", "operation"],
             request.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
-        AssertDescription(properties, "targetWorkbookPath", "Existing target workbook path, ending .xlsx or .xlsm.");
+        AssertDescription(properties, "targetWorkbookPath", "Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.");
         AssertDescription(properties, "operation", "The required manual operation union. Supply exactly one payload matching kind.");
         AssertDescription(properties, "mode", "Plan previews without mutation; Apply performs the task after required confirmations.");
         // A/B measurement (docs/INTERFACE-AB-STUDY.md) showed both of these rules cost round trips
         // when they were enforced but unstated: UseOpen+Copy is rejected, and asking AskIfOpen about
         // a workbook the caller already said was open only ever returns a confirmation.
-        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.");
-        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.");
+        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure and Create require Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.");
+        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows, ReadWorksheetRange and Create never take a save destination: leave Same with no outputWorkbookPath.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.");
-        AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
+        // The single most frequent failure in every A/B round, in both the original study and the
+        // v0.11.0 run: a same-file Apply sent without this flag. "An existing save destination" did
+        // not read as "the target workbook you are editing", so the rule is now spelled per save mode.
+        AssertDescription(properties, "overwriteConfirmed", "Explicit authorization to overwrite. Apply with save Same always requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it.");
 
         var operation = ResolveReference(properties.GetProperty("operation"), tool.InputSchema);
         var operationProperties = operation.GetProperty("properties");
@@ -129,9 +133,23 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
         AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
         AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
-        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
+        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
         AssertDescription(operationProperties, "readWorksheetRange", "Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.");
         AssertDescription(operationProperties, "writeWorksheetValues", "Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.");
+        AssertDescription(operationProperties, "findReplace", "Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells; Apply rewrites the constants among them.");
+        AssertDescription(operationProperties, "create", "Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.");
+
+        // Every rule the engine rejects on has to be readable here, which the A/B study measured at
+        // p = 0.0012. For these two that means the search cap, the two text caps, the Plan/Apply
+        // split, the formula refusal, and the binding and save policy creation enforces.
+        var findReplace = ResolveReference(operationProperties.GetProperty("findReplace"), tool.InputSchema);
+        AssertDescription(findReplace.GetProperty("properties"), "find", "Text to find, at most 200 characters. Matching is plain text on what the cell displays; * and ? are literal, not wildcards.");
+        AssertDescription(findReplace.GetProperty("properties"), "replaceWith", "Apply only, and must be omitted for Plan: replacement text, at most 200 characters. Cells holding formulas are reported but never rewritten, and a replacement that would leave a cell starting with = is refused before anything is written.");
+        AssertDescription(findReplace.GetProperty("properties"), "range", "One bounded A1 range to search, at most 10,000 cells; omit to search the worksheet's used range when it is within that bound.");
+
+        var create = ResolveReference(operationProperties.GetProperty("create"), tool.InputSchema);
+        AssertDescription(create.GetProperty("properties"), "kind", "Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.");
+        AssertDescription(create.GetProperty("properties"), "worksheetName", "Required when kind is Worksheet: the new sheet's name, which must not already be in use. Omit it for Workbook.");
 
         // The one operation that returns workbook contents states its own cap, because a caller
         // that does not know the bound asks for a whole sheet and gets a truncated answer back.

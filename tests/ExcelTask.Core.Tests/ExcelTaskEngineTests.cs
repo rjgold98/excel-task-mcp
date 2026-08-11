@@ -16,7 +16,12 @@ public sealed class ExcelTaskEngineTests
             typeof(CopyExhibitOperation),
             typeof(RepairExistingWorksheetOperation),
             typeof(ExtendFormulaSeriesOperation),
-            typeof(EditMacroProcedureOperation)
+            typeof(EditMacroProcedureOperation),
+            typeof(ReadWorksheetRangeOperation),
+            typeof(WriteWorksheetValuesOperation),
+            typeof(WorksheetCellValue),
+            typeof(FindReplaceOperation),
+            typeof(CreateOperation)
         };
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
@@ -703,6 +708,204 @@ public sealed class ExcelTaskEngineTests
         Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
         Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
     }
+
+    [Fact]
+    public async Task EveryOperationKindHasACountedPayload()
+    {
+        // The union's arity check counts payloads by hand. An operation missing from that list is
+        // not just miscounted, it is unreachable: the request fails arity before reaching its own
+        // validation. FindReplace and Create both shipped that way, and both looked complete.
+        ExcelOperation[] oneOfEach =
+        [
+            new(ExcelOperationKind.CopyExhibit, CopyExhibit: Copy()),
+            new(ExcelOperationKind.RepairExistingWorksheet, RepairExistingWorksheet: new("Sheet1", ["A1:B2"])),
+            new(ExcelOperationKind.ExtendFormulaSeries, ExtendFormulaSeries: new("Sheet1", FormulaExtensionDirection.Down, "A1:A2", "A3:A4")),
+            new(ExcelOperationKind.EditMacroProcedure, EditMacroProcedure: new("StandardModule", "RefreshModel")),
+            new(ExcelOperationKind.AuditWorkbookFlows, AuditWorkbookFlows: new()),
+            new(ExcelOperationKind.ReadWorksheetRange, ReadWorksheetRange: new("Sheet1", "A1:B2")),
+            new(ExcelOperationKind.WriteWorksheetValues, WriteWorksheetValues: new("Sheet1", [new("A1", "1")])),
+            new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
+            new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook))
+        ];
+
+        // The list above is the checklist: a new operation that is not added here fails this line
+        // before it can fail silently in production.
+        Assert.Equal(Enum.GetValues<ExcelOperationKind>(), [.. oneOfEach.Select(operation => operation.Kind)]);
+
+        foreach (var operation in oneOfEach)
+        {
+            var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(Request(operation), CancellationToken.None);
+            Assert.DoesNotContain("exactly one payload", receipt.Summary, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task FindReplacePlanMustNotCarryTheReplacementText()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FindReplaceRequest(replaceWith: "FY26", mode: ExcelTaskMode.Plan), CancellationToken.None);
+
+        // Plan lists matches; a replacement on it would read as authorization the caller never gave.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("omit replaceWith", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindReplaceApplyRequiresTheReplacementText()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FindReplaceRequest(replaceWith: null), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("Apply requires replaceWith", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindReplaceRefusesFormulaTextAsTheReplacement()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FindReplaceRequest(replaceWith: "=SUM(A1:A9)"), CancellationToken.None);
+
+        // The same rule the constant write keeps: model-composed formula text is never accepted.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("never writes formula text", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindReplaceRejectsARangeLargerThanTheSearchCap()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FindReplaceRequest(range: "A1:Z10000"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("10,000 cells", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FindReplaceWithoutARangeReachesTheRuntimeSoTheUsedRangeCanBeMeasured()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(FindReplaceRequest(range: null), CancellationToken.None);
+
+        // The cap on an omitted range can only be applied against the real used range, so validation
+        // must let it through rather than guessing.
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.Null(runtime.Plan!.Request.Operation.FindReplace!.Range);
+    }
+
+    [Fact]
+    public async Task FindReplaceApplyRequiresOverwriteConfirmationBecauseItChangesTheWorkbook()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FindReplaceRequest(overwriteConfirmed: false), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+    }
+
+    [Fact]
+    public async Task CreatingAWorkbookIsNotGivenASaveDestination()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            CreateRequest(save: SaveMode.Copy, output: ".\\other.xlsx"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("must not be given a save destination", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(WorkbookBinding.UseOpen)]
+    [InlineData(WorkbookBinding.AskIfOpen)]
+    public async Task CreatingRequiresIsolatedBindingAndNothingElse(WorkbookBinding binding)
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            CreateRequest(binding: binding), CancellationToken.None);
+
+        // AskIfOpen used to be accepted, and it led nowhere: on an open target its confirmation
+        // offers UseOpen, which creation refuses, and Isolated, which inspection then rejects.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("requires workbook binding Isolated", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreatingAWorksheetRequiresItsName()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            CreateRequest(kind: CreateKind.Worksheet, worksheetName: null), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("Worksheet name", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreatingAWorkbookTakesNoWorksheetName()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            CreateRequest(worksheetName: "Summary"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("takes no worksheet name", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CreatingAWorkbookNeverAsksToConfirmAnOverwriteItCannotPerform()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            CreateRequest(overwriteConfirmed: false), CancellationToken.None);
+
+        // Creation is refused outright if anything exists at the path, so an overwrite confirmation
+        // would authorize nothing - and teach the caller to set the flag reflexively.
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.False(receipt.Confirmation.Required);
+        Assert.False(runtime.InspectionRequest!.TargetMustExist);
+    }
+
+    [Fact]
+    public async Task CreatingAWorksheetStillConfirmsTheOverwriteBecauseItChangesAnExistingFile()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            CreateRequest(kind: CreateKind.Worksheet, worksheetName: "Summary", overwriteConfirmed: false),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+        Assert.True(runtime.InspectionRequest!.TargetMustExist);
+    }
+
+    private static ExcelTaskRequest FindReplaceRequest(
+        string? replaceWith = "FY26",
+        string? range = "A1:D50",
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        bool overwriteConfirmed = true) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(
+                ExcelOperationKind.FindReplace,
+                FindReplace: new FindReplaceOperation("Sheet1", "FY25", replaceWith, range)),
+            Mode: mode,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: SaveMode.Same,
+            OutputWorkbookPath: null,
+            OverwriteConfirmed: overwriteConfirmed);
+
+    private static ExcelTaskRequest CreateRequest(
+        CreateKind kind = CreateKind.Workbook,
+        string? worksheetName = null,
+        WorkbookBinding binding = WorkbookBinding.Isolated,
+        SaveMode save = SaveMode.Same,
+        string? output = null,
+        bool overwriteConfirmed = false) => new(
+            TargetWorkbookPath: ".\\new-model.xlsx",
+            Operation: new ExcelOperation(ExcelOperationKind.Create, Create: new CreateOperation(kind, worksheetName)),
+            Mode: ExcelTaskMode.Apply,
+            WorkbookBinding: binding,
+            Save: save,
+            OutputWorkbookPath: output,
+            OverwriteConfirmed: overwriteConfirmed);
 
     private static ExcelTaskRequest WriteRequest(
         (string Address, string Value)[] cells,

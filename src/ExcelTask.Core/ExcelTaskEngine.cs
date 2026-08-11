@@ -10,6 +10,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     public const int MaxFormulaRepairRanges = 16;
 
     private const int MaxReceiptItems = 20;
+    private const int MaxFindReplaceTextLength = 200;
     private const int MaxReceiptStringLength = 256;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -58,7 +59,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                     normalizedRequest.Operation.CopyExhibit?.ReferenceWorkbookPath,
                     normalizedRequest.WorkbookBinding,
                     normalizedRequest.Save,
-                    normalizedRequest.OutputWorkbookPath),
+                    normalizedRequest.OutputWorkbookPath,
+                    normalizedRequest.Operation.Create?.Kind != CreateKind.Workbook),
                 cancellationToken) ?? throw new InvalidOperationException("Workbook runtime returned no inspection result.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -112,13 +114,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         var requirements = GetConfirmationRequirements(normalizedRequest, inspection);
         if (requirements.Count > 0)
         {
-            var description = inspection.TargetIsOpen
-                ? "The target workbook is already open."
-                : "The requested copy output already exists.";
             return CreateReceipt(
                 taskId,
                 ExcelTaskStatus.NeedsConfirmation,
-                description,
+                DescribeConfirmation(requirements),
                 [],
                 inspection.Checks ?? [],
                 normalizedRequest.Save,
@@ -191,6 +190,28 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
     }
 
+    /// <summary>
+    /// Names what actually has to be confirmed, from the requirements themselves.
+    ///
+    /// It used to be a two-way guess on whether the target was open, which meant a same-file Apply
+    /// missing its overwrite flag came back saying "The requested copy output already exists" - a
+    /// sentence about a file the request never mentioned. The requirement's own prompt was correct
+    /// all along; only the summary lied, and the summary is the line a caller reads first. Caught by
+    /// the A/B run for v0.11.0, where three decisions were rejected for a reason the receipt
+    /// misdescribed.
+    /// </summary>
+    private static string DescribeConfirmation(List<ConfirmationRequirement> requirements)
+    {
+        var reasons = requirements.Select(requirement => requirement.Code switch
+        {
+            "target-open" => "the target workbook is already open",
+            "overwrite-same" => "applying with save Same overwrites the target workbook",
+            _ => "the requested copy output already exists"
+        });
+
+        return $"Confirmation is required before this can run: {string.Join("; and ", reasons)}.";
+    }
+
     private static List<ConfirmationRequirement> GetConfirmationRequirements(NormalizedExcelTaskRequest request, WorkbookInspection inspection)
     {
         var requirements = new List<ConfirmationRequirement>();
@@ -206,6 +227,11 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         // that learns to set overwriteConfirmed reflexively to get a read through will still have
         // it set on the call after, which does write.
         if (request.Operation.AuditWorkbookFlows is not null || request.Operation.ReadWorksheetRange is not null) return requirements;
+
+        // Creating a workbook is refused outright if anything already exists at the path, so there is
+        // nothing an overwrite confirmation could authorize. Adding a worksheet does change the
+        // target file and keeps the confirmation.
+        if (request.Operation.Create?.Kind == CreateKind.Workbook) return requirements;
 
         if (request.Mode == ExcelTaskMode.Apply && request.Save == SaveMode.Same && !request.OverwriteConfirmed)
         {
@@ -456,6 +482,27 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
+        // Creation writes the target it names, so a copy destination would be a second, unasked-for
+        // file. Requiring Isolated keeps it away from a live session the user is working in.
+        if (operation.Create is not null)
+        {
+            if (request.Save == SaveMode.Copy || output is not null)
+            {
+                error = "Creating a workbook or worksheet writes the target itself, so it must not be given a save destination.";
+                return false;
+            }
+            // Isolated exactly, the way macro editing is. AskIfOpen used to slip through, and it led
+            // nowhere: on an open target it returns a confirmation whose only two answers are UseOpen,
+            // which creation refuses, and Isolated, which inspection then rejects for saving Same over
+            // an open workbook. One clear rejection that says to close the workbook beats a
+            // confirmation offering a choice between a banned option and a rejected one.
+            if (request.WorkbookBinding != WorkbookBinding.Isolated)
+            {
+                error = "Creating a workbook or worksheet requires workbook binding Isolated.";
+                return false;
+            }
+        }
+
         normalized = new NormalizedExcelTaskRequest(
             target!, request.Mode, request.WorkbookBinding, request.Save, output, request.OverwriteConfirmed, operation!);
         error = null;
@@ -694,13 +741,23 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
-        var payloadCount = (operation.CopyExhibit is null ? 0 : 1) +
-                           (operation.RepairExistingWorksheet is null ? 0 : 1) +
-                           (operation.ExtendFormulaSeries is null ? 0 : 1) +
-                           (operation.EditMacroProcedure is null ? 0 : 1) +
-                           (operation.AuditWorkbookFlows is null ? 0 : 1) +
-                           (operation.ReadWorksheetRange is null ? 0 : 1) +
-                           (operation.WriteWorksheetValues is null ? 0 : 1);
+        // One entry per payload, and every operation must appear. A payload left out of this list is
+        // not merely uncounted - it becomes unreachable, because a request carrying only that
+        // payload fails the arity check below and never reaches its own validation. Two operations
+        // shipped that way once; EveryOperationKindHasACountedPayload now guards against it.
+        object?[] payloads =
+        [
+            operation.CopyExhibit,
+            operation.RepairExistingWorksheet,
+            operation.ExtendFormulaSeries,
+            operation.EditMacroProcedure,
+            operation.AuditWorkbookFlows,
+            operation.ReadWorksheetRange,
+            operation.WriteWorksheetValues,
+            operation.FindReplace,
+            operation.Create
+        ];
+        var payloadCount = payloads.Count(payload => payload is not null);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";
@@ -764,10 +821,118 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.WriteWorksheetValues when operation.WriteWorksheetValues is not null:
                 return TryNormalizeWrite(operation.WriteWorksheetValues, operation.Kind, out normalized, out error);
 
+            case ExcelOperationKind.FindReplace when operation.FindReplace is not null:
+                return TryNormalizeFindReplace(operation.FindReplace, mode, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.Create when operation.Create is not null:
+                return TryNormalizeCreate(operation.Create, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
         }
+    }
+
+    private static bool TryNormalizeFindReplace(
+        FindReplaceOperation findReplace,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(findReplace.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (string.IsNullOrEmpty(findReplace.Find))
+        {
+            error = "Find text is required and cannot be empty.";
+            return false;
+        }
+        if (findReplace.Find.Length > MaxFindReplaceTextLength)
+        {
+            error = $"Find text must be at most {MaxFindReplaceTextLength} characters.";
+            return false;
+        }
+
+        // Plan is a survey. Carrying replacement text on it would let a caller believe a preview had
+        // been authorized to change something, which is the confusion this operation exists to avoid.
+        string? replaceWith = null;
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (findReplace.ReplaceWith is not null)
+            {
+                error = "Find/replace Plan lists matches only and must omit replaceWith.";
+                return false;
+            }
+        }
+        else
+        {
+            if (findReplace.ReplaceWith is null)
+            {
+                error = "Find/replace Apply requires replaceWith; use Plan to list matches without changing anything.";
+                return false;
+            }
+            if (findReplace.ReplaceWith.Length > MaxFindReplaceTextLength)
+            {
+                error = $"Replacement text must be at most {MaxFindReplaceTextLength} characters.";
+                return false;
+            }
+            if (findReplace.ReplaceWith.StartsWith('='))
+            {
+                error = "Find/replace never writes formula text. Use ExtendFormulaSeries or RepairExistingWorksheet, which infer formulas from evidence in the sheet.";
+                return false;
+            }
+        }
+
+        FormulaRepairRange? range = null;
+        if (findReplace.Range is not null)
+        {
+            if (!TryNormalizeA1Range(findReplace.Range, out var searchRange))
+            {
+                error = "Find/replace range must be a rectangular A1 range such as A1:C10.";
+                return false;
+            }
+            if (CellCount(searchRange) > MaxFormulaRepairCells)
+            {
+                error = $"A find/replace range must be at most {MaxFormulaRepairCells:N0} cells.";
+                return false;
+            }
+            range = ToFormulaRepairRange(searchRange);
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            FindReplace: new NormalizedFindReplaceOperation(worksheetName!, findReplace.Find, replaceWith ?? findReplace.ReplaceWith, range, findReplace.WholeCell, findReplace.MatchCase));
+        error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeCreate(
+        CreateOperation create,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!Enum.IsDefined(create.Kind))
+        {
+            error = "Create kind must be a defined value.";
+            return false;
+        }
+
+        string? worksheetName = null;
+        if (create.Kind == CreateKind.Worksheet)
+        {
+            if (!TryNormalizeWorksheetName(create.WorksheetName, "Worksheet name", out worksheetName, out error)) return false;
+        }
+        else if (create.WorksheetName is not null)
+        {
+            error = "Creating a workbook takes no worksheet name.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(kind, Create: new NormalizedCreateOperation(create.Kind, worksheetName));
+        error = null;
+        return true;
     }
 
     private static bool TryNormalizeMacroOperation(

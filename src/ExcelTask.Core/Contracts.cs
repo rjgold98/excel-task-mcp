@@ -6,7 +6,8 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create }
+public enum CreateKind { Workbook, Worksheet }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -84,6 +85,35 @@ public sealed record WorksheetCellValue(
     [property: Description("Single A1 cell address, such as B7.")] string Address,
     [property: Description("Constant to write. Numbers and TRUE/FALSE are written as numbers and booleans, everything else as text. Must not start with =.")] string Value);
 
+/// <summary>
+/// Finds cells whose text matches, and optionally replaces it.
+///
+/// Plan reports the matches and changes nothing, which is the point: replace-across-a-sheet is the
+/// operation most likely to be regretted, so the caller sees exactly which cells would change
+/// before authorizing it. Only constants are searched and rewritten - a cell containing a formula
+/// is reported as a match but never edited, because rewriting formula text is the thing this
+/// server refuses everywhere else and a find/replace is no different.
+/// </summary>
+public sealed record FindReplaceOperation(
+    [property: Description("Existing worksheet name to search. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Text to find, at most 200 characters. Matching is plain text on what the cell displays; * and ? are literal, not wildcards.")] string Find,
+    [property: Description("Apply only, and must be omitted for Plan: replacement text, at most 200 characters. Cells holding formulas are reported but never rewritten, and a replacement that would leave a cell starting with = is refused before anything is written.")] string? ReplaceWith = null,
+    [property: Description("One bounded A1 range to search, at most 10,000 cells; omit to search the worksheet's used range when it is within that bound.")] string? Range = null,
+    [property: Description("True matches only whole cell contents; false matches anywhere in the cell.")] bool WholeCell = false,
+    [property: Description("True makes matching case-sensitive.")] bool MatchCase = false);
+
+/// <summary>
+/// Creates an empty workbook, or adds an empty worksheet to an existing one.
+///
+/// Every other operation requires a target that already exists, which made the first step of real
+/// work impossible: nine of forty-six measured sessions began by creating a workbook and seven by
+/// adding a sheet. Creation is deliberately empty - no template, no seeded content - because the
+/// operations that fill a sheet already exist and each verifies its own work.
+/// </summary>
+public sealed record CreateOperation(
+    [property: Description("Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.")] CreateKind Kind,
+    [property: Description("Required when kind is Worksheet: the new sheet's name, which must not already be in use. Omit it for Workbook.")] string? WorksheetName = null);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -91,25 +121,33 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
-    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
+    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
     [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
-    [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null);
+    [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
+    [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null);
 
 public sealed record ExcelTaskRequest(
-    [property: Description("Existing target workbook path, ending .xlsx or .xlsm.")] string TargetWorkbookPath,
+    [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
-    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
-    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
+    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure and Create require Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
+    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows, ReadWorksheetRange and Create never take a save destination: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.")] string? OutputWorkbookPath = null,
-    [property: Description("Explicit authorization required before Apply can overwrite an existing save destination.")] bool OverwriteConfirmed = false);
+    [property: Description("Explicit authorization to overwrite. Apply with save Same always requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it.")] bool OverwriteConfirmed = false);
 
+/// <summary>
+/// What inspection needs to know before execution. <paramref name="TargetMustExist"/> is false for
+/// the one operation whose whole purpose is a target that does not exist yet - creating a workbook -
+/// and true for every other, so a missing file stays a clean rejection everywhere else.
+/// </summary>
 public sealed record WorkbookInspectionRequest(
     string TargetWorkbookPath,
     string? ReferenceWorkbookPath,
     WorkbookBinding Binding,
     SaveMode Save,
-    string? OutputWorkbookPath);
+    string? OutputWorkbookPath,
+    bool TargetMustExist = true);
 
 public sealed record WorkbookInspection(bool TargetIsOpen, bool CopyOutputExists = false, string? OpenWorkbookDescription = null, IReadOnlyList<TaskCheck>? Checks = null);
 
@@ -158,6 +196,10 @@ public sealed record NormalizedWorksheetCellValue(string Address, string Value);
 
 public sealed record NormalizedWriteWorksheetValuesOperation(string WorksheetName, IReadOnlyList<NormalizedWorksheetCellValue> Cells);
 
+public sealed record NormalizedFindReplaceOperation(string WorksheetName, string Find, string? ReplaceWith, FormulaRepairRange? Range, bool WholeCell, bool MatchCase);
+
+public sealed record NormalizedCreateOperation(CreateKind Kind, string? WorksheetName);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -167,7 +209,9 @@ public sealed record NormalizedExcelOperation(
     NormalizedEditMacroProcedureOperation? EditMacroProcedure = null,
     NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
     NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null,
-    NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null);
+    NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    NormalizedFindReplaceOperation? FindReplace = null,
+    NormalizedCreateOperation? Create = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,

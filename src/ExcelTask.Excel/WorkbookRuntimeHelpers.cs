@@ -51,6 +51,44 @@ internal static class WorkbookRuntimeHelpers
         if (!File.Exists(path)) throw new InvalidOperationException($"{description} does not exist.");
     }
 
+    /// <summary>
+    /// Refuses a same-file save whose target cannot be written, before Excel is ever started.
+    /// Without this a read-only target is discovered only when the save fails mid-operation,
+    /// producing Unknown - the worst possible answer, since it tells the caller the file may or
+    /// may not have changed. Measured against the original server in the failure-mode matrix:
+    /// it refuses cleanly at open, and there was no reason ExcelTask should do worse.
+    /// </summary>
+    public static void EnsureWritableSameTarget(string path)
+    {
+        if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+        {
+            throw new InvalidOperationException("The target workbook is read-only and cannot be saved in place.");
+        }
+    }
+
+    /// <summary>
+    /// The mirror of <see cref="EnsureReadableWorkbook"/> for the one operation that wants the
+    /// target absent. Refusing an existing file here rather than at save time is what keeps
+    /// "create" from ever meaning "overwrite" - there is no confirmation that unlocks it, because a
+    /// caller who wants to replace a workbook should say so with a save, not with a create.
+    /// </summary>
+    public static void EnsureCreatableWorkbook(string path)
+    {
+        if (!SupportedWorkbookExtensions.Contains(Path.GetExtension(path)))
+        {
+            throw new InvalidOperationException("A new workbook path must end in .xlsx or .xlsm.");
+        }
+
+        if (File.Exists(path)) throw new InvalidOperationException("A workbook already exists at that path; creating one never overwrites.");
+
+        var parent = Directory.GetParent(path)?.FullName;
+        if (parent is null || !Directory.Exists(parent)) throw new InvalidOperationException("The new workbook's directory does not exist.");
+        if ((File.GetAttributes(parent) & FileAttributes.ReadOnly) != 0)
+        {
+            throw new InvalidOperationException("The new workbook's directory is read-only.");
+        }
+    }
+
     public static void EnsureWritableCopyOutput(string? outputPath)
     {
         if (string.IsNullOrWhiteSpace(outputPath)) throw new InvalidOperationException("Copy output path is required.");
