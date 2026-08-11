@@ -255,6 +255,18 @@ internal static class FieldCheck
                 WriteWorksheetValues: new WriteWorksheetValuesOperation("Model", [new WorksheetCellValue("A4", "FieldCheck")])),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
+        // Its own copy, because it repairs the same row SetNumberFormat later formats. Found by the
+        // coverage reporter on its first run: this was the last operation the check never exercised,
+        // which is precisely the gap that reporter exists to name.
+        var repairTarget = System.IO.Path.Combine(work, "repair-target.xlsx");
+        System.IO.File.Copy(target, repairTarget, overwrite: true);
+        await RunAsync(client, fixtures, operations, "RepairExistingWorksheet (Apply)", new ExcelTaskRequest(
+            repairTarget,
+            new ExcelOperation(
+                ExcelOperationKind.RepairExistingWorksheet,
+                RepairExistingWorksheet: new RepairExistingWorksheetOperation("Model", ["A2:D2"])),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
         await RunAsync(client, fixtures, operations, "FindReplace (Plan)", new ExcelTaskRequest(
             writeTarget,
             new ExcelOperation(
@@ -361,6 +373,73 @@ internal static class FieldCheck
         return structured;
     }
 
+    /// <summary>
+    /// The two things only a managed, synced machine can answer - measured here so the field run
+    /// stays one command, and reported so that neither answer names the machine it came from.
+    ///
+    /// The first is the sync mapping. v0.16.0 resolves a workbook Excel reports as a service URL
+    /// back to the local path the caller named, through the sync client's own registry entries, and
+    /// that lookup has never executed: a machine that syncs nothing registers no providers, so only
+    /// the arithmetic around it is covered by tests. Counts are reported and values are not, because
+    /// a UrlNamespace is the tenant and site - an internal server name - and a MountPoint is a
+    /// person's directory layout.
+    ///
+    /// The second is folder writability. Until v0.16.0 a directory carrying the ReadOnly attribute
+    /// was treated as unwritable, and Windows sets that attribute on Documents, Downloads, Desktop
+    /// and the OneDrive root of an ordinary profile - so every copy-save and every create into the
+    /// folders workbooks actually live in was refused, before Excel started, with a reason that was
+    /// not true. Folders are named by label, never by path.
+    /// </summary>
+    private static void ProbeStorage(Dictionary<string, string> environment, List<string> notes)
+    {
+        var (registered, resolving) = OneDriveSyncMap.SelfTest();
+        environment["syncRootsRegistered"] = registered.ToString(CultureInfo.InvariantCulture);
+        environment["syncPathsResolving"] = registered == 0
+            ? "n/a - nothing synced on this machine"
+            : $"{resolving} of {registered}";
+
+        if (registered == 0)
+        {
+            notes.Add("No OneDrive sync roots are registered, so the SharePoint-URL identity path could not be exercised. A UseOpen against a synced workbook is what proves it.");
+        }
+        else if (resolving < registered)
+        {
+            notes.Add($"{registered - resolving} of {registered} sync roots did not resolve a path beneath themselves back to their own namespace. UseOpen against a workbook in one of those will still refuse; the mapping shape differs from what the resolver expects.");
+        }
+
+        // Labels, never paths. A OneDrive root names the tenant in its own folder name.
+        (string Label, string? Path)[] folders =
+        [
+            ("documents", Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)),
+            ("desktop", Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)),
+            ("downloads", System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads")),
+            ("oneDriveRoot", Environment.GetEnvironmentVariable("OneDrive"))
+        ];
+
+        var refusedBefore = new List<string>();
+        foreach (var (label, path) in folders)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
+            {
+                environment[$"folder:{label}"] = "absent";
+                continue;
+            }
+
+            var readOnly = false;
+            try { readOnly = (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0; }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
+
+            var accepts = WorkbookRuntimeHelpers.DirectoryAcceptsNewFile(path);
+            environment[$"folder:{label}"] = $"readOnlyAttribute={(readOnly ? "yes" : "no")} acceptsNewFile={(accepts ? "yes" : "no")}";
+            if (readOnly && accepts) refusedBefore.Add(label);
+        }
+
+        if (refusedBefore.Count > 0)
+        {
+            notes.Add($"These folders carry the ReadOnly attribute and are nevertheless writable: {string.Join(", ", refusedBefore)}. Before v0.16.0 every copy-save and create into them was refused; this run confirms the attribute test is gone.");
+        }
+    }
+
     private static Dictionary<string, string> ReadEnvironment(List<string> notes)
     {
         var environment = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -392,6 +471,8 @@ internal static class FieldCheck
                 notes.Add("Group Policy sets Excel macro security on this machine; the organization controls it, not this product.");
             }
         }
+
+        ProbeStorage(environment, notes);
 
         environment["excelRunningBefore"] = FieldCheckFixtures.SnapshotExcelProcesses().Count.ToString(CultureInfo.InvariantCulture);
         try

@@ -1,4 +1,4 @@
-# ExcelTask 0.16.0
+# ExcelTask 0.17.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -36,8 +36,9 @@ One request can perform exactly one operation:
 10. set one number format code across a bounded range, changing how numbers
     display and never the numbers themselves; or
 11. map a workbook's structure by reading the file directly - no Excel process
-    at all: sheets, dimensions, formula/constant counts, and the constant
-    islands that mark manual overrides inside calculated columns; then
+    at all: sheets, dimensions, formula/constant counts, the constant islands
+    that mark manual overrides inside calculated columns, plus defined names,
+    tables, and external links by file name; then
 12. recalculate, save, close owned Excel, reopen the saved workbook, and verify
     the worksheet, repairs, procedure, written values, replacements, or format;
     and

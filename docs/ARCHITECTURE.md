@@ -20,12 +20,42 @@ perform and verify it. The server never delegates planning to a hidden model.
 ### Task Engine
 
 The external module interface is `IExcelTaskEngine.RunAsync`. Its request has a
-manual closed operation union—copy exhibit, repair existing worksheet, extend
-formula series, and the in-progress `EditMacroProcedure`—so the MCP schema
-stays small without generic action language. It hides normalization, overwrite
-and live-workbook confirmation, plan compilation, outcome classification, and
-receipt construction. Tests use an in-memory workbook runtime adapter through
-the same interface.
+manual closed operation union of eleven kinds, so the MCP schema stays small
+without generic action language:
+
+| Operation | Reads or writes | Notes |
+|---|---|---|
+| `CopyExhibit` | writes | Copies a modelled worksheet into the target |
+| `RepairExistingWorksheet` | writes | Infers blank formulas from their neighbours |
+| `ExtendFormulaSeries` | writes | Extends a series right or down |
+| `EditMacroProcedure` | writes | One named procedure; isolated `.xlsm` + `Save=Copy` only |
+| `AuditWorkbookFlows` | reads | Opens Excel; the only operation that sees queries, the model, and macros |
+| `ReadWorksheetRange` | reads | One bounded range |
+| `WriteWorksheetValues` | writes | Constants only; never formula text |
+| `FindReplace` | both | Plan locates, Apply rewrites constants |
+| `Create` | writes | Empty workbook or worksheet; never overwrites |
+| `SetNumberFormat` | writes | Display only; no values, fonts, fills, or borders |
+| `ScanWorkbookStructure` | reads | **Starts no Excel** — reads the package directly |
+
+The engine hides normalization, overwrite and live-workbook confirmation, plan
+compilation, outcome classification, and receipt construction. Tests use an
+in-memory workbook runtime adapter through the same interface.
+
+`OperationCatalog` is the one place that maps a kind to its payload. Its switch
+has no default arm, so adding an operation without handling it fails the build.
+That exists because the hand-kept array it replaced once shipped two operations
+unreachable: a payload missing from the list did not merely go uncounted, the
+request failed the arity check before reaching its own validation.
+
+`ScanWorkbookStructure` is the only operation that never starts Excel. It reads
+the `.xlsx` package as what it physically is, a ZIP of XML, and reports sheets,
+dimensions, formula and constant counts, constant islands, defined names,
+tables, and external links by file name. It reports **nothing** about macros,
+queries, connections, or the data model, because those are not readable from the
+package — VBA is a binary OLE compound file, Power Query is base64 of a nested
+ZIP, the model is opaque — and a receipt that answered some categories while
+reading as complete would be a receipt that lies. Its description says so, and a
+test asserts the silence against a fixture that contains a VBA project.
 
 `EditMacroProcedure` has no generic VBE surface: it selects one procedure by
 name, Plan returns only that bounded source/hash, and Apply requires a complete
@@ -52,6 +82,21 @@ The adapter has two ownership modes:
 - `isolated`: ExcelTask owns Excel and may close/quit it;
 - `use_open`: ExcelTask attaches to one exact workbook after confirmation and
   must not close or quit the user's Excel process.
+
+**Workbook identity is exact, and a synced path has two exact spellings.** A
+workbook opened from a OneDrive or SharePoint folder reports a service URL as
+its `FullName`, not the local path the caller named, so a straight path
+comparison found nothing and refused every `use_open` against synced storage.
+`OneDriveSyncMap` resolves the caller's path through the sync client's own
+registry mapping and then compares exactly — the identity is still proven, never
+guessed, and a same-named workbook in a different library still does not match.
+Where nothing is synced, the comparison is unchanged.
+
+**The supervisor's cleanup sweep triggers on what the worker reported**, not on
+whether it reported cleanly. A worker that completes its protocol and returns
+`Unknown`, or any failed check, has said it could not finish cleaning up; that
+is when an independent exit re-check and orphaned-staging deletion are wanted.
+Gating them on a silent worker meant they never ran on the path that knows.
 
 ### MCP adapter
 

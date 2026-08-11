@@ -92,6 +92,36 @@ internal static class OneDriveSyncMap
     }
 
     /// <summary>
+    /// A redacted self-test of the half that only a synced machine can exercise: how many sync
+    /// roots are registered, and how many of them resolve a path beneath themselves back to a URL
+    /// under their own namespace.
+    ///
+    /// Counts only, deliberately. A UrlNamespace names the tenant and the site collection - an
+    /// internal server name - and a MountPoint names the person. Neither leaves the machine. What
+    /// leaves is whether the mapping worked, which is the whole question.
+    /// </summary>
+    internal static (int Registered, int Resolving) SelfTest()
+    {
+        const string ProbeRelative = "ExcelTask-probe/workbook.xlsx";
+        var providers = ReadProviders();
+        var resolving = 0;
+
+        foreach (var (mountPoint, urlNamespace) in providers)
+        {
+            // The probe path never has to exist; only the arithmetic is under test.
+            var probe = Path.Combine(mountPoint, "ExcelTask-probe", "workbook.xlsx");
+            if (TryBuildUrl(mountPoint, urlNamespace, probe, out var url) &&
+                url.StartsWith(urlNamespace.TrimEnd('/'), StringComparison.OrdinalIgnoreCase) &&
+                url.EndsWith(ProbeRelative, StringComparison.OrdinalIgnoreCase))
+            {
+                resolving++;
+            }
+        }
+
+        return (providers.Count, resolving);
+    }
+
+    /// <summary>
     /// The sync roots this user has registered. A machine with no sync client, or a policy that
     /// denies the key, yields none - and every caller then behaves exactly as it did before.
     /// </summary>

@@ -5,6 +5,27 @@ or **portability**, and ExcelTask beats all of them on not being wrong. This is 
 claim it argues is that all three axes are reachable *from* the design rather than against it,
 because one move unlocks all three — and that move already shipped.
 
+## Status of this document's claims, as of v0.17.0
+
+Read this first; the rest was written before any of it was tested.
+
+| Claim | Status |
+|---|---|
+| ExcelTask operates in both camps (live COM and file format) | **Holds.** `ScanWorkbookStructure` shipped v0.14.0 and was extended v0.15.0. |
+| The measured phase timings below (44 ms Excel work, 2,814 ms teardown, 2,297 ms verify) | **Holds**, on the home machine. Never reproduced on managed hardware. |
+| ~44% off the four accelerable operations from file-based verification | **Still projected.** Arithmetic from the timings, not an observed result. Nothing has been built. |
+| "Correctness nobody has measured on a real machine" is the durable advantage | **Weakened by our own evidence.** Two correctness defects shipped and were found by running the binary against hostile fixtures, not by the suite. The advantage is real only to the extent the checking is real; see below. |
+| The competitor comparison numbers (8.1x surface, 74% fewer tokens…) | **One run per workflow**, on the work computer, at v0.10.x. Not a benchmark, and now four releases stale. |
+
+The fourth row is the one that changed. This document argues that the field is
+uniformly untested and that this is ExcelTask's opening. That is still true of
+the field — but on 2026-08-11 two defects shipped here that a full green gate did
+not catch, both found only by running the released binary against inputs designed
+to break it. The lesson is not that the claim is wrong; it is that "measured
+correctness" is a practice to keep performing, not a property already owned. What
+made the difference was adversarial fixtures and verifying findings rather than
+adopting them, and both are now in the process rather than in this argument.
+
 ## The move: reading the file is not a compromise, it is the second mechanism
 
 `ScanWorkbookStructure` (v0.14.0) reads the workbook as the ZIP of XML it physically is, with no

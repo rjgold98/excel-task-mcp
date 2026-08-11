@@ -37,19 +37,63 @@ All four original phases landed and were field-validated on the work computer on
 10. **Writability preflight** (v0.11.0): a read-only same-file target is refused
     before Excel is ever started, so it is a clean `Rejected` rather than the
     `Unknown` a failed save produced. On every one of the five write paths.
-11. **Structure scan** (unreleased): the first operation that never starts
-    Excel - the workbook read as the ZIP of XML it is. Sheets, dimensions,
-    formula/constant counts, and constant islands (manual overrides inside
-    calculated columns) by address. Measured end to end at 1.2 s against 4.6 s
+11. **Structure scan** (v0.14.0, extended v0.15.0, corrected v0.15.2): the first
+    operation that never starts Excel - the workbook read as the ZIP of XML it
+    is. Sheets, dimensions, formula/constant counts, constant islands (manual
+    overrides inside calculated columns) by address, plus defined names, tables,
+    and external links by file name. Measured end to end at 1.2 s against 4.6 s
     for the Excel-based audit on the same 80,000-cell workbook, with zero owned
     processes. Built for planning: what to read, what to fix, before any file
     opens.
+12. **OneDrive and SharePoint identity** (v0.16.0): a workbook opened from a
+    synced folder reports a service URL as its `FullName`, so exact-path
+    matching refused every `UseOpen` against the storage the owner actually
+    uses. The caller's path is now resolved through the sync client's own
+    registry mapping and then compared exactly. **The registry lookup itself is
+    still unproven** - see the open gates below.
+13. **A field check that states its own coverage** (v0.16.0, completed v0.17.0):
+    it once validated five of eleven operations and printed PASS. It now names
+    any operation it did not exercise - and on its first run named a real one,
+    `RepairExistingWorksheet`, which is now a step. All eleven are covered.
+
+### Current test counts
+
+Updated every release; `docs/FIELD-TASK.md` step 4 checks against these.
+
+| Suite | Count |
+|---|---|
+| Core | 133 |
+| Excel (fast) | 85 |
+| McpServer (fast) | 18 |
+| **Fast total** | **236** |
+| Excel (OnDemand, real Excel) | 36 |
+| McpServer (OnDemand) | 4 |
+| **Full gate total** | **276** |
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
 53% less wall time across three client workflows - with ExcelTask's own Excel
 execution 13% slower, the advantage being entirely the removal of model
 coordination. One run per workflow; not yet a benchmark.
+
+### What the 2026-08-11 review and field log corrected
+
+Both were treated as claims to test rather than conclusions to adopt, and that
+mattered: seven adversarial verifiers were run against the architecture review's
+findings and **all seven returned partly-true**. The structural inventories held;
+the stated consequences were routinely overstated. One headline finding was
+refuted outright, and an entire category of five "seam violations" proved to be
+five true observations with five false conclusions - acting on one would have
+recreated a defect the code already records as having shipped once. None of that
+was implemented. What survived is in the 0.16.0 changelog.
+
+Two defects the review did **not** find were caught by running the shipped
+binary against hostile fixtures: the scan reported every second defined name
+under a summary that read as complete, and it carried external paths and stored
+values into receipts from the one operation documented as reporting shape and
+never contents. Both were in code shipped an hour earlier, and the test that
+should have caught them asserted a single benign example rather than the
+guarantee.
 
 ## From the 2026-08-11 field log, not yet addressed
 
@@ -83,7 +127,10 @@ latter already answered by `ScanWorkbookStructure`. These two are not.
   reported SharePoint URL back to the local path through the sync client's
   registry mapping, and the mapping and comparison are pinned by tests - but a
   machine that syncs nothing registers no providers, so the lookup itself has
-  never run. This is the only part of that change still unproven.
+  never run. This is the only part of that change still unproven, and it is the
+  highest-value unknown in the product. `docs/FIELD-TASK.md` step 3 settles it;
+  the check now reports `syncRootsRegistered` and `syncPathsResolving` so half
+  the answer arrives with step 1.
 - Audit one workbook the owner *knows* contains Power Query and Data Model
   flows; owner confirms the reported categories. Closes phase 4's last gap.
 - The repeated benchmark: one MCP catalog per client profile, three or more

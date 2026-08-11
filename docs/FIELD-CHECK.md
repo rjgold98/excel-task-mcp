@@ -41,6 +41,32 @@ completed and nothing was stranded, `1` otherwise.
 
 Three files are written, and the third is printed to the console as well.
 
+### What it reports beyond pass and fail
+
+**Coverage.** The last line of the operation list names any operation the run
+did not exercise. The check once covered five of eleven and still printed PASS,
+so a subset is now stated rather than implied. On its first run the reporter
+found a real gap — `RepairExistingWorksheet` — which is now a step.
+
+**Sync roots.** `syncRootsRegistered` and `syncPathsResolving` measure the one
+part of workbook identity that a developer machine cannot: resolving a path
+under a OneDrive or SharePoint sync root back to the URL Excel reports for it.
+Counts only. A `UrlNamespace` is the tenant and site collection, which is an
+internal server name, and a `MountPoint` is a person's directory layout;
+neither leaves the machine. `0 of N` means `UseOpen` against a workbook in those
+roots will still refuse, and that the mapping's shape differs from what the
+resolver expects.
+
+**Folder writability.** `folder:documents`, `folder:desktop`,
+`folder:downloads` and `folder:oneDriveRoot` each report the `ReadOnly`
+attribute and whether the folder actually accepts a new file. Windows sets that
+attribute on all four of an ordinary profile to mark a customized folder, and
+until v0.16.0 it was read as a permission — so every copy-save and every create
+into the folders workbooks live in was refused before Excel started, with a
+reason that was false. `readOnlyAttribute=yes acceptsNewFile=yes` is the
+expected pair, and confirms the attribute test is gone. Folders are named by
+label; no path is written.
+
 ## Getting the results back
 
 A managed computer often cannot send a file anywhere, so the check ends by

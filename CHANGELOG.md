@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.17.0 - 2026-08-11
+
+A build for the work computer. Everything here exists so that one command
+answers the questions only a managed, synced machine can answer.
+
+### Added - the field check measures what a developer machine cannot
+
+- **Sync-root resolution is now self-tested.** `syncRootsRegistered` and
+  `syncPathsResolving` report how many OneDrive or SharePoint roots are
+  registered and how many resolve a path beneath themselves back to their own
+  namespace. This is the one part of v0.16.0's workbook-identity fix that has
+  never executed - a machine that syncs nothing registers no providers - and
+  until now it needed hand-run PowerShell to check.
+  **Counts only, never values.** A `UrlNamespace` names the tenant and the site
+  collection, which is an internal server name, and a `MountPoint` names a
+  person's directory layout; neither leaves the machine.
+- **Folder writability is reported for the four folders that matter.**
+  `folder:documents`, `folder:desktop`, `folder:downloads` and
+  `folder:oneDriveRoot` each give the `ReadOnly` attribute and whether the folder
+  actually accepts a new file. Windows marks all four of an ordinary profile
+  with that attribute, and until v0.16.0 it was read as a permission, so every
+  copy-save and create into them was refused before Excel started. Folders are
+  named by label; no path is written.
+- **`RepairExistingWorksheet` is now exercised.** The coverage reporter added in
+  v0.16.0 found it missing on its first run - the last operation the check had
+  never tested. All eleven now run, and the check reports `all 11 operations
+  exercised`.
+
+### Changed - documentation caught up with four releases of work
+
+- `docs/ARCHITECTURE.md` listed four operations and no longer described the
+  engine. It now carries all eleven with their read/write posture,
+  `OperationCatalog`, the scan's deliberate silences, the synced-path identity
+  rule, and the cleanup-sweep trigger.
+- `docs/FIELD-TASK.md` is new: **the standing work-computer task**, targeting
+  "the latest release" rather than a pinned version. The per-release issues it
+  replaces went stale the moment they were superseded - issue #6 asks for a
+  v0.14.1 asset from `releases/latest`, which no longer contains one.
+- `docs/FIELD-CHECK.md` documents the coverage line and both new probes.
+- `docs/COMPETITIVE-STRATEGY.md` opens with a status table separating what holds
+  from what is still projected, and records that its central claim was weakened
+  by our own evidence: two correctness defects shipped and were caught by
+  hostile fixtures rather than by a green gate. Measured correctness is a
+  practice to keep performing, not a property already owned.
+- `ROADMAP.md` carries the current test counts, so a field run has something to
+  check against, and marks the OneDrive lookup as the highest-value unknown.
+
 ## 0.16.0 - 2026-08-11
 
 Driven by an architecture review and a field log from a real day's work. Seven
