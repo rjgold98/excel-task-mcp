@@ -879,6 +879,121 @@ public sealed class ExcelTaskEngineTests
         Assert.True(runtime.InspectionRequest!.TargetMustExist);
     }
 
+    // The decision surface below turns on WorkbookInspection, and until these tests every Core test
+    // ran against the fake's default of a closed target and no existing copy output - which left the
+    // target-open confirmation, the overwrite-copy confirmation, two of DescribeConfirmation's three
+    // arms, both inspection rejections, and the whole inspection-failure receipt executing only in
+    // production. The arm whose wrong message was the v0.11.0 confirmation-summary bug was fixed and
+    // shipped without a test ever running it.
+
+    [Fact]
+    public async Task AnOpenTargetUnderAskIfOpenAsksByNameForABindingDecision()
+    {
+        var runtime = new FakeRuntime { Inspection = new(TargetIsOpen: true) };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.AskIfOpen), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "target-open");
+        Assert.Contains("the target workbook is already open", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnExistingCopyOutputAsksByNameForOverwriteAuthorization()
+    {
+        var runtime = new FakeRuntime { Inspection = new(TargetIsOpen: false, CopyOutputExists: true) };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.Isolated, save: SaveMode.Copy, output: ".\\out.xlsx"),
+            CancellationToken.None);
+
+        // The summary must name the actual reason. The v0.11.0 bug was this method's sibling arm
+        // describing a same-file overwrite as "the requested copy output already exists" - a
+        // sentence about a file the request never mentioned.
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-copy");
+        Assert.Contains("the requested copy output already exists", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task TwoUnmetConfirmationsAreNamedTogetherInOneSummary()
+    {
+        var runtime = new FakeRuntime { Inspection = new(TargetIsOpen: true) };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.AskIfOpen, save: SaveMode.Same),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Equal(2, receipt.Confirmation.Requirements.Count);
+        Assert.Contains("; and", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UseOpenWithAClosedTargetIsRejectedNotConfirmed()
+    {
+        var runtime = new FakeRuntime { Inspection = new(TargetIsOpen: false) };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Plan, binding: WorkbookBinding.UseOpen), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("requires the target workbook to already be open", receipt.Summary, StringComparison.Ordinal);
+        Assert.True(receipt.Retry.CanRetry);
+    }
+
+    [Fact]
+    public async Task IsolatedSameFileApplyOnAnOpenTargetIsRejectedNotConfirmed()
+    {
+        var runtime = new FakeRuntime { Inspection = new(TargetIsOpen: true) };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.Isolated, save: SaveMode.Same, overwriteConfirmed: true),
+            CancellationToken.None);
+
+        // An isolated overwrite of an open workbook would fight the user for their own file, so no
+        // confirmation can authorize it - the answer is a different binding or a copy.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("cannot safely overwrite an open target workbook", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AFailedInspectionIsARetryableRejectionThatDispatchedNothing()
+    {
+        var runtime = new FakeRuntime { InspectionException = new InvalidOperationException("runtime unavailable") };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains(receipt.Checks, check => check.Name == "runtime-inspection" && !check.Passed);
+        Assert.True(receipt.Retry.CanRetry);
+        Assert.Null(runtime.Plan);
+    }
+
+    [Theory]
+    [InlineData(ExcelTaskStatus.Unknown)]
+    [InlineData(ExcelTaskStatus.Partial)]
+    public async Task TheEngineOverridesARuntimeThatCallsAnUncertainOutcomeRetryable(ExcelTaskStatus status)
+    {
+        var runtime = new FakeRuntime
+        {
+            Outcome = new WorkbookExecutionOutcome(status, "Uncertain", CanRetry: true, RetryReason: "runtime says retry")
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            Request(mode: ExcelTaskMode.Apply, binding: WorkbookBinding.Isolated, save: SaveMode.Same, overwriteConfirmed: true),
+            CancellationToken.None);
+
+        // The retry policy belongs to the engine: an uncertain outcome must never invite a retry,
+        // whatever the runtime said, because retrying against unreconciled state is how one bad
+        // apply becomes two.
+        Assert.Equal(status, receipt.Status);
+        Assert.False(receipt.Retry.CanRetry);
+        Assert.NotEqual("runtime says retry", receipt.Retry.Reason);
+        Assert.False(string.IsNullOrWhiteSpace(receipt.Retry.Reason));
+    }
+
     [Fact]
     public async Task NumberFormatRejectsARangeLargerThanTheCap()
     {

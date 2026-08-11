@@ -284,6 +284,14 @@ public sealed record WorksheetRangeReceipt(
     IReadOnlyList<WorksheetCell> Cells,
     bool Truncated);
 
+/// <summary>
+/// What a runtime hands back. One fact of this interface was previously stated nowhere: the engine
+/// coerces <paramref name="CanRetry"/> and <paramref name="RetryReason"/> by status - Rejected is
+/// always retryable, Unknown and Partial never are, with the engine's own reasons - so a runtime's
+/// values are honoured only for the statuses in between. The retry policy belongs to the engine;
+/// what a runtime supplies is advisory and, today, decorative for every status a mutation path
+/// actually produces.
+/// </summary>
 public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
