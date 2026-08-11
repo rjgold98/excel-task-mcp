@@ -16,9 +16,12 @@ All four original phases landed and were field-validated on the work computer on
 3. **Macro editing** (v0.4.0, hardened v0.6.0): hash-preconditioned
    whole-procedure replacement on an isolated copy, optional run, dialog
    containment. Field-confirmed including execution.
-4. **Read-only audit** (v0.7.0): one workbook's queries, connections, model,
-   pivots, and external links - names and shapes only, unchanged-proof in the
-   receipt. Field-confirmed safe on a real business workbook.
+4. **Read-only audit** (v0.7.0, completed v0.8.1): one workbook's worksheets,
+   tables, defined names, queries, connections, model, pivots, and external
+   links - names and shapes only, unchanged-proof in the receipt.
+   Field-confirmed safe on a real business workbook.
+5. **Bounded range read** (v0.9.0): the contents of one range, as values or as
+   R1C1 formulas. The most-requested operation in the whole history.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -54,26 +57,32 @@ Five weeks of the owner's real history: 46 Excel sessions, 7,873 calls, ranked
 by sessions rather than calls because one session made 2,515 of them. Full data
 in `docs/field-reports/2026-08-10-demand/`.
 
-**1. Finish the discovery layer.** `table list` and `namedrange list` appear in
-11 and 12 sessions. The audit already covers worksheets, macros, queries,
-connections, the model, pivots and links; these two complete it, cost almost
-nothing, and introduce no new concept.
+**1. Finish the discovery layer.** Shipped in v0.8.1: the audit lists tables and
+defined names alongside everything else.
 
-**2. Reading cell values and formulas.** `range get-values` is the most-used
-operation in the entire history - 31 of 46 sessions - with `get-formulas` at 21.
-This corrects an earlier entry here that treated value reading as one incident's
-blocker; it is the most frequent thing this work does, and ExcelTask returns no
-cell data by design. The open question is whether a bounded read can answer the
-caller's question without becoming a general data pipe: returning *what differs
-from a pattern* rather than *the contents* would keep the promise while serving
-most of the demand. Needs a design pass, not a ticket.
+**2. Reading cell values and formulas.** Shipped in v0.9.0. The design pass this
+entry asked for concluded against the clever answer: returning *what differs from
+a pattern* rather than the contents would have kept a promise nobody had asked
+for, at the cost of not answering the question. The promise worth keeping is that
+contents are never carried *incidentally* - and in a read they are the entire
+request. So it returns them, under a hard bound rather than a refusal.
 
 **3. Writing values and formulas.** `set-values` 19 sessions, `set-formulas` 15.
-Both are deliberate refusals - inference plus verification is what makes an
-ExcelTask edit safe, and accepting model-written formula text discards exactly
-that. A genuine collision between a design stance and observed demand. It should
-stay unresolved until reading is settled, because a good read may remove much of
-the reason to write.
+Now the top open item, and the two halves should be separated rather than decided
+together:
+
+- **Values are writable within the existing stance.** The refusal protects
+  against model-authored *formulas*, which can be plausibly and silently wrong in
+  a way no receipt would catch. A constant - a label, a number, a date - has no
+  such failure mode: it is exactly what was asked for, and a read-back proves it
+  byte for byte. This is 19 sessions of demand available without giving anything
+  up.
+- **Formula text remains a genuine collision.** Inference plus verification is
+  what makes an ExcelTask edit safe, and accepting formula text discards exactly
+  that. `ExtendFormulaSeries` and `RepairExistingWorksheet` already serve the
+  cases where the intended formula is derivable from evidence. What is not yet
+  known is how much of the 15 sessions those two already cover, and that is
+  measurable rather than arguable.
 
 **4. Then, in demand order.** `range_edit` find and replace (13 sessions),
 `screenshot` for verification (13), `range_format` (12), `table` beyond listing
@@ -90,8 +99,14 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
   after Excel is open, producing `Unknown` - the worst answer for a caller, since
   it means the file may or may not have changed. Preflight makes it a clean
   `Rejected`.
-- **Macro session sharing.** The one measured regression: 28.1s against 26.4s,
-  because Plan and Apply each open their own Excel.
+- **The second Excel launch on a mutating Apply.** Measured at 274-482 ms of a
+  roughly one-second operation, and the largest remaining cost by far: launching
+  Excel is the entire budget, and everything done inside it is rounding error.
+  It cannot be deleted - verifying in the process that did the writing would be
+  verifying against the memory that produced it - but it can be started early so
+  it overlaps the write and save. Not built yet because a pre-launched instance
+  is a new way to leak an Excel process on every early-return path, which is the
+  one thing this project claims never happens. See `docs/EXCEL-TUNING.md`.
 - **Multi-workbook audit.** Follow external links through several workbooks into
   one dependency report.
 
