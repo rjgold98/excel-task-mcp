@@ -41,7 +41,7 @@ deadline, and proof-of-exit exist to bound. Qualification that matters here: Exc
 use — an interactive desktop with a person in the chat loop — is closer to supported client-side
 automation; the unsupported status attaches to unattended operation.
 
-As of v0.14.0, ExcelTask is the only server *in this survey* that sits in **both** camps — a
+Since v0.14.0, ExcelTask is the only server *in this survey* that sits in **both** camps — a
 five-server sample, so read it as "no counterpart found here", not as a uniqueness claim:
 `ScanWorkbookStructure`
 reads the OOXML ZIP directly — the other camp's mechanism, adopted for the one job it is

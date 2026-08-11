@@ -126,6 +126,6 @@ Only `Rejected` is automatically safe to retry after correction. A repeated
 - Bound every task and return changed ranges/checks rather than workbook data.
 - Limit formula work to 16 requested ranges, 10,000 scanned cells, 2,000
   planned mutations, and 24 extension periods; never put formula text on the
-  MCP wire. The in-progress macro operation bounds procedure names/hashes to
-  96 characters and Plan source to 8,192 characters; Apply returns no source.
+  MCP wire. The macro operation bounds procedure names/hashes to 96 characters
+  and Plan source to 8,192 characters; Apply returns no source.
 - Measure actual Copilot tokens and turns separately from server/COM timing.

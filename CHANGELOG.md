@@ -1,5 +1,21 @@
 # Changelog
 
+## Conventions
+
+So that dates and versions stay checkable rather than approximate:
+
+- **A version's date is the date of its tagged commit**, in that commit's own
+  local time zone. Not the day the work started, and not the day the release was
+  published - both drift, and only the tag is a fact the repository holds.
+- **Every version here has a matching `v<version>` git tag.** Three tags have no
+  GitHub release, and each says so in its own heading below: `0.9.0` and `0.9.1`
+  were superseded within the hour by `0.10.0`, and `0.15.0` was superseded by
+  `0.15.1` before any artifact was published. They are left as tags rather than
+  given releases, because publishing a download for a version nobody should
+  install is worse than an explained gap.
+- **No entry claims a specific version is current.** Documents point at
+  `releases/latest`, which cannot go stale.
+
 ## 0.17.0 - 2026-08-11
 
 A build for the work computer. Everything here exists so that one command
@@ -537,7 +553,7 @@ serial desktop-Excel gate.
   `docs/INTERFACE-AB-STUDY.md`. The read-back stays: zero failures in twelve
   tries is not evidence the guard is unnecessary.
 
-## 0.11.0 - 2026-08-10
+## 0.11.0 - 2026-08-11
 
 ### Added - the three faithful-rebuild gaps
 
@@ -685,7 +701,7 @@ MCP boundary.
   from the reopened file; the same cell twice in one request is rejected, since
   such a request does not say what it wants.
 
-## 0.9.1 - 2026-08-10
+## 0.9.1 - 2026-08-10 (tagged, not released)
 
 ### Changed - speed
 
@@ -722,7 +738,7 @@ MCP boundary.
   from PowerShell measures PowerShell's own COM references. See
   `docs/EXCEL-TUNING.md`.
 
-## 0.9.0 - 2026-08-10
+## 0.9.0 - 2026-08-10 (tagged, not released)
 
 ### Added - the most-requested operation
 

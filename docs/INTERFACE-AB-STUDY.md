@@ -376,6 +376,17 @@ lingering and then exiting on their own, which points at a teardown race in the 
 rather than a true leak, but that is not yet confirmed. This is the supervised-worker bet,
 and it is currently unproven.
 
+> **Resolved 2026-08-11 (v0.14.1, v0.16.0).** The teardown race this round suspected was
+> real, and it was in the assertion rather than in the engine. Two causes, both since fixed:
+> the leak counter took a one-shot reading roughly 700 ms after an operation, against a
+> teardown the diagnostic trace later measured at about 2,814 ms, so a dying Excel counted as
+> an abandoned one — it now settles before counting. And building `.xlsm` fixtures through
+> the VBIDE strands Excel processes that never exit, which slows subsequent teardown enough
+> to blow the assertion in tests that are otherwise correct; a run must start from a clean
+> process table. Separately, v0.16.0 fixed the supervisor's cleanup sweep never firing on a
+> worker that *reported* a failed exit rather than going silent. The bet holds: the full gate
+> now runs 276 tests against real desktop Excel with no process left behind.
+
 ## Round 8 — head to head against sbroenne/mcp-server-excel
 
 Both servers built locally, driven through identical client code, same fixture, same task,

@@ -183,9 +183,11 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.14.1 is the current stable release: formula, exhibit, macro editing,
-discovery, range reading, constant writes, find/replace, creation, number
-formats, and structure scanning without Excel.
+Eleven operations ship today: formula, exhibit, macro editing, discovery, range
+reading, constant writes, find/replace, creation, number formats, worksheet
+repair, and structure scanning without Excel. The version is the heading above,
+and the build is always the
+[latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest).
 It does not yet set fonts, fills, borders or widths, refresh Power Query or data
 models, attach to unsaved workbooks, edit sheet or class modules, or expose a
 general automation surface.
