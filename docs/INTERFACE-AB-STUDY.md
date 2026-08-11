@@ -565,8 +565,9 @@ remembering to serialize.
 
 ## Reproducing
 
-Round 10's harness is a different one and also lives outside the repo (scratchpad
-`abtest/`): `dump-schema.ps1` speaks MCP to the built server and captures the real
+Round 10's harness is a different one. It lives outside the repo, at
+`../excel-task-abtest/` - durable rather than in a scratchpad, because rounds 1-9's
+harness was not and is gone. `dump-schema.ps1` speaks MCP to the built server and captures the real
 `tools/list`, `build-arms.ps1` derives the `unstated` arm from it by textual clause
 removal and fails loudly if a clause it expects is missing, `generate-prompts.ps1`
 emits self-contained prompts, `oracle/` is the console app that replays decisions
