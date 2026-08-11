@@ -9,8 +9,18 @@ internal static class WorkbookWorkerProtocol
 {
     internal const int Version = 1;
     internal const int MaxRequestBytes = 1024 * 1024;
-    internal const int MaxFrameBytes = 16 * 1024;
+
+    /// <summary>
+    /// A worker frame over this size is replaced with a fatal code, so the budget has to fit the
+    /// largest legitimate result. It was 16 KB when every receipt was metadata. A full range read is
+    /// 400 cells of up to 64 characters each and does not fit, and the failure would have appeared
+    /// only on large reads - the case a real model produces - as a lost result rather than a
+    /// truncated one. It stays far below the MCP response bound, which is what actually decides what
+    /// the caller sees.
+    /// </summary>
+    internal const int MaxFrameBytes = 64 * 1024;
     internal const int MaxTextLength = 128;
+
 
     /// <summary>
     /// Phase labels are progress annotations, not data. The supervisor both parses and validates
@@ -103,7 +113,27 @@ internal static class WorkbookWorkerProtocol
         Checks = BoundChecks(outcome.Checks),
         RetryReason = Bound(outcome.RetryReason),
         MacroProcedure = Bound(outcome.MacroProcedure),
-        Audit = Bound(outcome.Audit)
+        Audit = Bound(outcome.Audit),
+        Range = Bound(outcome.Range)
+    };
+
+    /// <summary>
+    /// Capped at the engine's read limit rather than at MaxResultItems, because these cells are the
+    /// answer the caller asked for: trimming them to twenty would not be a bound, it would be a
+    /// wrong result. The frame budget is what makes that safe to carry.
+    /// </summary>
+    private static WorksheetRangeReceipt? Bound(WorksheetRangeReceipt? range) => range is null ? null : range with
+    {
+        WorksheetName = BoundRequired(range.WorksheetName),
+        Range = BoundRequired(range.Range),
+        Cells = range.Cells.Take(ExcelTaskEngine.MaxReadCells).Select(cell => cell with
+        {
+            Address = BoundRequired(cell.Address),
+            Text = cell.Text.Length > ExcelTaskEngine.MaxReadCellTextLength
+                ? cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
+                : cell.Text
+        }).ToArray(),
+        Truncated = range.Truncated || range.Cells.Count > ExcelTaskEngine.MaxReadCells
     };
 
     private static TaskCheck[] BoundChecks(IReadOnlyList<TaskCheck>? checks) => (checks ?? [])

@@ -16,7 +16,6 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
     private const int MaxReceiptItems = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
     private const int MaxMacroMetadataLength = 96;
-    private const int MaxReceiptCellTextLength = 64;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -136,7 +135,9 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Cells = range.Cells.Take(ExcelTaskEngine.MaxReadCells).Select(cell => cell with
         {
             Address = BoundRequired(cell.Address),
-            Text = cell.Text.Length > MaxReceiptCellTextLength ? cell.Text[..MaxReceiptCellTextLength] : cell.Text
+            Text = cell.Text.Length > ExcelTaskEngine.MaxReadCellTextLength
+                ? cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
+                : cell.Text
         }).ToArray(),
         Truncated = range.Truncated || range.Cells.Count > ExcelTaskEngine.MaxReadCells
     };

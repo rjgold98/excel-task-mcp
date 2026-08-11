@@ -11,8 +11,6 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     private const int MaxReceiptItems = 20;
     private const int MaxReceiptStringLength = 256;
-    private const int MaxReceiptRangeCells = 400;
-    private const int MaxReceiptCellTextLength = 64;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
@@ -310,10 +308,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         if (range is null) return null;
 
         var cells = range.Cells
-            .Take(MaxReceiptRangeCells)
+            .Take(MaxReadCells)
             .Select(cell => new WorksheetCell(
                 Bound(cell.Address) ?? string.Empty,
-                cell.Text.Length <= MaxReceiptCellTextLength ? cell.Text : cell.Text[..MaxReceiptCellTextLength]))
+                cell.Text.Length <= MaxReadCellTextLength ? cell.Text : cell.Text[..MaxReadCellTextLength]))
             .ToArray();
 
         return range with
@@ -520,6 +518,13 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     /// contents small enough to be worth reading. Narrowing and reading again is cheap.
     /// </summary>
     public const int MaxReadCells = 400;
+
+    /// <summary>
+    /// A cell longer than this is a note or a pasted paragraph. One of them must not crowd out the
+    /// four hundred cells around it, so it is truncated while the rest of the range survives intact.
+    /// Every layer that carries a range receipt bounds it to this same pair of caps.
+    /// </summary>
+    public const int MaxReadCellTextLength = 64;
 
     private static bool TryNormalizeRead(
         ReadWorksheetRangeOperation read,

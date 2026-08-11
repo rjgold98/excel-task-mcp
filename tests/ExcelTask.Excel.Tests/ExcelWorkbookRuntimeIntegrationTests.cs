@@ -510,6 +510,46 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task AFullDenseReadReturnsEveryOneOfThePermittedCells()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "read-dense.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // The worst case the caller can ask for: every one of the 400 permitted cells full, and
+            // each holding text past the per-cell cap. The runtime is the innermost layer and does
+            // not truncate - the engine, the worker, and the tool each bound what they pass on -
+            // so what this proves is that a dense read at the limit returns every cell.
+            // WorkbookWorkerProtocolTests covers the frame budget that carries it.
+            var formulas = new object?[20, 20];
+            for (var row = 0; row < 20; row++)
+            {
+                for (var column = 0; column < 20; column++) formulas[row, column] = "=REPT(\"x\",120)";
+            }
+
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:T20", formulas);
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("read-dense", ExcelTaskPlans.Read(target, "Sheet1", "A1:T20")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.NotNull(outcome.Range);
+            Assert.Equal(400, outcome.Range.CellsInRange);
+            Assert.Equal(400, outcome.Range.Cells.Count);
+            Assert.All(outcome.Range.Cells, cell => Assert.Equal(120, cell.Text.Length));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task ReadReturnsR1C1FormulasWhenAskedAndRejectsAnUnknownWorksheet()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

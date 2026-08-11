@@ -7,6 +7,41 @@ namespace ExcelTask.Excel.Tests;
 public sealed class WorkbookWorkerProtocolTests
 {
     [Fact]
+    public void TheLargestLegitimateResultFitsTheWorkerFrameBudget()
+    {
+        // A frame over the budget is replaced wholesale with a fatal code, so the budget has to fit
+        // the biggest result the caller is allowed to ask for - otherwise the largest reads, the
+        // ones a real model produces, fail as lost results rather than truncated ones. Every cell
+        // here sits at the text cap with a four-character address.
+        var cells = Enumerable.Range(1, ExcelTaskEngine.MaxReadCells)
+            .Select(index => new WorksheetCell($"AZ{index + 1000}", new string('x', ExcelTaskEngine.MaxReadCellTextLength)))
+            .ToArray();
+        var outcome = new WorkbookExecutionOutcome(
+            ExcelTaskStatus.Completed,
+            new string('s', WorkbookWorkerProtocol.MaxTextLength),
+            Range: new WorksheetRangeReceipt(
+                new string('w', WorkbookWorkerProtocol.MaxTextLength),
+                "A1:T20",
+                false,
+                ExcelTaskEngine.MaxReadCells,
+                ExcelTaskEngine.MaxReadCells,
+                cells,
+                Truncated: false));
+
+        var json = JsonSerializer.Serialize(
+            new
+            {
+                version = WorkbookWorkerProtocol.Version,
+                type = "result",
+                taskId = "worker_test_bound",
+                outcome = WorkbookWorkerProtocol.Bound(outcome)
+            },
+            WorkbookWorkerProtocol.JsonOptions);
+
+        Assert.InRange(Encoding.UTF8.GetByteCount(json), 1, WorkbookWorkerProtocol.MaxFrameBytes);
+    }
+
+    [Fact]
     public async Task HostEmitsAcceptedObservedLifecycleAndResultForOneInspection()
     {
         const string taskId = "worker_test_1";

@@ -29,6 +29,14 @@
   carries it into the next call, which does write. Both read-only operations are
   now exempt.
 
+- **A full-size read would have been lost, not truncated.** The worker frame
+  budget was 16 KB, set when every receipt was metadata. 400 cells of capped text
+  do not fit, and a frame over budget is replaced wholesale with a fatal code -
+  so the largest reads, the ones a real model produces, would have failed
+  entirely while small ones passed. The budget is now 64 KB, still far below the
+  MCP response bound that decides what the caller actually sees, and a test
+  serializes the largest legitimate result and measures it.
+
 - **The full local gate could report a leaked Excel process that was not there,
   and could pass without having tested for one.** `dotnet test` on the solution
   runs test assemblies in parallel; two of them drive real desktop Excel and then
