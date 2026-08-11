@@ -42,7 +42,9 @@ public static class WorkbookWorkerHost
             OwnedProcessRecoveryDeadline,
             new WorkerOwnedProcessTerminator(),
             () => writer.Write(new { version = WorkbookWorkerProtocol.Version, type = "phase", taskId = parsedRequest.TaskId, phase = "owned-process-recovery" }));
-        var observer = new ProtocolObserver(writer, parsedRequest.TaskId, watchdog);
+        var trace = DiagnosticTrace.Begin(parsedRequest.TaskId, "worker");
+        DescribeRequest(trace, parsedRequest);
+        var observer = new ProtocolObserver(writer, parsedRequest.TaskId, watchdog, trace);
         try
         {
             await writer.WriteAsync(new { version = WorkbookWorkerProtocol.Version, type = "accepted", taskId = parsedRequest.TaskId, operation = parsedRequest.Operation }).ConfigureAwait(false);
@@ -62,18 +64,86 @@ public static class WorkbookWorkerHost
                 (runtime as IDisposable)?.Dispose();
             }
 
+            DescribeResult(trace, result);
             await writer.WriteAsync(new { version = WorkbookWorkerProtocol.Version, type = "result", taskId = parsedRequest.TaskId, operation = parsedRequest.Operation, result }).ConfigureAwait(false);
             return 0;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            trace?.End("worker", "cancelled by the host deadline");
             await writer.WriteFatalAsync("cancelled", parsedRequest.TaskId).ConfigureAwait(false);
             return 3;
         }
-        catch (Exception)
+        catch (Exception exception)
         {
+            // The one place the worker's own fault is legible. The supervisor drains stderr and
+            // discards it, so without this a worker crash reached the caller as "Unknown" and
+            // nothing else - which is what made a work-computer failure impossible to diagnose here.
+            trace?.Note($"UNHANDLED {exception.GetType().Name}: {exception.Message.ReplaceLineEndings(" ")}");
+            trace?.End("worker", "unhandled worker failure");
             await writer.WriteFatalAsync("worker-failure", parsedRequest.TaskId).ConfigureAwait(false);
             return 1;
+        }
+    }
+
+    /// <summary>The request's shape - kind, mode, policy, sheets and ranges. Never its contents.</summary>
+    private static void DescribeRequest(DiagnosticTrace? trace, WorkbookWorkerRequest request)
+    {
+        if (trace is null) return;
+
+        if (request.Inspection is not null)
+        {
+            trace.Note($"inspect: target={DiagnosticTrace.FileNameOnly(request.Inspection.TargetWorkbookPath)} " +
+                       $"binding={request.Inspection.Binding} save={request.Inspection.Save} mustExist={request.Inspection.TargetMustExist}");
+            return;
+        }
+
+        var plan = request.Plan!.Request;
+        var operation = plan.Operation;
+        trace.Note($"execute: {operation.Kind} mode={plan.Mode} binding={plan.WorkbookBinding} save={plan.Save} " +
+                   $"overwriteConfirmed={plan.OverwriteConfirmed} target={DiagnosticTrace.FileNameOnly(plan.TargetWorkbookPath)} " +
+                   $"output={DiagnosticTrace.FileNameOnly(plan.OutputWorkbookPath)}");
+
+        var detail = operation.Kind switch
+        {
+            ExcelOperationKind.ReadWorksheetRange => $"sheet={operation.ReadWorksheetRange!.WorksheetName} range={operation.ReadWorksheetRange.Range} formulas={operation.ReadWorksheetRange.Formulas}",
+            ExcelOperationKind.WriteWorksheetValues => $"sheet={operation.WriteWorksheetValues!.WorksheetName} cells={operation.WriteWorksheetValues.Cells.Count}",
+            ExcelOperationKind.FindReplace => $"sheet={operation.FindReplace!.WorksheetName} range={operation.FindReplace.Range?.ToString() ?? "(used range)"} wholeCell={operation.FindReplace.WholeCell} matchCase={operation.FindReplace.MatchCase}",
+            ExcelOperationKind.SetNumberFormat => $"sheet={operation.SetNumberFormat!.WorksheetName} range={operation.SetNumberFormat.Range}",
+            ExcelOperationKind.Create => $"createKind={operation.Create!.Kind} sheet={operation.Create.WorksheetName ?? "(default)"}",
+            ExcelOperationKind.RepairExistingWorksheet => $"sheet={operation.RepairExistingWorksheet!.WorksheetName} ranges={operation.RepairExistingWorksheet.Ranges.Count}",
+            ExcelOperationKind.ExtendFormulaSeries => $"sheet={operation.ExtendFormulaSeries!.WorksheetName} direction={operation.ExtendFormulaSeries.Direction} evidence={operation.ExtendFormulaSeries.EvidenceRange} destination={operation.ExtendFormulaSeries.DestinationRange}",
+            ExcelOperationKind.CopyExhibit => $"referenceSheet={operation.CopyExhibit!.ReferenceWorksheet} newSheet={operation.CopyExhibit.NewWorksheetName} repairRanges={operation.CopyExhibit.RepairRanges.Count}",
+            ExcelOperationKind.EditMacroProcedure => $"component={operation.EditMacroProcedure!.ComponentName} procedure={operation.EditMacroProcedure.ProcedureName} run={operation.EditMacroProcedure.RunAfterEdit}",
+            _ => "no options"
+        };
+        trace.Note($"  {detail}");
+    }
+
+    /// <summary>Status and every check, which is where a failure explains itself.</summary>
+    private static void DescribeResult(DiagnosticTrace? trace, object result)
+    {
+        if (trace is null) return;
+
+        if (result is WorkbookExecutionOutcome outcome)
+        {
+            foreach (var check in outcome.Checks ?? [])
+            {
+                trace.Note($"check {(check.Passed ? "PASS" : "FAIL")} {check.Name}: {check.Detail}");
+            }
+
+            trace.End("worker", $"{outcome.Status}: {outcome.Summary}");
+            return;
+        }
+
+        if (result is WorkbookInspection inspection)
+        {
+            foreach (var check in inspection.Checks ?? [])
+            {
+                trace.Note($"check {(check.Passed ? "PASS" : "FAIL")} {check.Name}: {check.Detail}");
+            }
+
+            trace.End("worker", inspection.InfeasibleReason ?? $"inspected, targetIsOpen={inspection.TargetIsOpen}");
         }
     }
 
@@ -97,13 +167,19 @@ public static class WorkbookWorkerHost
     private sealed class ProtocolObserver(
         WorkerFrameWriter writer,
         string taskId,
-        WorkerOwnedProcessWatchdog watchdog) : IExcelWorkbookRuntimeObserver
+        WorkerOwnedProcessWatchdog watchdog,
+        DiagnosticTrace? trace) : IExcelWorkbookRuntimeObserver
     {
-        public void OnPhase(string phase) => writer.Write(new { version = WorkbookWorkerProtocol.Version, type = "phase", taskId, phase });
+        public void OnPhase(string phase)
+        {
+            trace?.Phase(phase);
+            writer.Write(new { version = WorkbookWorkerProtocol.Version, type = "phase", taskId, phase });
+        }
 
         public void OnOwnedProcessCaptured(ProcessIdentity identity)
         {
             watchdog.Track(identity);
+            trace?.Note($"owned Excel started, pid {identity.ProcessId}");
             writer.Write(new
             {
                 version = WorkbookWorkerProtocol.Version,
@@ -115,13 +191,17 @@ public static class WorkbookWorkerHost
             });
         }
 
-        public void OnStagingPathCreated(string stagingPath) => writer.Write(new
+        public void OnStagingPathCreated(string stagingPath)
         {
-            version = WorkbookWorkerProtocol.Version,
-            type = "artifact-staged",
-            taskId,
-            stagingPath
-        });
+            trace?.Note($"staging file created: {DiagnosticTrace.FileNameOnly(stagingPath)}");
+            writer.Write(new
+            {
+                version = WorkbookWorkerProtocol.Version,
+                type = "artifact-staged",
+                taskId,
+                stagingPath
+            });
+        }
     }
 
     private sealed class WorkerFrameWriter(TextWriter output)

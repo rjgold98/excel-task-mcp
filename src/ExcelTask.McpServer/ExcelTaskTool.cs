@@ -27,7 +27,14 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         [Description("The complete Excel task request.")] ExcelTaskRequest request,
         CancellationToken cancellationToken = default)
     {
+        // The caller's half of the round trip. The worker traces what Excel did; this traces what
+        // the model asked for and what it got back, so one file reads as the whole interaction.
+        var trace = ExcelTask.Excel.DiagnosticTrace.Begin(Guid.NewGuid().ToString("N"), "tool call");
+        trace?.Note($"request: {request.Operation?.Kind.ToString() ?? "(no operation)"} mode={request.Mode} " +
+                    $"binding={request.WorkbookBinding} save={request.Save} overwriteConfirmed={request.OverwriteConfirmed}");
+
         var receipt = BoundReceipt(await engine.RunAsync(request, cancellationToken), request.Mode == ExcelTaskMode.Plan);
+        trace?.End("tool call", $"{receipt.Status}: {receipt.Summary}");
         var result = CreateResult(receipt);
         if (WithinResponseBound(result)) return result;
 

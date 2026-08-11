@@ -112,7 +112,7 @@ public sealed record FindReplaceOperation(
 /// </summary>
 public sealed record CreateOperation(
     [property: Description("Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.")] CreateKind Kind,
-    [property: Description("Required when kind is Worksheet: the new sheet's name, which must not already be in use. Omit it for Workbook.")] string? WorksheetName = null);
+    [property: Description("Required for Worksheet, and must not already be in use. Optional for Workbook: names its one starting sheet, so a single call yields a workbook ready to write to. Omitted, the receipt reports the default name Excel chose.")] string? WorksheetName = null);
 
 /// <summary>
 /// Sets one number format code across one bounded range.
@@ -130,7 +130,7 @@ public sealed record CreateOperation(
 public sealed record SetNumberFormatOperation(
     [property: Description("Existing worksheet name to format. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
     [property: Description("One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.")] string Range,
-    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting. Cell values are never changed, only how they are displayed. The code is read back after applying; if Excel stored something different the task reports that rather than claiming success.")] string NumberFormat);
+    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string NumberFormat);
 
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
@@ -144,7 +144,7 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
     [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
     [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
-    [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null);
+    [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -153,7 +153,7 @@ public sealed record ExcelTaskRequest(
     [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure and Create require Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
     [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows, ReadWorksheetRange and Create never take a save destination: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.")] string? OutputWorkbookPath = null,
-    [property: Description("Explicit authorization to overwrite. Apply with save Same always requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it.")] bool OverwriteConfirmed = false);
+    [property: Description("Explicit authorization to overwrite. Apply with save Same requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it, and neither does Create with kind Workbook, which is refused outright if anything is already at the path.")] bool OverwriteConfirmed = false);
 
 /// <summary>
 /// What inspection needs to know before execution. <paramref name="TargetMustExist"/> is false for
@@ -168,7 +168,15 @@ public sealed record WorkbookInspectionRequest(
     string? OutputWorkbookPath,
     bool TargetMustExist = true);
 
-public sealed record WorkbookInspection(bool TargetIsOpen, bool CopyOutputExists = false, string? OpenWorkbookDescription = null, IReadOnlyList<TaskCheck>? Checks = null);
+/// <summary>
+/// What inspection learned before execution. <paramref name="InfeasibleReason"/> carries the
+/// caller-actionable reason the task cannot run at all - a target that does not exist, a copy
+/// output whose directory is missing. It used to be thrown instead, and the engine's catch-all
+/// turned "Target workbook does not exist" into "Workbook inspection could not be completed before
+/// execution" - an infrastructure-sounding answer to the most ordinary user error there is, a
+/// mistyped path. A reason is a finding, not a failure, so it travels as data.
+/// </summary>
+public sealed record WorkbookInspection(bool TargetIsOpen, bool CopyOutputExists = false, string? OpenWorkbookDescription = null, IReadOnlyList<TaskCheck>? Checks = null, string? InfeasibleReason = null);
 
 public interface IWorkbookRuntime
 {
@@ -267,8 +275,16 @@ public sealed record WorkbookAuditReceipt(
     bool Truncated,
     bool WorkbookUnchanged);
 
-/// <summary>One cell that had something in it. Blanks are omitted rather than reported as empty.</summary>
-public sealed record WorksheetCell(string Address, string Text);
+/// <summary>
+/// One cell that had something in it. Blanks are omitted rather than reported as empty.
+///
+/// <paramref name="IsFormula"/> says whether a formula put the text there. Without it the only way
+/// to know was to read the same range twice - once for values, once for formulas - and diff the
+/// results, which a UX simulation did, spending a whole Excel launch to find out whether a cell it
+/// was about to overwrite was a formula. It costs one extra array read per range and answers the
+/// question every caller about to write already has.
+/// </summary>
+public sealed record WorksheetCell(string Address, string Text, bool IsFormula = false);
 
 /// <summary>
 /// The contents of one bounded range. <paramref name="CellsInRange"/> counts what the range spans

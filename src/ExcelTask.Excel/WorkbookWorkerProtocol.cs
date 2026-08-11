@@ -96,7 +96,8 @@ internal static class WorkbookWorkerProtocol
     internal static WorkbookInspection Bound(WorkbookInspection inspection) => inspection with
     {
         OpenWorkbookDescription = ReceiptBounds.Text(inspection.OpenWorkbookDescription, MaxTextLength),
-        Checks = ReceiptBounds.Checks(inspection.Checks, MaxTextLength)
+        Checks = ReceiptBounds.Checks(inspection.Checks, MaxTextLength),
+        InfeasibleReason = ReceiptBounds.Text(inspection.InfeasibleReason, MaxTextLength)
     };
 
     // Bounded for the frame budget, using the one implementation of what bounding means. The macro

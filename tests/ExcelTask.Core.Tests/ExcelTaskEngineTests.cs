@@ -841,13 +841,27 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
-    public async Task CreatingAWorkbookTakesNoWorksheetName()
+    public async Task CreatingAWorkbookMayNameItsStartingWorksheet()
     {
-        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
             CreateRequest(worksheetName: "Summary"), CancellationToken.None);
 
+        // The first UX simulation spent two calls and a wasted Excel launch getting a workbook with
+        // one named sheet. Every real "set me up a workbook" request names the sheet it wants.
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.Equal("Summary", runtime.Plan!.Request.Operation.Create!.WorksheetName);
+    }
+
+    [Fact]
+    public async Task CreatingAWorkbookStillRejectsAnUnusableWorksheetName()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            CreateRequest(worksheetName: "  "), CancellationToken.None);
+
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
-        Assert.Contains("takes no worksheet name", receipt.Summary, StringComparison.Ordinal);
+        Assert.Contains("Worksheet name", receipt.Summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -956,6 +970,25 @@ public sealed class ExcelTaskEngineTests
         // confirmation can authorize it - the answer is a different binding or a copy.
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
         Assert.Contains("cannot safely overwrite an open target workbook", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AMissingTargetIsAnsweredWithTheActualReasonNotWithInfrastructure()
+    {
+        var runtime = new FakeRuntime
+        {
+            Inspection = new(TargetIsOpen: false, InfeasibleReason: "Target workbook does not exist.")
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(), CancellationToken.None);
+
+        // The most ordinary user error there is - a mistyped path - used to come back as "Workbook
+        // inspection could not be completed before execution", found by the first plain-text UX
+        // simulation. The reason the runtime found is the summary now.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Equal("Target workbook does not exist.", receipt.Summary);
+        Assert.True(receipt.Retry.CanRetry);
+        Assert.Null(runtime.Plan);
     }
 
     [Fact]

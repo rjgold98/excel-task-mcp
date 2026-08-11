@@ -48,31 +48,44 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
     private static WorkbookInspection InspectCore(WorkbookInspectionRequest request, IExcelWorkbookRuntimeObserver observer)
     {
         observer.OnPhase("inspection");
-        var targetPath = WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath);
-        var referencePath = string.IsNullOrWhiteSpace(request.ReferenceWorkbookPath) ? null : WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
-        if (request.TargetMustExist)
+        // A path that cannot be used is a finding, not a failure. Thrown, it reached the caller as
+        // "Workbook inspection could not be completed before execution" - an infrastructure-sounding
+        // answer to the most ordinary user error there is, a mistyped path.
+        try
         {
-            WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
-        }
-        else
-        {
-            WorkbookRuntimeHelpers.EnsureCreatableWorkbook(targetPath);
-        }
+            var targetPath = WorkbookRuntimeHelpers.NormalizePath(request.TargetWorkbookPath);
+            var referencePath = string.IsNullOrWhiteSpace(request.ReferenceWorkbookPath) ? null : WorkbookRuntimeHelpers.NormalizePath(request.ReferenceWorkbookPath);
+            if (request.TargetMustExist)
+            {
+                WorkbookRuntimeHelpers.EnsureReadableWorkbook(targetPath, "Target workbook");
+            }
+            else
+            {
+                WorkbookRuntimeHelpers.EnsureCreatableWorkbook(targetPath);
+            }
 
-        if (referencePath is not null) WorkbookRuntimeHelpers.EnsureReadableWorkbook(referencePath, "Reference workbook");
-        var copyOutputExists = request.Save == SaveMode.Copy &&
-                               !string.IsNullOrWhiteSpace(request.OutputWorkbookPath) &&
-                               File.Exists(WorkbookRuntimeHelpers.NormalizePath(request.OutputWorkbookPath));
-        if (request.Save == SaveMode.Copy)
-        {
-            WorkbookRuntimeHelpers.EnsureWritableCopyOutput(request.OutputWorkbookPath);
+            if (referencePath is not null) WorkbookRuntimeHelpers.EnsureReadableWorkbook(referencePath, "Reference workbook");
+            var copyOutputExists = request.Save == SaveMode.Copy &&
+                                   !string.IsNullOrWhiteSpace(request.OutputWorkbookPath) &&
+                                   File.Exists(WorkbookRuntimeHelpers.NormalizePath(request.OutputWorkbookPath));
+            if (request.Save == SaveMode.Copy)
+            {
+                WorkbookRuntimeHelpers.EnsureWritableCopyOutput(request.OutputWorkbookPath);
+            }
+            var targetIsOpen = RotWorkbookLocator.ContainsPath(targetPath);
+            return new WorkbookInspection(
+                TargetIsOpen: targetIsOpen,
+                CopyOutputExists: copyOutputExists,
+                OpenWorkbookDescription: targetIsOpen ? "The exact target workbook is open." : null,
+                Checks: [new TaskCheck("target-path", true, "Target path was normalized and checked against the running object table.")]);
         }
-        var targetIsOpen = RotWorkbookLocator.ContainsPath(targetPath);
-        return new WorkbookInspection(
-            TargetIsOpen: targetIsOpen,
-            CopyOutputExists: copyOutputExists,
-            OpenWorkbookDescription: targetIsOpen ? "The exact target workbook is open." : null,
-            Checks: [new TaskCheck("target-path", true, "Target path was normalized and checked against the running object table.")]);
+        catch (InvalidOperationException exception)
+        {
+            return new WorkbookInspection(
+                TargetIsOpen: false,
+                Checks: [new TaskCheck("workbook-inputs", false, exception.Message)],
+                InfeasibleReason: exception.Message);
+        }
     }
 
     /// <summary>

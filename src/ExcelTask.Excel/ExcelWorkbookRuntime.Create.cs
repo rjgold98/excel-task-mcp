@@ -54,11 +54,11 @@ public sealed partial class ExcelWorkbookRuntime
         }
 
         return operation.Kind == CreateKind.Workbook
-            ? CreateWorkbook(targetPath, observer)
+            ? CreateWorkbook(targetPath, operation.WorksheetName, observer)
             : CreateWorksheet(plan, operation, observer);
     }
 
-    private static WorkbookExecutionOutcome CreateWorkbook(string targetPath, IExcelWorkbookRuntimeObserver observer)
+    private static WorkbookExecutionOutcome CreateWorkbook(string targetPath, string? worksheetName, IExcelWorkbookRuntimeObserver observer)
     {
         var checks = new List<TaskCheck>();
         var changes = new List<TaskChange>();
@@ -72,12 +72,17 @@ public sealed partial class ExcelWorkbookRuntime
 
             observer.OnPhase("save");
             mutationAttempted = true;
+            // Named before the save, so the file has never existed under the default name. The
+            // receipt reports whichever name it ended up with, because a caller who did not choose
+            // one still has to write to it.
+            var startingSheet = NameStartingWorksheet(session, worksheetName);
             Invoke(session.TargetWorkbook, "SaveAs", targetPath,
                 string.Equals(Path.GetExtension(targetPath), ".xlsm", StringComparison.OrdinalIgnoreCase)
                     ? XlOpenXmlWorkbookMacroEnabled
                     : XlWorkbookDefault);
             checks.Add(new TaskCheck("save", true, "Excel saved the new workbook to the requested path."));
-            changes.Add(new TaskChange("workbook-create", Path.GetFileName(targetPath), "Created an empty workbook."));
+            checks.Add(new TaskCheck("starting-worksheet", true, $"The new workbook's sheet is named {startingSheet}."));
+            changes.Add(new TaskChange("workbook-create", Path.GetFileName(targetPath), $"Created an empty workbook whose sheet is named {startingSheet}."));
 
             observer.OnPhase("primary-cleanup");
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the workbook creation", checks, changes);
@@ -154,6 +159,21 @@ public sealed partial class ExcelWorkbookRuntime
                 $"Added an empty worksheet, saved, and confirmed it after reopening.",
                 "Excel saved the workbook, but reopen verification did not find the new worksheet.");
         });
+
+    /// <summary>
+    /// Renames the new workbook's single sheet, or reports the default name Excel chose. Excel's
+    /// default depends on the user's locale and their "sheets in new workbook" setting, so the name
+    /// is read back rather than assumed - a caller writing to "Sheet1" on a machine that calls it
+    /// "Hoja1" would get a worksheet-not-found rejection it could not have predicted.
+    /// </summary>
+    private static string NameStartingWorksheet(ExcelSession session, string? worksheetName)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var first = references.Add(Item(sheets, 1));
+        if (worksheetName is not null) Set(first, "Name", worksheetName);
+        return (string)Get(first, "Name");
+    }
 
     private static bool WorksheetExists(ExcelSession session, string worksheetName)
     {

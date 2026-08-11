@@ -66,6 +66,10 @@ public sealed partial class ExcelWorkbookRuntime
                 // returns null for a multi-cell range, and it would also hand back "####" for a
                 // column too narrow to show its number.
                 var value = Get(range, operation.Formulas ? "FormulaR1C1" : "Value2");
+                // One extra array read for the whole range, whatever its size, so every cell can say
+                // whether a formula put its text there. The alternative the caller had was reading
+                // the range a second time and diffing - a whole extra Excel launch.
+                var formulas = Get(range, "Formula");
 
                 var cells = new List<WorksheetCell>();
                 var nonEmpty = 0;
@@ -82,7 +86,8 @@ public sealed partial class ExcelWorkbookRuntime
                         nonEmpty++;
                         cells.Add(new WorksheetCell(
                             WorkbookRuntimeHelpers.ToA1Address(bounds.StartRow + row, bounds.StartColumn + column),
-                            text));
+                            text,
+                            CellOf(formulas, row, column) is string formula && formula.StartsWith('=')));
                     }
                 }
 

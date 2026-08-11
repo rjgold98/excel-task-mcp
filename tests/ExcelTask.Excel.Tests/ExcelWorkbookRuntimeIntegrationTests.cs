@@ -1083,6 +1083,75 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task AReadSaysWhichCellsAreFormulasSoNobodyHasToReadTheRangeTwice()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "isformula.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // A2 is a formula whose result is a number; A3 is that same number as a constant. They
+            // are indistinguishable in a values read, which is exactly why a caller about to
+            // overwrite one had to read the range twice and diff. A UX simulation did precisely that.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,] { { 20 }, { "=R[-1]C*2" }, { 40 } });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("isformula", ExcelTaskPlans.Read(target, "Sheet1", "A1:A3")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            var cells = outcome.Range!.Cells;
+            Assert.Equal("40", Assert.Single(cells, cell => cell.Address == "A2").Text);
+            Assert.Equal("40", Assert.Single(cells, cell => cell.Address == "A3").Text);
+            Assert.True(Assert.Single(cells, cell => cell.Address == "A2").IsFormula);
+            Assert.False(Assert.Single(cells, cell => cell.Address == "A3").IsFormula);
+            Assert.False(Assert.Single(cells, cell => cell.Address == "A1").IsFormula);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task AWriteThatReplacesAFormulaWithAConstantSaysSoByName()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "clobber.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,] { { 20 }, { "=R[-1]C*2" }, { 40 } });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("clobber", ExcelTaskPlans.Write(
+                target, "Sheet1", [("A2", "99"), ("A3", "77")])), CancellationToken.None);
+
+            // Replacing a formula with a constant is legitimate - hardcoding a figure is real finance
+            // work - so this reports rather than refuses. What it must never do is destroy a live
+            // calculation behind a receipt that says only "wrote 2 constants".
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            var replaced = Assert.Single(outcome.Checks!, check => check.Name == "formulas-replaced");
+            Assert.False(replaced.Passed);
+            Assert.Contains("A2", replaced.Detail, StringComparison.Ordinal);
+            Assert.DoesNotContain("A3", replaced.Detail, StringComparison.Ordinal);
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", 99d));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task ACopySaveApplyReportsItsWholeChoreographyInTheOnlySafeOrder()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

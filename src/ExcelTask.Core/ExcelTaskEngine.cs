@@ -91,6 +91,29 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
 
         inspectionTimer.Stop();
+        // The reason itself is the summary - "Target workbook does not exist." answers a mistyped
+        // path the way a person would, where the old thrown path answered it with infrastructure.
+        if (inspection.InfeasibleReason is not null)
+        {
+            return CreateReceipt(
+                taskId,
+                ExcelTaskStatus.Rejected,
+                inspection.InfeasibleReason,
+                [],
+                inspection.Checks ?? [],
+                normalizedRequest.Save,
+                normalizedRequest.OutputWorkbookPath,
+                normalizedRequest.OverwriteConfirmed,
+                false,
+                [],
+                true,
+                "Correct the workbook path, then submit a new task.",
+                validation.Elapsed,
+                inspectionTimer.Elapsed,
+                TimeSpan.Zero,
+                total.Elapsed);
+        }
+
         if (TryGetInspectionRejection(normalizedRequest, inspection, out var inspectionRejection))
         {
             return CreateReceipt(
@@ -899,6 +922,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
+        // Optional for a workbook, required for a worksheet. The first UX simulation spent two calls
+        // and a wasted Excel launch getting a workbook with one named sheet, because naming the
+        // starting sheet was not expressible - and every real "set me up a workbook" request names
+        // the sheet it wants to write to.
         string? worksheetName = null;
         if (create.Kind == CreateKind.Worksheet)
         {
@@ -906,8 +933,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
         else if (create.WorksheetName is not null)
         {
-            error = "Creating a workbook takes no worksheet name.";
-            return false;
+            if (!TryNormalizeWorksheetName(create.WorksheetName, "Worksheet name", out worksheetName, out error)) return false;
         }
 
         normalized = new NormalizedExcelOperation(kind, Create: new NormalizedCreateOperation(create.Kind, worksheetName));
