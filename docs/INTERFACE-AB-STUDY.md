@@ -604,6 +604,96 @@ Two things follow.
 Recorded caveat: the codes are deterministic across runs, which means n = 3 buys much
 less than it looks like. This measures four format families, not the space of them.
 
+## Round 12 - plain-text prompts in fresh chats, and a fix-and-remeasure pass
+
+Every earlier round measured a model reading a JSON Schema and writing down a call. Round 12
+measures the thing that actually ships: **a fresh assistant, a plain-English request from a finance
+user, and the real server driving real Excel.** No schema-shaped task descriptions, no hints - the
+agent gets the published `tools/list`, a brief on how to invoke one call, and a sentence a person
+would actually type.
+
+Method: four scenarios, each in a clean context with its own fixture workbook, driving the built
+server over MCP stdio. Scored two ways - the agent's own friction report, and a COM verifier that
+reopens every workbook afterwards and checks the cells. Round 1 found friction, the friction was
+fixed, and **round 2 re-ran the same prompts against the fixed build**, which is the part that makes
+this more than a survey.
+
+### Result: every task correct, both rounds, and fewer calls after the fixes
+
+| scenario | round 1 calls | round 2 calls |
+|---|---:|---:|
+| build a workbook from nothing | 4 | **3** |
+| change one named figure | 4 | **2** |
+| hardcode a calculated cell | - | **1** |
+| recover from a mistyped filename | - | **2** |
+
+Ground truth passed on every scenario in both rounds. Round 2 also produced a better artifact, not
+just a cheaper path: the created workbook now contains **exactly one sheet, named `Summary`**, where
+round 1 left an orphan `Sheet1` beside it.
+
+### What the traces showed, and what each one cost
+
+**A mistyped path answered with infrastructure.** The most ordinary user error there is - a doubled
+letter in a filename - came back as *"Workbook inspection could not be completed before execution."*
+Inspection was throwing, and the engine's catch-all turned a finding into a failure. It now carries
+an `InfeasibleReason`, and the round-2 agent got *"Target workbook does not exist"*, guessed the
+correction, and finished in two calls.
+
+**Two calls to learn one bit.** An agent asked to change a figure read the same range twice - once
+for values, once for formulas - and diffed them, purely to learn whether the cell it was about to
+overwrite held a formula. That is a whole Excel launch for one boolean. Reads now report
+`isFormula` per cell, at the cost of one extra array read per range, and the same scenario dropped
+from four calls to two.
+
+**A silent asymmetry nobody had noticed.** `FindReplace` refuses to rewrite a formula cell;
+`WriteWorksheetValues` would silently destroy one. Overwriting a formula with a constant is
+legitimate finance work, so the fix reports rather than refuses - the receipt now names those cells,
+and a follow-up round asked for the prior value too, so a caller can say *"469,750.25 to 471,000"*
+rather than only *"wrote 1 constant"*.
+
+**Two calls to name a sheet.** Creating a workbook and then naming its sheet were separate
+operations, so every "set me up a workbook with a Summary tab" cost two Excel launches. `Create`
+with kind `Workbook` now takes an optional starting sheet name.
+
+### The most interesting finding: capability without discoverability
+
+Twice, an agent's wishlist asked for something **that already existed**:
+
+- *"Let SetNumberFormat's Plan surface the current format before committing"* - it already did.
+- *"A way to target a cell by its row label instead of a prior read"* - `FindReplace` in Plan mode
+  returns the address of every matching cell and changes nothing, which is exactly that.
+
+Neither was a missing feature; both were unadvertised ones. Six words in each description closed
+them. This is a distinct failure class from the one the study has measured for eleven rounds - that
+one was *rules the engine enforces but the schema never states*, and this one is *capabilities the
+server has but the schema never mentions*. The same audit method finds it: read the wishlist, check
+whether the code already does it.
+
+### The budget did its job three times
+
+The 15 KB schema bound was hit three times while applying these fixes, and each time forced a real
+decision instead of a bigger budget:
+
+- A "Plan and Apply behave identically for read-only operations" clause was **cut**: two agents
+  hesitated over it, neither lost a call, and the standing rule says bytes must buy round trips.
+- Two sentences of reassurance about number-format read-back were **reclaimed** - round 11 had
+  already proven format-code authoring is not a bottleneck, so the reassurance bought nothing.
+- A locator clause was **tightened** by twelve characters rather than allowed to push the budget up.
+
+Net: eleven scenarios' worth of UX fixes landed inside the existing bound.
+
+### Recorded honestly
+
+The verifier produced **two phantom failures** on its first run - a miscounted label and a JSON
+date round-trip that dropped sub-second precision and then shifted four hours by re-parsing a local
+timestamp. The workbook was byte-identical to the tick. That is the fourth scorer bug in this
+study's history, and it is why every claim here is stated against a verifier that was itself
+debugged rather than trusted.
+
+Also unexercised, and worth saying: `AskIfOpen` never once returned a confirmation across eight
+runs, because no fixture was open in Excel at the time. The confirmation-recovery path this
+document has discussed since round 5 still has no end-to-end evidence behind it.
+
 ## Reproducing
 
 Round 10's harness is a different one. It lives outside the repo, at

@@ -1,5 +1,83 @@
 # Changelog
 
+## Unreleased
+
+### Changed - measured against fresh assistants on plain-English prompts
+
+Round 12 of the interface study stopped testing schema comprehension and tested
+the product: a fresh assistant, a sentence a finance user would actually type,
+and the real server driving real Excel. Four scenarios, scored by their own
+friction reports and by a COM verifier that reopens every workbook afterwards.
+Every task was correct in both rounds; what changed is what it cost.
+
+| scenario | before | after |
+|---|---:|---:|
+| build a workbook from nothing | 4 calls | 3 |
+| change one named figure | 4 calls | 2 |
+| hardcode a calculated cell | - | 1 |
+| recover from a mistyped filename | - | 2 |
+
+- **A mistyped path now says so.** A doubled letter in a filename came back as
+  "Workbook inspection could not be completed before execution" - infrastructure
+  answering the most ordinary user error there is. Inspection carries an
+  `InfeasibleReason` instead of throwing, and the rejection names the file it
+  looked for, so the next attempt can be the right one.
+- **Reads report `isFormula` per cell.** An assistant spent an entire Excel
+  launch reading a range twice and diffing it to learn whether the cell it was
+  about to overwrite held a formula. One extra array read per range now answers
+  that, and the scenario went from four calls to two.
+- **A write that replaces a formula names those cells, and says what each cell
+  held before.** `FindReplace` has always refused to rewrite a formula while
+  `WriteWorksheetValues` would silently destroy one. Overwriting a formula with
+  a constant stays legal - hardcoding a figure is real finance work - but it can
+  no longer happen behind a receipt that says only "wrote 1 constant", and the
+  caller can now report "469,750.25 to 471,000" rather than "something changed".
+- **`Create` with kind `Workbook` can name its starting sheet.** "Set me up a
+  workbook with a Summary tab" was two operations and two Excel launches; it is
+  one, and the result now contains exactly one sheet with the requested name
+  rather than an orphan `Sheet1` beside it.
+- **Two capabilities that already existed are now advertised.** Assistants asked
+  for a way to see a range's current number format before changing it, and a way
+  to find a label's address without a prior read. `SetNumberFormat` Plan did the
+  first; `FindReplace` Plan does the second. Six words each. This is a different
+  failure class from the one the study has chased for eleven rounds - not a rule
+  the schema fails to state, but a capability it fails to mention.
+
+All of it landed inside the existing 15 KB schema budget, which bit three times
+and each time forced a cut or a tightening rather than a bigger budget.
+
+### Added - development-time diagnostics
+
+- **`EXCELTASK_TRACE` narrates every step to a file.** Temporary and built to be
+  deleted: off unless the variable names a path, one file plus a handful of call
+  sites, no schema bytes, no CLI flag, and the model never learns it exists.
+  `docs/DIAGNOSTIC-TRACE.md` lists the four edits that remove it.
+
+  It is safe to paste into a chat by construction, and every file says so in its
+  own header: phases and durations, operation kind and policy, worksheet names
+  and A1 ranges, workbook file names only, owned Excel process ids, statuses and
+  checks. Never cell values, formulas, VBA source, connection strings, server
+  names, or full paths. A phase with no matching end is where it hung, which is
+  the one thing no receipt could ever say.
+
+  It earned itself on its first run. A `SetNumberFormat` apply on a 12-row
+  sheet: 44 ms of Excel work, 2,814 ms closing owned Excel and proving it
+  exited, 2,297 ms reopening to verify - 92% teardown and verification. The
+  roadmap's longest-standing open question recorded a ~4 s unaccounted gap and
+  guessed worker startup and MCP round trips; on this operation it is neither.
+  Both costs are load-bearing, so this is not yet an optimization - but the
+  roadmap required a measurement before anything here was touched, and this is
+  one.
+
+- **`tools/Measure-WorkbookCorpus.ps1` audits a folder of real workbooks into
+  one anonymized shape report.** Built to answer "what do my actual exhibits
+  look like" with a count rather than a recollection, which is what the roadmap
+  gates `range_format`, tables and Power Query mutation on. It calls the shipped
+  read-only audit and emits pseudonyms, size bands, sheet counts, used-range
+  dimensions and item counts by kind - never real names, values, paths, or
+  connection details. The name map stays local and is discarded unless asked
+  for.
+
 ## 0.13.0 - 2026-08-11
 
 An architecture release: no new operations, one closed leak, three deep modules

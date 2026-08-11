@@ -45,23 +45,37 @@ public sealed partial class ExcelWorkbookRuntime
         Action markMutationAttempted,
         out IReadOnlyList<WorksheetCell> written,
         out IReadOnlyList<string> replacedFormulas,
+        out IReadOnlyList<string> changedConstants,
         out TaskCheck check)
     {
         using var references = new ComReferenceScope();
         var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
         var sheet = references.Add(Item(sheets, operation.WorksheetName));
+        var priorConstants = new List<string>();
+        changedConstants = priorConstants;
 
         // Looked at before anything is written, because afterwards the evidence is gone. Replacing
         // a formula with a constant is legitimate - hardcoding a figure is a real thing finance
         // does - so this reports rather than refuses. What it will not do is let a caller destroy a
         // live calculation and read a receipt that says only "wrote 1 constant".
+        //
+        // The prior value travels with it. A simulation could tell its user a formula had not been
+        // replaced but not what had actually changed, which is the question a person asks next:
+        // "469750.25 to 471000" is the answer, and the cell was named in the request, so its former
+        // contents are responsive rather than incidental.
         var overwritten = new List<string>();
         foreach (var cell in operation.Cells)
         {
             var target = references.Add(Get(sheet, "Range", cell.Address));
-            if (GetOrNull(target, "Formula") is string existing && existing.StartsWith('='))
+            var priorFormula = GetOrNull(target, "Formula") as string;
+            var priorText = Render(GetOrNull(target, "Value2"));
+            if (priorFormula is not null && priorFormula.StartsWith('='))
             {
-                overwritten.Add(cell.Address);
+                overwritten.Add($"{cell.Address} (was {Abbreviate(priorFormula)})");
+            }
+            else if (!string.Equals(priorText, cell.Value, StringComparison.Ordinal))
+            {
+                priorConstants.Add($"{cell.Address}: {Abbreviate(priorText)} -> {Abbreviate(cell.Value)}");
             }
         }
 
@@ -99,7 +113,15 @@ public sealed partial class ExcelWorkbookRuntime
     private static TaskCheck DescribeReplacedFormulas(IReadOnlyList<string> replaced) => replaced.Count == 0
         ? new TaskCheck("formulas-replaced", true, "No cell written to held a formula.")
         : new TaskCheck("formulas-replaced", false,
-            $"{replaced.Count} cell(s) held a formula that this write replaced with a constant: {string.Join(", ", replaced.Take(10))}.");
+            $"{replaced.Count} cell(s) held a formula that this write replaced with a constant: {string.Join("; ", replaced.Take(10))}.");
+
+    /// <summary>What each cell actually changed from, so a caller can say what moved and not only that something did.</summary>
+    private static TaskCheck DescribeChangedConstants(IReadOnlyList<string> changed) => changed.Count == 0
+        ? new TaskCheck("prior-values", true, "Every cell written already held the value it was given.")
+        : new TaskCheck("prior-values", true, $"Replaced {changed.Count} existing value(s): {string.Join("; ", changed.Take(10))}.");
+
+    /// <summary>Bounded so one pasted paragraph in a cell cannot crowd out the rest of the receipt.</summary>
+    private static string Abbreviate(string value) => value.Length <= 40 ? value : $"{value[..40]}...";
 
     /// <summary>
     /// Writes constants, saves, and proves the result by reopening the saved file. Everything
@@ -134,10 +156,11 @@ public sealed partial class ExcelWorkbookRuntime
             }
 
             context.OnPhase("value-write");
-            if (!ApplyWorksheetValues(context.Session, operation, context.MarkMutationAttempted, out var written, out var replacedFormulas, out var writeCheck))
+            if (!ApplyWorksheetValues(context.Session, operation, context.MarkMutationAttempted, out var written, out var replacedFormulas, out var changedConstants, out var writeCheck))
             {
                 context.Checks.Add(writeCheck);
                 context.Checks.Add(DescribeReplacedFormulas(replacedFormulas));
+                context.Checks.Add(DescribeChangedConstants(changedConstants));
                 return new MutationStep.Finish(
                     new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
                         "Excel did not store the requested values as written.", context.Changes, context.Checks,
@@ -147,6 +170,7 @@ public sealed partial class ExcelWorkbookRuntime
 
             context.Checks.Add(writeCheck);
             context.Checks.Add(DescribeReplacedFormulas(replacedFormulas));
+            context.Checks.Add(DescribeChangedConstants(changedConstants));
             context.Changes.Add(new TaskChange("value-write", $"{operation.WorksheetName}!{written[0].Address}",
                 $"Wrote {written.Count} constants."));
 

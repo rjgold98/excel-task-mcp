@@ -1143,6 +1143,12 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             Assert.Contains("A2", replaced.Detail, StringComparison.Ordinal);
             Assert.DoesNotContain("A3", replaced.Detail, StringComparison.Ordinal);
             Assert.True(ExcelTestWorkbook.HasValue(target, "A2", 99d));
+
+            // What actually moved, not merely that something did. A simulation could tell its user a
+            // formula had not been replaced but not what the cell had been, which is the next
+            // question a person asks.
+            var prior = Assert.Single(outcome.Checks!, check => check.Name == "prior-values");
+            Assert.Contains("A3: 40 -> 77", prior.Detail, StringComparison.Ordinal);
         }
         finally
         {

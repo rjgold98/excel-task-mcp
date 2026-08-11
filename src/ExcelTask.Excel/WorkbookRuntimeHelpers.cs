@@ -43,12 +43,16 @@ internal static class WorkbookRuntimeHelpers
 
     public static void EnsureReadableWorkbook(string path, string description)
     {
+        // The file name, never the directory: a caller correcting a typo needs to see which name was
+        // checked, and a UX simulation had to cross-reference its own request to find out. The
+        // directory would name the machine and the person, so it stays out.
+        var name = Path.GetFileName(path);
         if (!SupportedWorkbookExtensions.Contains(Path.GetExtension(path)))
         {
-            throw new InvalidOperationException($"{description} must be an .xlsx or .xlsm file.");
+            throw new InvalidOperationException($"{description} must be an .xlsx or .xlsm file; '{name}' is not.");
         }
 
-        if (!File.Exists(path)) throw new InvalidOperationException($"{description} does not exist.");
+        if (!File.Exists(path)) throw new InvalidOperationException($"{description} does not exist: no file named '{name}' at that path.");
     }
 
     /// <summary>
