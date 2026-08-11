@@ -649,6 +649,76 @@ public sealed class ExcelTaskEngineTests
         Assert.All(receipt.Range.Cells, cell => Assert.True(cell.Text.Length <= 64));
     }
 
+    [Fact]
+    public async Task WriteRefusesFormulaTextAndSaysWhatToUseInstead()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            WriteRequest([("B7", "=SUM(A1:A6)")]), CancellationToken.None);
+
+        // The whole basis for allowing writes at all is that a constant cannot be plausibly and
+        // silently wrong the way a model-composed formula can. Storing "=SUM(...)" as a text label
+        // would be the worst of both: it looks written and computes nothing.
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("constants only", receipt.Summary, StringComparison.Ordinal);
+        Assert.Contains("ExtendFormulaSeries", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteRefusesTheSameCellTwiceBecauseTheRequestWouldNotSayWhatItWants()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            WriteRequest([("B7", "1"), ("b7", "2")]), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("more than once", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteRefusesCellsScatteredAcrossTheSheet()
+    {
+        var runtime = new FakeRuntime();
+
+        // Two cells, well inside the count limit, but spanning far more of the sheet than a write
+        // is allowed to touch - so the count alone cannot be the only bound.
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            WriteRequest([("A1", "1"), ("Z900", "2")]), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("span", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task WriteRequiresOverwriteConfirmationBecauseItChangesTheWorkbook()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            WriteRequest([("B7", "1")], overwriteConfirmed: false), CancellationToken.None);
+
+        // The opposite of the read: this one does write, so the confirmation it asks for is real.
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+    }
+
+    private static ExcelTaskRequest WriteRequest(
+        (string Address, string Value)[] cells,
+        bool overwriteConfirmed = true) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(
+                ExcelOperationKind.WriteWorksheetValues,
+                WriteWorksheetValues: new WriteWorksheetValuesOperation(
+                    "Sheet1",
+                    [.. cells.Select(cell => new WorksheetCellValue(cell.Address, cell.Value))])),
+            Mode: ExcelTaskMode.Apply,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: SaveMode.Same,
+            OutputWorkbookPath: null,
+            OverwriteConfirmed: overwriteConfirmed);
+
     private static ExcelTaskRequest ReadRequest(
         string range = "A1:C3",
         SaveMode save = SaveMode.Same,

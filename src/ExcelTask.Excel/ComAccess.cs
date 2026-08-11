@@ -28,6 +28,14 @@ internal static class ComAccess
         target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, arguments, CultureInfo.InvariantCulture)
         ?? throw new InvalidOperationException($"Excel did not return '{member}'.");
 
+    /// <summary>
+    /// Reads a property whose null is an answer rather than a fault. An empty cell's Value2 is
+    /// null, and treating that as a failure would make "the cell is blank" indistinguishable from
+    /// "Excel would not answer".
+    /// </summary>
+    public static object? GetOrNull(object target, string member, params object?[] arguments) =>
+        target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, arguments, CultureInfo.InvariantCulture);
+
     /// <summary>Writes a property. Never retried against another binding.</summary>
     public static void Set(object target, string member, object? value) =>
         target.GetType().InvokeMember(member, BindingFlags.SetProperty, null, target, [value], CultureInfo.InvariantCulture);

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.0 - 2026-08-10
+
+### Added - the second-most-requested operation
+
+- **`WriteWorksheetValues` writes constants into named cells.** `set-values`
+  appeared in 19 of 46 measured sessions and was a standing refusal. The refusal
+  is now split, because the two halves are not the same risk:
+
+  - A **constant** cannot be plausibly and silently wrong. It is exactly what the
+    caller named, and reading it back proves it character for character.
+  - **Formula text** still is, and is still refused. `ExtendFormulaSeries` and
+    `RepairExistingWorksheet` infer formulas from evidence already in the sheet,
+    which is what makes an ExcelTask edit safe; accepting composed formula text
+    would discard exactly that. A value starting with `=` is rejected, and the
+    rejection names the two operations to use instead - storing a formula as a
+    text label would be the worst outcome available.
+
+  Numbers and TRUE/FALSE are converted rather than stored as text: a model that
+  sends "1000" means the number, and a text "1000" leaves a cell that looks
+  right and breaks every SUM above it. Dates are deliberately not parsed - "3-4"
+  is March 4th to Excel and a label to a person, and nothing in the request says
+  which, so it is written as text where it can be seen and corrected.
+
+  Bounded at 200 cells that must fit inside a 400-cell region, so a write cannot
+  quietly scatter across a model. Every cell is read back in-session and again
+  from the reopened file; the same cell twice in one request is rejected, since
+  such a request does not say what it wants.
+
 ## 0.9.1 - 2026-08-10
 
 ### Changed - speed

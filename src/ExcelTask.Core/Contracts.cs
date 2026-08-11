@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -61,6 +61,29 @@ public sealed record ReadWorksheetRangeOperation(
     [property: Description("One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.")] string Range,
     [property: Description("False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.")] bool Formulas = false);
 
+/// <summary>
+/// Writes constants into named cells.
+///
+/// This server refuses model-written formula text, and that refusal is not relaxed here. The two
+/// are not the same risk. A formula composed by a model can be plausible and silently wrong - off
+/// by a row, anchored where it should be relative - and a receipt saying "it was written" would
+/// confirm nothing about whether it was right. That is why ExtendFormulaSeries and
+/// RepairExistingWorksheet infer formulas from evidence already in the sheet instead of accepting
+/// them. A constant has no such failure mode: it is exactly what the caller named, and reading it
+/// back proves it character for character. So values are writable and formulas are still not.
+///
+/// Anything beginning with "=" is rejected rather than written as text, because silently storing a
+/// formula as a label is the kind of quiet wrongness this whole design exists to avoid.
+/// </summary>
+public sealed record WriteWorksheetValuesOperation(
+    [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Cells to write, at most 200. Each address must fall inside one bounded A1 range no larger than 400 cells.")] IReadOnlyList<WorksheetCellValue> Cells);
+
+/// <summary>One constant to write. Text starting with = is rejected; this operation never writes formulas.</summary>
+public sealed record WorksheetCellValue(
+    [property: Description("Single A1 cell address, such as B7.")] string Address,
+    [property: Description("Constant to write. Numbers and TRUE/FALSE are written as numbers and booleans, everything else as text. Must not start with =.")] string Value);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -69,7 +92,8 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
     [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
-    [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null);
+    [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
+    [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
@@ -130,6 +154,10 @@ public sealed record NormalizedAuditWorkbookFlowsOperation();
 
 public sealed record NormalizedReadWorksheetRangeOperation(string WorksheetName, FormulaRepairRange Range, bool Formulas);
 
+public sealed record NormalizedWorksheetCellValue(string Address, string Value);
+
+public sealed record NormalizedWriteWorksheetValuesOperation(string WorksheetName, IReadOnlyList<NormalizedWorksheetCellValue> Cells);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -138,7 +166,8 @@ public sealed record NormalizedExcelOperation(
     NormalizedExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     NormalizedEditMacroProcedureOperation? EditMacroProcedure = null,
     NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
-    NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null);
+    NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null,
+    NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,

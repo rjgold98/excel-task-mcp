@@ -526,6 +526,91 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     /// </summary>
     public const int MaxReadCellTextLength = 64;
 
+    /// <summary>
+    /// Fewer than a read returns, deliberately. A read is answering a question; a write is changing
+    /// a model, and the cost of getting a large one wrong is not symmetric with the cost of asking
+    /// for it again.
+    /// </summary>
+    public const int MaxWriteCells = 200;
+
+    private static bool TryNormalizeWrite(
+        WriteWorksheetValuesOperation write,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(write.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (write.Cells is not { Count: > 0 })
+        {
+            error = "At least one cell to write is required.";
+            return false;
+        }
+
+        if (write.Cells.Count > MaxWriteCells)
+        {
+            error = $"The request writes {write.Cells.Count:N0} cells and the limit is {MaxWriteCells}. Split the write across calls.";
+            return false;
+        }
+
+        var cells = new List<NormalizedWorksheetCellValue>(write.Cells.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var bounds = (MinRow: int.MaxValue, MinColumn: int.MaxValue, MaxRow: 0, MaxColumn: 0);
+        foreach (var cell in write.Cells)
+        {
+            if (!TryNormalizeA1Range(cell.Address, out var parsed) || parsed.Width != 1 || parsed.Height != 1)
+            {
+                error = "Each write address must be a single A1 cell such as B7.";
+                return false;
+            }
+
+            var address = ColumnName(parsed.StartColumn) + parsed.StartRow.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!seen.Add(address))
+            {
+                // Two values for one cell means the request does not say what it wants written.
+                error = $"Cell {address} appears more than once; each cell may be written once per call.";
+                return false;
+            }
+
+            if (cell.Value is null)
+            {
+                error = $"Cell {address} has no value; use an empty string to clear it.";
+                return false;
+            }
+
+            if (cell.Value.StartsWith('='))
+            {
+                error = $"Cell {address} starts with '='. This operation writes constants only; use ExtendFormulaSeries or RepairExistingWorksheet for formulas, which are inferred from the sheet rather than supplied.";
+                return false;
+            }
+
+            if (cell.Value.Length > MaxReadCellTextLength)
+            {
+                error = $"Cell {address} is {cell.Value.Length} characters and the limit is {MaxReadCellTextLength}.";
+                return false;
+            }
+
+            bounds = (Math.Min(bounds.MinRow, parsed.StartRow), Math.Min(bounds.MinColumn, parsed.StartColumn),
+                Math.Max(bounds.MaxRow, parsed.StartRow), Math.Max(bounds.MaxColumn, parsed.StartColumn));
+            cells.Add(new NormalizedWorksheetCellValue(address, cell.Value));
+        }
+
+        // The addresses must sit in one bounded region, so a write cannot quietly scatter itself
+        // across a whole model - and so the read-back that proves it stays one range.
+        var span = (long)(bounds.MaxRow - bounds.MinRow + 1) * (bounds.MaxColumn - bounds.MinColumn + 1);
+        if (span > MaxReadCells)
+        {
+            error = $"The cells span {span:N0} cells of the sheet and must fit inside {MaxReadCells}. Group the write into a smaller area.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            WriteWorksheetValues: new NormalizedWriteWorksheetValuesOperation(worksheetName!, cells));
+        error = null;
+        return true;
+    }
+
     private static bool TryNormalizeRead(
         ReadWorksheetRangeOperation read,
         ExcelOperationKind kind,
@@ -614,7 +699,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                            (operation.ExtendFormulaSeries is null ? 0 : 1) +
                            (operation.EditMacroProcedure is null ? 0 : 1) +
                            (operation.AuditWorkbookFlows is null ? 0 : 1) +
-                           (operation.ReadWorksheetRange is null ? 0 : 1);
+                           (operation.ReadWorksheetRange is null ? 0 : 1) +
+                           (operation.WriteWorksheetValues is null ? 0 : 1);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";
@@ -674,6 +760,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
             case ExcelOperationKind.ReadWorksheetRange when operation.ReadWorksheetRange is not null:
                 return TryNormalizeRead(operation.ReadWorksheetRange, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.WriteWorksheetValues when operation.WriteWorksheetValues is not null:
+                return TryNormalizeWrite(operation.WriteWorksheetValues, operation.Kind, out normalized, out error);
 
             default:
                 error = "Operation payload does not match its kind.";

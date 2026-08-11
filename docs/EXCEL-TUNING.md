@@ -134,20 +134,66 @@ The test suite cannot measure this at all. Those runs are dominated by test-host
 leak detector's settle waits - both constant, both far larger - and an A/B there returned an
 11 ms difference on a 24-second test, which is noise.
 
-## The thing worth looking at next: 4.2 seconds nobody has accounted for
+## The four seconds, found: Excel takes 2.3 seconds to die
 
-One macro Apply is **5,244 ms** end to end. The COM sequence it performs was measured at
-**1,035 ms**. Roughly four seconds happens inside the runtime and has never been attributed.
+Bisected by timing four operation shapes that skip different parts of the lifecycle, since the
+phase observer is internal:
 
-The obvious suspect is proving that Excel exited. `Quit` returns immediately; the runtime then waits
-for the process to genuinely die, twice, because "no Excel is ever left behind" is the product's
-central claim and that wait is what earns it. An attempt to measure Excel's teardown directly from
-PowerShell is recorded here as **invalid**: PowerShell holds its own references to the COM object, so
-Excel stayed alive to the 10-second timeout in every trial. That measured the probe, not Excel.
+| Shape | Median |
+| --- | --- |
+| read - 1 launch, no save, no verify | 2,619 ms |
+| macro Plan - 1 launch, VBA read, no save | 2,817 ms |
+| formula Apply - 2 launches, save, verify | 5,197 ms |
+| macro Apply - 2 launches, save, verify, VBA | 5,802 ms |
 
-Attributing this properly needs timing inside the runtime, where the phase observer already sits.
-That is the next measurement, and it is aimed at four seconds rather than at three hundred
-milliseconds. Nothing should be optimized here until it exists.
+Cost tracks **sessions**, not work. One session is ~2.6 s; two are ~5.2 s. The VBA that the macro
+path is blamed for adds 200 ms to a Plan and 600 ms to an Apply.
+
+Measured directly in C#, with proxies actually released - the earlier PowerShell attempt is recorded
+below as invalid:
+
+| Step | Median |
+| --- | --- |
+| launch | 419 ms |
+| `Quit` + release proxies | **13 ms** |
+| wait for the process to actually exit | **2,267 ms** |
+
+So a session is 419 ms to start, 13 ms to dismiss, and **2,267 ms to die**. The runtime waits for
+that death because "no Excel is ever left behind" is the product's central claim, and the wait is
+what earns it. A mutating Apply pays it twice: 4.5 of its 5.2 seconds is starting and burying Excel.
+
+### Overlapping the death was tried, and made it slower
+
+The wait is a Win32 process wait, not a COM call, so it can leave the STA thread. The primary's
+death was moved to run alongside the verification and joined afterwards, with an explicit bounded
+wait for the file lock replacing the release that the death wait used to provide for free.
+
+| Build | formula Apply | macro Apply |
+| --- | --- | --- |
+| serial death wait | 5,288 ms | 5,987 ms |
+| overlapped | 5,528 ms | 6,230 ms |
+
+**About 240 ms slower, both shapes.** There is almost nothing to hide the wait behind: the
+verification's actual work is ~300 ms against a 2,267 ms death, and a dying Excel and a working one
+contend for the same disk. The change was reverted. It added a concurrency hazard to the mutation
+path in exchange for a measured regression.
+
+### What would actually move it
+
+Not launching the second Excel at all. Verification exists to read the saved file back and confirm
+what reached disk - and for `.xlsx` that file is a zip of XML, readable without Excel. That would
+remove a launch *and* a death, ~2.6 s of a 5.2 s Apply, where every scheduling trick has now
+returned less than nothing.
+
+It is a real change in meaning, not just mechanism: reopening in Excel also proves Excel can still
+open the file, which reading the bytes does not. That tradeoff deserves its own decision rather than
+being smuggled in as an optimization. `.xlsm` macro verification is a separate question again.
+
+### An invalid measurement, kept
+
+Excel's teardown was first measured from PowerShell, which reported the process alive at the
+10-second timeout in every trial. PowerShell holds its own references to the COM object, so Excel
+could not exit: that measured the probe. It is recorded so the next person does not repeat it.
 
 `ReadWorksheetRange` and `AuditWorkbookFlows` launch once and never verify, so neither pays any of
 this. The most-requested operation is already at the floor.

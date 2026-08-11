@@ -76,13 +76,13 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
 
         var tool = Assert.Single(listed.Tools);
         Assert.Equal("excel_task", tool.Name);
-        // The budget forces every operation to earn its bytes. It was 8 KB for four operations,
-        // 9 KB when the audit became the fifth, and 11 KB when the range read became the sixth -
-        // that one also carries an output schema, since it is the only operation that returns
-        // workbook contents. It must not grow to make room for wordier prose, only for a new
-        // operation or for a rule the caller cannot act without, which field measurement showed
-        // cost two round trips when it was left out of the schema.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 11 * 1024);
+        // The budget forces every operation to earn its bytes: 8 KB for the first four, 9 KB when
+        // the audit became the fifth, 11 KB for the range read, 13 KB for the value write. The two
+        // reads and writes of cells also carry an output schema, being the only operations that
+        // return workbook contents. It must not grow to make room for wordier prose - only for a
+        // new operation, or for a rule the caller cannot act without, which field measurement
+        // showed cost two round trips when it was left out of the schema.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 13 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -131,6 +131,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
         AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
         AssertDescription(operationProperties, "readWorksheetRange", "Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.");
+        AssertDescription(operationProperties, "writeWorksheetValues", "Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.");
 
         // The one operation that returns workbook contents states its own cap, because a caller
         // that does not know the bound asks for a whole sheet and gets a truncated answer back.

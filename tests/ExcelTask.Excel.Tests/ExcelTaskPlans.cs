@@ -35,6 +35,26 @@ internal static class ExcelTaskPlans
             ExcelOperationKind.ReadWorksheetRange,
             ReadWorksheetRange: new NormalizedReadWorksheetRangeOperation(worksheet, ToRange(range), formulas)));
 
+    public static NormalizedExcelTaskRequest Write(
+        string target,
+        string worksheet,
+        (string Address, string Value)[] cells,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        SaveMode save = SaveMode.Same,
+        string? output = null,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        save,
+        output,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.WriteWorksheetValues,
+            WriteWorksheetValues: new NormalizedWriteWorksheetValuesOperation(
+                worksheet,
+                [.. cells.Select(cell => new NormalizedWorksheetCellValue(cell.Address, cell.Value))])));
+
     public static NormalizedExcelTaskRequest Copy(
         string target,
         string reference,

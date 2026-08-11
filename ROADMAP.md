@@ -24,6 +24,8 @@ All four original phases landed and were field-validated on the work computer on
    R1C1 formulas. The most-requested operation in the whole history.
 6. **Overlapped verification launch** (v0.9.1): the verification Excel starts
    while the primary is still writing, measured at 3% of a macro Apply.
+7. **Constant writes** (v0.10.0): values into named cells, read back in session
+   and again from the reopened file. Formula text is still refused.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -73,18 +75,15 @@ request. So it returns them, under a hard bound rather than a refusal.
 Now the top open item, and the two halves should be separated rather than decided
 together:
 
-- **Values are writable within the existing stance.** The refusal protects
-  against model-authored *formulas*, which can be plausibly and silently wrong in
-  a way no receipt would catch. A constant - a label, a number, a date - has no
-  such failure mode: it is exactly what was asked for, and a read-back proves it
-  byte for byte. This is 19 sessions of demand available without giving anything
-  up.
-- **Formula text remains a genuine collision.** Inference plus verification is
-  what makes an ExcelTask edit safe, and accepting formula text discards exactly
-  that. `ExtendFormulaSeries` and `RepairExistingWorksheet` already serve the
-  cases where the intended formula is derivable from evidence. What is not yet
-  known is how much of the 15 sessions those two already cover, and that is
-  measurable rather than arguable.
+- **Values shipped in v0.10.0**, within the existing stance rather than against
+  it: a constant is exactly what the caller named, and a read-back proves it.
+- **Formula text remains a genuine collision, and remains refused.** Inference
+  plus verification is what makes an ExcelTask edit safe, and accepting composed
+  formula text discards exactly that. `ExtendFormulaSeries` and
+  `RepairExistingWorksheet` already serve the cases where the intended formula is
+  derivable from evidence. What is still unknown is how much of the 15 sessions
+  those two already cover - measurable rather than arguable, and not yet
+  measured.
 
 **4. Then, in demand order.** `range_edit` find and replace (13 sessions),
 `screenshot` for verification (13), `range_format` (12), `table` beyond listing

@@ -102,6 +102,27 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteReadCore(plan, observer);
         }
 
+        // Dispatched before the shared gates too: it writes, but it carries its own save and verify
+        // rather than the formula plan the code below assumes.
+        if (plan.Request.Operation.Kind == ExcelOperationKind.WriteWorksheetValues)
+        {
+            if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
+            {
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                    "Copy saves are not supported when applying to a live workbook.",
+                    Checks: [new TaskCheck("live-copy-save", false, "Use the confirmed same-file save mode or isolated copy mode.")]);
+            }
+
+            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.Save == SaveMode.Same && !plan.Request.OverwriteConfirmed)
+            {
+                return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                    "Same-file saves require explicit overwrite confirmation.",
+                    Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
+            }
+
+            return ExecuteWriteCore(plan, observer);
+        }
+
         try
         {
             WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");
@@ -381,6 +402,8 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
     // Late-bound access lives in ComAccess so the binding rules are stated once.
     private static object Get(object target, string member, params object?[] arguments) => ComAccess.Get(target, member, arguments);
+
+    private static object? GetOrNull(object target, string member, params object?[] arguments) => ComAccess.GetOrNull(target, member, arguments);
 
     private static void Set(object target, string member, object? value) => ComAccess.Set(target, member, value);
 

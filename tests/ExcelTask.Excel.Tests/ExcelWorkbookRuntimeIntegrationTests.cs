@@ -462,6 +462,66 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     // own structure. Measured dialog layouts are recorded in the 0.6.0 release notes.
 
     [Fact]
+    public async Task WriteStoresConstantsWithTheirTypesAndProvesThemAfterReopening()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "write.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("write", ExcelTaskPlans.Write(
+                target, "Sheet1", [("A1", "Revenue"), ("B1", "1000.5"), ("C1", "TRUE"), ("A2", "")])),
+                CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+
+            // A number sent as text must land as a number, or every SUM above it silently breaks -
+            // which is the failure this operation exists to not have.
+            Assert.True(ExcelTestWorkbook.HasValue(target, "B1", 1000.5d));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", "Revenue"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "C1", true));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task WritePlanChangesNothingOnDisk()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "write-plan.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("write-plan", ExcelTaskPlans.Write(
+                target, "Sheet1", [("A1", "Revenue")], ExcelTaskMode.Plan)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Planned, outcome.Status);
+            Assert.Equal(stampBefore, (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task AnApplyThatFailsBeforeVerifyingStillReleasesThePreLaunchedExcel()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

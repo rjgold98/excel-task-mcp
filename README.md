@@ -1,4 +1,4 @@
-# ExcelTask 0.9.1
+# ExcelTask 0.10.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -27,10 +27,11 @@ One request can perform exactly one operation:
    queries, connections, macro procedures, data model, pivots, and external
    links; or
 6. read the contents of one bounded worksheet range, as displayed values or as
-   R1C1 formulas; then
-7. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-   the worksheet, repairs, or procedure; and
-8. return a compact, structured receipt.
+   R1C1 formulas; or
+7. write constants into named cells, never formula text; then
+8. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+   the worksheet, repairs, procedure, or written values; and
+9. return a compact, structured receipt.
 
 Operations 5 and 6 never write, and say so from evidence: their receipts carry a
 check proving the workbook's size and timestamp were identical before and after.
@@ -59,8 +60,10 @@ suppressed either way.
   `mode: "Apply"`.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
-  `AuditWorkbookFlows`, or `ReadWorksheetRange`. Supply exactly the one matching
-  payload. It never accepts formula text or `FormulaR1C1`.
+  `AuditWorkbookFlows`, `ReadWorksheetRange`, or `WriteWorksheetValues`. Supply
+  exactly the one matching payload. It never accepts formula text or
+  `FormulaR1C1`: `WriteWorksheetValues` takes constants only and rejects any
+  value starting with `=`.
 - Start with `AuditWorkbookFlows` when the worksheet names are unknown. Every
   other operation requires a worksheet name it otherwise has no way to discover.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
@@ -152,7 +155,7 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.9.1 is the current stable formula, exhibit, macro-editing, discovery,
+Version 0.10.0 is the current stable formula, exhibit, macro-editing, discovery,
 and range-reading release.
 It does not yet refresh Power Query or data models, attach to unsaved workbooks,
 edit sheet or class modules, or expose a general automation surface.
