@@ -152,7 +152,7 @@ public sealed partial class ExcelWorkbookRuntime
                 $"Set {target} to the number format {operation.NumberFormat}, saved, and confirmed it after reopening.",
                 changes, checks);
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidCastException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             checks.Add(new TaskCheck("number-format", false, DescribeFailure("number-format", exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed number format", checks, changes);

@@ -63,6 +63,28 @@ internal static class ComAccess
         }
     }
 
+    /// <summary>
+    /// True for every way a late-bound COM call fails.
+    ///
+    /// "A COM call failed" is one concept, and before this predicate it had twenty-nine
+    /// restatements across the runtime in five mutually inconsistent forms. The narrowest of them
+    /// omitted <see cref="InvalidOperationException"/> - which this class throws by design when
+    /// Excel returns nothing - so a preflight fault escaped its own handler and was attributed to
+    /// the operation phase instead. A definition that exists once cannot drift.
+    ///
+    /// The five members: <see cref="COMException"/> is the fault itself;
+    /// <see cref="TargetInvocationException"/> is how reflection wraps it;
+    /// <see cref="InvalidOperationException"/> is this class refusing a null answer;
+    /// <see cref="InvalidCastException"/> is a variant coming back shaped wrong; and
+    /// <see cref="InvalidComObjectException"/> is an RCW already separated from its process.
+    /// </summary>
+    public static bool IsComFailure(Exception exception) => exception
+        is COMException
+        or TargetInvocationException
+        or InvalidOperationException
+        or InvalidCastException
+        or InvalidComObjectException;
+
     /// <summary>True only for DISP_E_MEMBERNOTFOUND, so a real failure is never retried as a binding mismatch.</summary>
     public static bool IsMissingMember(Exception exception) =>
         (exception as COMException)?.HResult == DispIdMemberNotFound ||

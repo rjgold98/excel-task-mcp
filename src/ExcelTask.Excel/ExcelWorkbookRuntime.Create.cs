@@ -98,7 +98,7 @@ public sealed partial class ExcelWorkbookRuntime
             return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
                 $"Created an empty workbook at the requested path and confirmed it exists.", changes, checks);
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             checks.Add(new TaskCheck("workbook-create", false, DescribeFailure("workbook-create", exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed workbook creation", checks, changes);
@@ -193,7 +193,7 @@ public sealed partial class ExcelWorkbookRuntime
             return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
                 $"Added an empty worksheet, saved, and confirmed it after reopening.", changes, checks);
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             checks.Add(new TaskCheck("worksheet-create", false, DescribeFailure("worksheet-create", exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed worksheet creation", checks, changes);
@@ -222,7 +222,7 @@ public sealed partial class ExcelWorkbookRuntime
             references.Add(Item(sheets, worksheetName));
             return true;
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             return false;
         }

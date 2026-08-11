@@ -36,7 +36,7 @@ public sealed partial class ExcelWorkbookRuntime
             };
             return new WorksheetCopyPreflight(referenceExists && !destinationExists, checks);
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             return new WorksheetCopyPreflight(false, [new TaskCheck("worksheet-preflight", false, "Workbook worksheet feasibility could not be read.")]);
         }
@@ -53,7 +53,7 @@ public sealed partial class ExcelWorkbookRuntime
                 [new TaskCheck("target-worksheet", exists,
                     exists ? "The requested target worksheet is available." : "The requested target worksheet is unavailable.")]);
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             return new WorksheetCopyPreflight(false, [new TaskCheck("target-worksheet", false, "Target worksheet feasibility could not be read.")]);
         }

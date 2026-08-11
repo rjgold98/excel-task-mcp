@@ -243,20 +243,6 @@ public sealed partial class ExcelWorkbookRuntime
             }
         }
 
-        public static ExcelSession OpenForVerification(string path, IExcelWorkbookRuntimeObserver observer)
-        {
-            var prepared = PrepareForVerification(observer);
-            try
-            {
-                return AttachForVerification(prepared, path);
-            }
-            catch
-            {
-                prepared.Abandon();
-                throw;
-            }
-        }
-
         /// <summary>
         /// The expensive half of a verification session: start Excel and configure it, with no
         /// workbook open. Split out so it can be run early, while the primary session is still

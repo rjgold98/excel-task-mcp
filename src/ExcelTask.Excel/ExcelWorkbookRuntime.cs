@@ -397,7 +397,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             if (session is not null)
             {
                 try { ownedCleanupFailed = !session.Close(); }
-                catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { ownedCleanupFailed = true; }
+                catch (Exception cleanupException) when (ComAccess.IsComFailure(cleanupException)) { ownedCleanupFailed = true; }
                 session = null;
             }
             var stagingCleanupFailed = stagingPath is not null && !WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);

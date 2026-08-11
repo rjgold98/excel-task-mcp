@@ -187,7 +187,7 @@ public sealed partial class ExcelWorkbookRuntime
                 changes, checks,
                 Range: receipt with { Cells = [.. replacements.Select(item => new WorksheetCell(item.Address, item.Replacement))] });
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidCastException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             checks.Add(new TaskCheck("find-replace", false, DescribeFailure("find-replace", exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed find/replace", checks, changes);

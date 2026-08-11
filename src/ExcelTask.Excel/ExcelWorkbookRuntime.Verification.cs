@@ -20,15 +20,19 @@ public sealed partial class ExcelWorkbookRuntime
         public OwnedExcelProcess OwnedProcess { get; } = ownedProcess;
 
         /// <summary>
-        /// Quits an instance that will never be used. Returns whether the process is genuinely gone,
-        /// so a caller reports the truth rather than assuming it.
+        /// Shuts down an instance that will never be used, with the same escalation the primary
+        /// session gets: Quit, wait, and terminate by identity if Excel ignores it. It used to stop
+        /// at a best-effort Quit and then sample liveness immediately, which meant an Excel holding
+        /// anything - a dialog, a slow teardown - survived the one call whose whole job is that it
+        /// does not. Returns whether the process is genuinely gone, proven the same way Close proves
+        /// it, so a caller reports the truth rather than assuming it.
         /// </summary>
         public bool Abandon()
         {
             try { ExcelSession.TryQuit(Application); }
-            catch (Exception exception) when (exception is COMException or InvalidOperationException or System.Reflection.TargetInvocationException) { }
+            catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
             ComReferences.Release(Application);
-            return !OwnedProcess.IsRunning;
+            return OwnedProcess.WaitForExitOrTerminate();
         }
     }
 
@@ -99,21 +103,31 @@ public sealed partial class ExcelWorkbookRuntime
             IExcelWorkbookRuntimeObserver observer,
             Func<ExcelSession, (bool Verified, TaskCheck Check)> body)
         {
+            var prepared = ResolvePreparedOrStartNow(observer);
             ExcelSession? session = null;
             (bool Verified, TaskCheck Check) outcome;
             try
             {
-                var prepared = ResolvePreparedOrStartNow(observer);
                 session = ExcelSession.AttachForVerification(prepared, path);
                 outcome = body(session);
             }
             catch
             {
-                if (session is not null)
+                if (session is null)
+                {
+                    // Attach failed, so the instance is running with nothing open - and nothing else
+                    // will ever shut it down. Verify marks this object consumed on entry, which means
+                    // Dispose skips its abandon branch, so this catch is the last hand that can reach
+                    // the process. It leaked here once: Excel started, Workbooks.Open threw, and the
+                    // session-null close below was a no-op while Dispose assumed Verify had cleaned up.
+                    _ = prepared.Abandon();
+                }
+                else
                 {
                     try { _ = session.Close(); }
-                    catch (Exception exception) when (exception is COMException or InvalidOperationException or System.Reflection.TargetInvocationException) { }
+                    catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                 }
+
                 throw;
             }
 
@@ -136,7 +150,7 @@ public sealed partial class ExcelWorkbookRuntime
             {
                 return _prepared.GetAwaiter().GetResult();
             }
-            catch (Exception exception) when (exception is COMException or InvalidOperationException or System.Reflection.TargetInvocationException)
+            catch (Exception exception) when (ComAccess.IsComFailure(exception))
             {
                 return ExcelSession.PrepareForVerification(observer);
             }
@@ -158,7 +172,7 @@ public sealed partial class ExcelWorkbookRuntime
                     _dispatcher.InvokeAsync(() =>
                     {
                         try { return _prepared.GetAwaiter().GetResult().Abandon(); }
-                        catch (Exception exception) when (exception is COMException or InvalidOperationException or System.Reflection.TargetInvocationException) { return true; }
+                        catch (Exception exception) when (ComAccess.IsComFailure(exception)) { return true; }
                     }, CancellationToken.None).GetAwaiter().GetResult();
                 }
             }

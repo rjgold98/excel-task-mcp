@@ -57,13 +57,13 @@ public sealed partial class ExcelWorkbookRuntime
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the audit", checks);
             if (cleanupFailure is not null) return cleanupFailure;
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidComObjectException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             var cleanupFailed = false;
             if (session is not null)
             {
                 try { cleanupFailed = !session.Close(); }
-                catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { cleanupFailed = true; }
+                catch (Exception cleanupException) when (ComAccess.IsComFailure(cleanupException)) { cleanupFailed = true; }
                 session = null;
             }
 
@@ -125,7 +125,7 @@ public sealed partial class ExcelWorkbookRuntime
         void Section(string name, Action scan)
         {
             try { scan(); }
-            catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidCastException or OverflowException)
+            catch (Exception exception) when (ComAccess.IsComFailure(exception) || exception is OverflowException)
             {
                 failedSections.Add(name);
             }
@@ -141,7 +141,7 @@ public sealed partial class ExcelWorkbookRuntime
                 var name = (string)Get(connection, "Name");
                 var inModel = false;
                 try { inModel = Convert.ToBoolean(Get(connection, "InModel"), CultureInfo.InvariantCulture); }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                 connectionInModel[name] = inModel;
                 // The connection string is deliberately never read: it carries servers and credentials.
                 Report("connection", name, inModel ? "feeds the data model" : "feeds the workbook");
@@ -172,7 +172,7 @@ public sealed partial class ExcelWorkbookRuntime
         {
             var hasProject = false;
             try { hasProject = Convert.ToBoolean(Get(workbook, "HasVBProject"), CultureInfo.InvariantCulture); }
-            catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+            catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
             if (!hasProject) return; // An .xlsx cannot hold VBA; absence is not a failure.
 
             var project = references.Add(Get(workbook, "VBProject"));
@@ -203,7 +203,7 @@ public sealed partial class ExcelWorkbookRuntime
                             var procedureName = match.Groups["name"].Value;
                             var detail = "procedure";
                             try { detail = $"{Convert.ToInt32(Get(module, "ProcCountLines", procedureName, VbextPkProc), CultureInfo.InvariantCulture)} lines"; }
-                            catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                            catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                             Report("macro-procedure", $"{componentName}.{procedureName}", detail, componentName);
                         }
                     }
@@ -233,7 +233,7 @@ public sealed partial class ExcelWorkbookRuntime
                 var name = (string)Get(table, "Name");
                 var detail = "model table";
                 try { detail = $"{Convert.ToInt64(Get(table, "RecordCount"), CultureInfo.InvariantCulture):N0} rows"; }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                 Report("model-table", name, detail);
             }
 
@@ -246,7 +246,7 @@ public sealed partial class ExcelWorkbookRuntime
                 var primaryTable = (string)Get(references.Add(Get(references.Add(Get(relationship, "PrimaryKeyColumn")), "Parent")), "Name");
                 var active = true;
                 try { active = Convert.ToBoolean(Get(relationship, "Active"), CultureInfo.InvariantCulture); }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                 Report("model-relationship", $"{foreignTable} -> {primaryTable}", active ? "active" : "inactive", primaryTable);
             }
 
@@ -261,11 +261,11 @@ public sealed partial class ExcelWorkbookRuntime
                     var name = (string)Get(measure, "Name");
                     string? table = null;
                     try { table = (string)Get(references.Add(Get(measure, "AssociatedTable")), "Name"); }
-                    catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                    catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                     Report("model-measure", name, "measure", table);
                 }
             }
-            catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+            catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
         });
 
         // Worksheets are walked once, reporting each sheet and the pivots on it. Naming the sheets
@@ -286,7 +286,7 @@ public sealed partial class ExcelWorkbookRuntime
                     // Visibility matters to a caller choosing a target: xlSheetVisible is -1.
                     if (Convert.ToInt32(Get(sheet, "Visible"), CultureInfo.InvariantCulture) != -1) detail = "hidden worksheet";
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
 
                 // The used range says how much is on the sheet without reporting any of it.
                 try
@@ -294,7 +294,7 @@ public sealed partial class ExcelWorkbookRuntime
                     var used = references.Add(Get(sheet, "UsedRange"));
                     detail += $", used range {(string)Get(used, "Address")}";
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
 
                 Report("worksheet", sheetName, detail);
 
@@ -320,7 +320,7 @@ public sealed partial class ExcelWorkbookRuntime
                             _ => "pivot table"
                         };
                     }
-                    catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException)
+                    catch (Exception exception) when (ComAccess.IsComFailure(exception))
                     {
                         // A Data Model pivot commonly refuses these; that refusal is itself the answer.
                         source = "from the data model";
@@ -345,11 +345,11 @@ public sealed partial class ExcelWorkbookRuntime
                             var tableRange = references.Add(Get(table, "Range"));
                             tableDetail = $"table at {(string)Get(tableRange, "Address")}";
                         }
-                        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                        catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
                         Report("table", tableName, tableDetail, sheetName);
                     }
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
             }
         });
 
@@ -369,7 +369,7 @@ public sealed partial class ExcelWorkbookRuntime
                 {
                     if (!Convert.ToBoolean(Get(definedName, "Visible"), CultureInfo.InvariantCulture)) continue;
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
 
                 var name = (string)Get(definedName, "Name");
                 var detail = "defined name";
@@ -389,7 +389,7 @@ public sealed partial class ExcelWorkbookRuntime
                         detail = $"refers to {refersTo.TrimStart('=')}";
                     }
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException) { }
+                catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
 
                 Report("named-range", name, detail, dependsOn);
             }

@@ -206,7 +206,7 @@ public sealed partial class ExcelWorkbookRuntime
                     operation.Cells.Count, operation.Cells.Count,
                     [.. operation.Cells.Select(cell => new WorksheetCell(cell.Address, cell.Value))], Truncated: false));
         }
-        catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or System.Reflection.TargetInvocationException or InvalidOperationException or InvalidCastException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             checks.Add(new TaskCheck("value-write", false, DescribeFailure("value-write", exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed value write", checks, changes);

@@ -53,7 +53,7 @@ public sealed partial class ExcelWorkbookRuntime
                 {
                     sheet = references.Add(Item(sheets, operation.WorksheetName));
                 }
-                catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException)
+                catch (Exception exception) when (ComAccess.IsComFailure(exception))
                 {
                     checks.Add(new TaskCheck("worksheet", false, "The requested worksheet does not exist in this workbook. Run AuditWorkbookFlows to list the worksheets."));
                     return ExcelSession.CloseAndProve(ref session, "the read", checks)
@@ -102,13 +102,13 @@ public sealed partial class ExcelWorkbookRuntime
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the read", checks);
             if (cleanupFailure is not null) return cleanupFailure;
         }
-        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException or InvalidComObjectException or InvalidCastException)
+        catch (Exception exception) when (ComAccess.IsComFailure(exception))
         {
             var cleanupFailed = false;
             if (session is not null)
             {
                 try { cleanupFailed = !session.Close(); }
-                catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { cleanupFailed = true; }
+                catch (Exception cleanupException) when (ComAccess.IsComFailure(cleanupException)) { cleanupFailed = true; }
                 session = null;
             }
 

@@ -215,7 +215,7 @@ public sealed partial class ExcelWorkbookRuntime
             if (session is not null)
             {
                 try { ownedCleanupFailed = !session.Close(); }
-                catch (Exception cleanupException) when (cleanupException is COMException or InvalidOperationException or TargetInvocationException) { ownedCleanupFailed = true; }
+                catch (Exception cleanupException) when (ComAccess.IsComFailure(cleanupException)) { ownedCleanupFailed = true; }
                 session = null;
             }
 
@@ -492,7 +492,11 @@ public sealed partial class ExcelWorkbookRuntime
         }
     }
 
-    private static bool IsExpectedMacroAccessFailure(Exception exception) => exception is COMException or TargetInvocationException or InvalidComObjectException or InvalidOperationException or ArgumentException or OverflowException;
+    // A distinct concept from a plain COM failure - VBIDE access can also fault with argument and
+    // overflow errors from its parameterized properties - but its COM core comes from the one
+    // definition rather than a private restatement of it.
+    private static bool IsExpectedMacroAccessFailure(Exception exception) =>
+        ComAccess.IsComFailure(exception) || exception is ArgumentException or OverflowException;
 
     private static MacroProcedureReceipt CreateMacroReceipt(NormalizedEditMacroProcedureOperation operation, MacroProcedureSnapshot snapshot, bool includeSource, bool runCompleted) =>
         new(operation.ComponentName, operation.ProcedureName, snapshot.Sha256, includeSource ? snapshot.Source : null, operation.RunAfterEdit, runCompleted);
