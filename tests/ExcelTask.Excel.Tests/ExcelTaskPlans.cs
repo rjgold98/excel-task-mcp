@@ -18,6 +18,23 @@ internal static class ExcelTaskPlans
             ExcelOperationKind.AuditWorkbookFlows,
             AuditWorkbookFlows: new NormalizedAuditWorkbookFlowsOperation()));
 
+    public static NormalizedExcelTaskRequest Read(
+        string target,
+        string worksheet,
+        string range,
+        bool formulas = false,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        false,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ReadWorksheetRange,
+            ReadWorksheetRange: new NormalizedReadWorksheetRangeOperation(worksheet, ToRange(range), formulas)));
+
     public static NormalizedExcelTaskRequest Copy(
         string target,
         string reference,

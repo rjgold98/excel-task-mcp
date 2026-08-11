@@ -89,10 +89,17 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteMacroCore(plan, observer);
         }
 
-        // Dispatched before the write-oriented gates below: an audit has no save to confirm.
+        // Dispatched before the write-oriented gates below: neither reading operation has a save to
+        // confirm, so the overwrite and copy-output gates would reject them for lacking a policy
+        // they never needed.
         if (plan.Request.Operation.Kind == ExcelOperationKind.AuditWorkbookFlows)
         {
             return ExecuteAuditCore(plan, observer);
+        }
+
+        if (plan.Request.Operation.Kind == ExcelOperationKind.ReadWorksheetRange)
+        {
+            return ExecuteReadCore(plan, observer);
         }
 
         try

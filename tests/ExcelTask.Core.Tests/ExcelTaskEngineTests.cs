@@ -584,6 +584,85 @@ public sealed class ExcelTaskEngineTests
         Assert.All(receipt.Audit.Items, item => Assert.True(item.Detail.Length <= 256));
     }
 
+    [Fact]
+    public async Task ReadRejectsARangeLargerThanItWillReturnRatherThanTruncatingSilently()
+    {
+        var runtime = new FakeRuntime();
+
+        // 21 x 21 is 441 cells, just past the cap. Accepting it and returning 400 would hand back a
+        // partial answer that looks complete, which is worse than a rejection naming the limit.
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            ReadRequest(range: "A1:U21"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(receipt.Range);
+        Assert.Contains("400", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadRejectsASaveDestinationBecauseItNeverWrites()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            ReadRequest(save: SaveMode.Copy, output: ".\\copy.xlsx"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+    }
+
+    [Fact]
+    public async Task ReadDoesNotDemandOverwriteConfirmationForAWorkbookItOnlyReads()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(ReadRequest(), CancellationToken.None);
+
+        // Save mode Same normally requires overwrite confirmation on Apply. A read never writes, so
+        // demanding it would be asking permission for something that cannot happen - and a caller
+        // taught to set overwriteConfirmed to get a read through carries it into the call that does
+        // write.
+        Assert.False(receipt.Confirmation.Required);
+        Assert.Empty(receipt.Confirmation.Requirements);
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+    }
+
+    [Fact]
+    public async Task ReadReceiptBoundsItsCellsAndTheirText()
+    {
+        var many = Enumerable.Range(1, 500)
+            .Select(index => new WorksheetCell($"A{index}", new string('x', 400)))
+            .ToArray();
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(ExcelTaskStatus.Completed, "Read",
+                Range: new WorksheetRangeReceipt("Sheet1", "A1:A500", false, 500, 500, many, Truncated: false))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(ReadRequest(), CancellationToken.None);
+
+        Assert.True(receipt.Status == ExcelTaskStatus.Completed, receipt.Summary);
+        Assert.True(receipt.Range!.Cells.Count < many.Length);
+        Assert.True(receipt.Range.Truncated);
+        // The counts describe the range that was asked for, so a bounded answer still says how much
+        // of the sheet it covered rather than implying the rest was blank.
+        Assert.Equal(500, receipt.Range.CellsInRange);
+        Assert.All(receipt.Range.Cells, cell => Assert.True(cell.Text.Length <= 64));
+    }
+
+    private static ExcelTaskRequest ReadRequest(
+        string range = "A1:C3",
+        SaveMode save = SaveMode.Same,
+        string? output = null) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(
+                ExcelOperationKind.ReadWorksheetRange,
+                ReadWorksheetRange: new ReadWorksheetRangeOperation("Sheet1", range)),
+            Mode: ExcelTaskMode.Apply,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: save,
+            OutputWorkbookPath: output,
+            OverwriteConfirmed: false);
+
     private static ExcelTaskRequest AuditRequest(
         ExcelTaskMode mode = ExcelTaskMode.Apply,
         SaveMode save = SaveMode.Same,

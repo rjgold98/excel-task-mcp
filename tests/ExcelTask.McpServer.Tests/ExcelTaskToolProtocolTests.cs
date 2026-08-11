@@ -76,11 +76,13 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
 
         var tool = Assert.Single(listed.Tools);
         Assert.Equal("excel_task", tool.Name);
-        // The budget forces every operation to earn its bytes. It was 8 KB for four operations and
-        // grew to 9 KB when the audit became the fifth. It must not grow to make room for wordier
-        // prose - only for rules the caller cannot act without, which field measurement showed cost
-        // two round trips when they were left out of the schema.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 9 * 1024);
+        // The budget forces every operation to earn its bytes. It was 8 KB for four operations,
+        // 9 KB when the audit became the fifth, and 11 KB when the range read became the sixth -
+        // that one also carries an output schema, since it is the only operation that returns
+        // workbook contents. It must not grow to make room for wordier prose, only for a new
+        // operation or for a rule the caller cannot act without, which field measurement showed
+        // cost two round trips when it was left out of the schema.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 11 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -116,7 +118,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // when they were enforced but unstated: UseOpen+Copy is rejected, and asking AskIfOpen about
         // a workbook the caller already said was open only ever returns a confirmation.
         AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.");
-        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows never writes: leave Same with no outputWorkbookPath.");
+        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same.");
         AssertDescription(properties, "overwriteConfirmed", "Explicit authorization required before Apply can overwrite an existing save destination.");
 
@@ -127,7 +129,14 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
         AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
         AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
-        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists queries, connections, macro components and procedures, the data model, pivots, and external links.");
+        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
+        AssertDescription(operationProperties, "readWorksheetRange", "Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.");
+
+        // The one operation that returns workbook contents states its own cap, because a caller
+        // that does not know the bound asks for a whole sheet and gets a truncated answer back.
+        var readRange = ResolveReference(operationProperties.GetProperty("readWorksheetRange"), tool.InputSchema);
+        AssertDescription(readRange.GetProperty("properties"), "range", "One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.");
+        AssertDescription(readRange.GetProperty("properties"), "formulas", "False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.");
 
         var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
         AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed. At most 16 ranges and 10,000 cells per call; split a larger area across calls.");

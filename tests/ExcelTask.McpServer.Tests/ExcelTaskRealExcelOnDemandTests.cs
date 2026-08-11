@@ -13,6 +13,80 @@ public sealed class ExcelTaskComSerialFixture;
 public sealed class ExcelTaskRealExcelOnDemandTests
 {
     [Fact]
+    public async Task ReadReturnsCellContentsThroughTheRealToolBoundaryAndReleasesOwnedExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        var target = Path.Combine(directory, "read.xlsx");
+        var existingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+        var fixtureProcesses = new List<ExcelProcessIdentity>();
+        Directory.CreateDirectory(directory);
+
+        try
+        {
+            // The reference fixture is used as the target here because it has content: =ROW() in
+            // A1 and A3 with A2 left blank, which is what makes the blank-omission observable.
+            ExcelFixtureWorkbook.CreateReference(target, fixtureProcesses);
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            var transport = new StdioClientTransport(new StdioClientTransportOptions
+            {
+                Name = "ExcelTask-real-read-test",
+                Command = TestServer.ServerPath,
+                WorkingDirectory = directory,
+                InheritEnvironmentVariables = false,
+                EnvironmentVariables = TestServer.EnvironmentVariables(),
+                ShutdownTimeout = TimeSpan.FromSeconds(2)
+            });
+            await using var client = await McpClient.CreateAsync(
+                transport,
+                new McpClientOptions { ClientInfo = new() { Name = "ExcelTask-RealExcel-TestClient", Version = "1.0.0" } });
+
+            var result = await client.CallToolAsync(
+                "excel_task",
+                new Dictionary<string, object?>
+                {
+                    ["request"] = new ExcelTaskRequest(
+                        target,
+                        new ExcelOperation(
+                            ExcelOperationKind.ReadWorksheetRange,
+                            ReadWorksheetRange: new ReadWorksheetRangeOperation("Reference", "A1:C3")),
+                        ExcelTaskMode.Apply,
+                        WorkbookBinding.Isolated,
+                        SaveMode.Same,
+                        null,
+                        OverwriteConfirmed: false)
+                });
+
+            Assert.False(result.IsError);
+            var receipt = result.StructuredContent!.Value;
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), receipt.GetProperty("status").GetString());
+
+            // Reading is the one thing this server does that returns workbook contents, so the
+            // whole point is that they survive the worker protocol and both bounding seams intact.
+            var range = receipt.GetProperty("range");
+            Assert.Equal(9, range.GetProperty("cellsInRange").GetInt32());
+            Assert.Equal(2, range.GetProperty("nonEmptyCells").GetInt32());
+            Assert.Equal(2, range.GetProperty("cells").GetArrayLength());
+            Assert.False(range.GetProperty("truncated").GetBoolean());
+            var addresses = range.GetProperty("cells").EnumerateArray()
+                .Select(cell => cell.GetProperty("address").GetString() ?? string.Empty)
+                .ToArray();
+            Assert.Equal(["A1", "A3"], addresses);
+
+            // Reading asks for no overwrite authorization, because it never writes - and proves it.
+            Assert.False(receipt.GetProperty("confirmation").GetProperty("required").GetBoolean());
+            Assert.Equal(stampBefore, (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc));
+        }
+        finally
+        {
+            Assert.All(fixtureProcesses, process => Assert.False(process.IsRunning));
+            var remainingExcel = ExcelProcessIdentity.SnapshotExcelProcesses();
+            Assert.DoesNotContain(remainingExcel, process => !existingExcel.Contains(process));
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ApplyIsolatedCopyPersistsWorkbookAndReleasesOwnedExcel()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

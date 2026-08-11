@@ -16,6 +16,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
     private const int MaxReceiptItems = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
     private const int MaxMacroMetadataLength = 96;
+    private const int MaxReceiptCellTextLength = 64;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -35,6 +36,19 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         var receipt = BoundReceipt(await engine.RunAsync(request, cancellationToken), request.Mode == ExcelTaskMode.Plan);
         var result = CreateResult(receipt);
         if (WithinResponseBound(result)) return result;
+
+        // Range cells are the answer to a read, not incidental detail, so an oversized read gives
+        // back as many as fit instead of being emptied like the fields below. Halving terminates:
+        // the count strictly decreases and an empty list leaves the loop.
+        while (receipt.Range is { Cells.Count: > 0 } range)
+        {
+            receipt = receipt with
+            {
+                Range = range with { Cells = range.Cells.Take(range.Cells.Count / 2).ToArray(), Truncated = true }
+            };
+            result = CreateResult(receipt);
+            if (WithinResponseBound(result)) return result;
+        }
 
         // The minimal receipt is measured too. Claiming details were omitted while returning an
         // oversized response would be both untrue and useless to the caller.
@@ -64,7 +78,11 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         // The audit report is the largest field a receipt can carry, so a receipt that had to be
         // minimized is precisely the one that must drop it. Keeping it while the summary says
         // details were omitted would be untrue as well as oversized.
-        Audit = null
+        Audit = null,
+        // The cells are already gone by the time this runs, but the range's shape is kept and
+        // marked truncated: that is what tells the caller to ask again for a narrower range
+        // instead of concluding the sheet was empty.
+        Range = receipt.Range is null ? null : receipt.Range with { Cells = [], Truncated = true }
     };
 
     /// <summary>Last resort: status and identity only, for a receipt oversized without any detail.</summary>
@@ -73,7 +91,8 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Summary = "The receipt exceeded the MCP response size bound and was reduced to its status.",
         Save = receipt.Save with { OutputWorkbookPath = null },
         Retry = receipt.Retry with { Reason = null },
-        MacroProcedure = null
+        MacroProcedure = null,
+        Range = null
     };
 
     private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool includeMacroSource) => receipt with
@@ -102,7 +121,24 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
             }).ToArray()
         },
         MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeMacroSource),
-        Audit = BoundAudit(receipt.Audit)
+        Audit = BoundAudit(receipt.Audit),
+        Range = BoundRange(receipt.Range)
+    };
+
+    /// <summary>
+    /// Cell text is bounded far shorter than the range is deep: a long cell is usually a note or a
+    /// pasted paragraph, and one of them must not crowd out the four hundred cells around it.
+    /// </summary>
+    private static WorksheetRangeReceipt? BoundRange(WorksheetRangeReceipt? range) => range is null ? null : range with
+    {
+        WorksheetName = BoundRequired(range.WorksheetName),
+        Range = BoundRequired(range.Range),
+        Cells = range.Cells.Take(ExcelTaskEngine.MaxReadCells).Select(cell => cell with
+        {
+            Address = BoundRequired(cell.Address),
+            Text = cell.Text.Length > MaxReceiptCellTextLength ? cell.Text[..MaxReceiptCellTextLength] : cell.Text
+        }).ToArray(),
+        Truncated = range.Truncated || range.Cells.Count > ExcelTaskEngine.MaxReadCells
     };
 
     /// <summary>

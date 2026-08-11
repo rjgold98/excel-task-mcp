@@ -462,6 +462,93 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     // own structure. Measured dialog layouts are recorded in the 0.6.0 release notes.
 
     [Fact]
+    public async Task ReadReturnsCellContentsAndOmitsBlanksWithoutChangingTheWorkbook()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "read-target.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Two of the nine cells are blank, so the receipt can be checked for omitting them
+            // rather than padding the answer with empties the caller would have to filter.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:C3", new object?[,]
+            {
+                { "=ROW()", "=ROW()*10", null       },
+                { "=ROW()", null,        "=ROW()*3" },
+                { "=ROW()", "=ROW()*10", "=ROW()*3" }
+            });
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("read", ExcelTaskPlans.Read(target, "Sheet1", "A1:C3")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.NotNull(outcome.Range);
+            Assert.Equal(9, outcome.Range.CellsInRange);
+            Assert.Equal(7, outcome.Range.NonEmptyCells);
+            Assert.Equal(7, outcome.Range.Cells.Count);
+            Assert.False(outcome.Range.Truncated);
+            Assert.DoesNotContain(outcome.Range.Cells, cell => cell.Address is "C1" or "B2");
+
+            // Values by default: =ROW() in row 3 comes back as 3, not as its formula.
+            Assert.Equal("3", Assert.Single(outcome.Range.Cells, cell => cell.Address == "A3").Text);
+            Assert.Equal("30", Assert.Single(outcome.Range.Cells, cell => cell.Address == "B3").Text);
+
+            // Read-only means provably unchanged on disk, the same proof the audit gives.
+            Assert.Equal(stampBefore, (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc));
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "workbook-unchanged" && check.Passed);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task ReadReturnsR1C1FormulasWhenAskedAndRejectsAnUnknownWorksheet()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "read-formulas.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { "=ROW()" }, { "=ROW()" } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("read-formulas", ExcelTaskPlans.Read(target, "Sheet1", "A1:A2", formulas: true)),
+                CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Completed, outcome.Status);
+            Assert.NotNull(outcome.Range);
+            Assert.True(outcome.Range.Formulas);
+            Assert.All(outcome.Range.Cells, cell => Assert.Equal("=ROW()", cell.Text));
+
+            // A misspelled sheet name must say so, not return an empty range that reads as an
+            // answer. The caller is told where the real names come from.
+            var missing = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("read-missing", ExcelTaskPlans.Read(target, "NoSuchSheet", "A1:A2")),
+                CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, missing.Status);
+            Assert.Null(missing.Range);
+            Assert.Contains(missing.Checks ?? [], check => check.Name == "worksheet" && !check.Passed);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task AuditReportsFlowsWithoutChangingTheWorkbookOrLeakingPaths()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

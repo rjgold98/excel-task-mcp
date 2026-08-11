@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -46,6 +46,21 @@ public sealed record EditMacroProcedureOperation(
 /// </summary>
 public sealed record AuditWorkbookFlowsOperation();
 
+/// <summary>
+/// Reads one bounded range and returns what is in it.
+///
+/// This is the one operation that deliberately returns workbook contents. Every other receipt
+/// withholds them, because there they would be incidental - nobody asked the audit for cell
+/// values, so carrying them would be leakage. Here the contents are the entire request, and
+/// refusing to answer would just send the caller to a different server, which is what real use
+/// showed happening. The protection is therefore a hard bound rather than a refusal: a capped
+/// range, capped cell text, and blanks omitted.
+/// </summary>
+public sealed record ReadWorksheetRangeOperation(
+    [property: Description("Existing worksheet name to read. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.")] string Range,
+    [property: Description("False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.")] bool Formulas = false);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -53,14 +68,15 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
-    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
+    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. Takes no options. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
+    [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Existing target workbook path.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
     [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure requires Isolated. UseOpen cannot be combined with Copy.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
-    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows never writes: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
+    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows and ReadWorksheetRange never write: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same.")] string? OutputWorkbookPath = null,
     [property: Description("Explicit authorization required before Apply can overwrite an existing save destination.")] bool OverwriteConfirmed = false);
 
@@ -112,6 +128,8 @@ public sealed record NormalizedEditMacroProcedureOperation(
 
 public sealed record NormalizedAuditWorkbookFlowsOperation();
 
+public sealed record NormalizedReadWorksheetRangeOperation(string WorksheetName, FormulaRepairRange Range, bool Formulas);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -119,7 +137,8 @@ public sealed record NormalizedExcelOperation(
     NormalizedRepairExistingWorksheetOperation? RepairExistingWorksheet = null,
     NormalizedExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
     NormalizedEditMacroProcedureOperation? EditMacroProcedure = null,
-    NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null);
+    NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
+    NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,
@@ -153,10 +172,27 @@ public sealed record WorkbookAuditReceipt(
     bool Truncated,
     bool WorkbookUnchanged);
 
-public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null);
+/// <summary>One cell that had something in it. Blanks are omitted rather than reported as empty.</summary>
+public sealed record WorksheetCell(string Address, string Text);
+
+/// <summary>
+/// The contents of one bounded range. <paramref name="CellsInRange"/> counts what the range spans
+/// and <paramref name="Truncated"/> says whether the list stops short, so a partial answer can
+/// never read as a complete one.
+/// </summary>
+public sealed record WorksheetRangeReceipt(
+    string WorksheetName,
+    string Range,
+    bool Formulas,
+    int CellsInRange,
+    int NonEmptyCells,
+    IReadOnlyList<WorksheetCell> Cells,
+    bool Truncated);
+
+public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
 public sealed record ConfirmationRequirement(string Code, string Prompt);
 public sealed record ConfirmationReceipt(bool Required, IReadOnlyList<ConfirmationRequirement> Requirements);
 public sealed record PhaseTimings(TimeSpan Validation, TimeSpan Inspection, TimeSpan Execution, TimeSpan Total);
-public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null);
+public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);

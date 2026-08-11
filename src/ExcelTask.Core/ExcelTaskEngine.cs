@@ -11,6 +11,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     private const int MaxReceiptItems = 20;
     private const int MaxReceiptStringLength = 256;
+    private const int MaxReceiptRangeCells = 400;
+    private const int MaxReceiptCellTextLength = 64;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
@@ -161,7 +163,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 normalizedRequest.Mode == ExcelTaskMode.Plan &&
                 normalizedRequest.Operation.EditMacroProcedure is not null &&
                 outcome.Status == ExcelTaskStatus.Planned,
-                outcome.Audit);
+                outcome.Audit,
+                outcome.Range);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -201,8 +204,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
 
         // A read-only operation has no save to authorize. Asking to confirm an overwrite that
-        // cannot happen would teach the caller that the confirmation means nothing.
-        if (request.Operation.AuditWorkbookFlows is not null) return requirements;
+        // cannot happen would teach the caller that the confirmation means nothing - and the caller
+        // that learns to set overwriteConfirmed reflexively to get a read through will still have
+        // it set on the call after, which does write.
+        if (request.Operation.AuditWorkbookFlows is not null || request.Operation.ReadWorksheetRange is not null) return requirements;
 
         if (request.Mode == ExcelTaskMode.Apply && request.Save == SaveMode.Same && !request.OverwriteConfirmed)
         {
@@ -261,7 +266,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         TimeSpan total,
         MacroProcedureReceipt? macroProcedure = null,
         bool includeMacroSource = false,
-        WorkbookAuditReceipt? audit = null)
+        WorkbookAuditReceipt? audit = null,
+        WorksheetRangeReceipt? range = null)
     {
         if (status == ExcelTaskStatus.Rejected)
         {
@@ -290,7 +296,33 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             new ConfirmationReceipt(confirmationRequired, BoundRequirements(requirements)),
             new PhaseTimings(validation, inspection, execution, total),
             BoundMacroProcedure(macroProcedure, includeMacroSource),
-            BoundAudit(audit));
+            BoundAudit(audit),
+            BoundRange(range));
+    }
+
+    /// <summary>
+    /// Bounds the one receipt field that deliberately carries workbook contents. The cell list is
+    /// capped and each cell's text is capped, so a read of dense cells cannot outgrow the response
+    /// even though its whole purpose is to return what is there.
+    /// </summary>
+    private static WorksheetRangeReceipt? BoundRange(WorksheetRangeReceipt? range)
+    {
+        if (range is null) return null;
+
+        var cells = range.Cells
+            .Take(MaxReceiptRangeCells)
+            .Select(cell => new WorksheetCell(
+                Bound(cell.Address) ?? string.Empty,
+                cell.Text.Length <= MaxReceiptCellTextLength ? cell.Text : cell.Text[..MaxReceiptCellTextLength]))
+            .ToArray();
+
+        return range with
+        {
+            WorksheetName = Bound(range.WorksheetName) ?? string.Empty,
+            Range = Bound(range.Range) ?? string.Empty,
+            Cells = cells,
+            Truncated = range.Truncated || range.Cells.Count > cells.Length
+        };
     }
 
     /// <summary>
@@ -420,6 +452,12 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             return false;
         }
 
+        if (operation.ReadWorksheetRange is not null && (request.Save == SaveMode.Copy || output is not null))
+        {
+            error = "Reading a worksheet range never writes, so it must not be given a save destination.";
+            return false;
+        }
+
         normalized = new NormalizedExcelTaskRequest(
             target!, request.Mode, request.WorkbookBinding, request.Save, output, request.OverwriteConfirmed, operation!);
         error = null;
@@ -473,6 +511,41 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
 
         normalized = trimmed;
+        return true;
+    }
+
+    /// <summary>
+    /// The read cap is far tighter than the repair caps, and for a different reason: repairs are
+    /// bounded to protect Excel from a huge mutation, while a read is bounded to keep the returned
+    /// contents small enough to be worth reading. Narrowing and reading again is cheap.
+    /// </summary>
+    public const int MaxReadCells = 400;
+
+    private static bool TryNormalizeRead(
+        ReadWorksheetRangeOperation read,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(read.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (!TryNormalizeA1Range(read.Range, out var range))
+        {
+            error = "Read range must be a rectangular A1 range such as A1:C10.";
+            return false;
+        }
+
+        var cells = CellCount(range);
+        if (cells > MaxReadCells)
+        {
+            error = $"Read range covers {cells:N0} cells and the limit is {MaxReadCells}. Narrow the range and read again.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ReadWorksheetRange: new NormalizedReadWorksheetRangeOperation(worksheetName!, ToFormulaRepairRange(range), read.Formulas));
+        error = null;
         return true;
     }
 
@@ -535,7 +608,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                            (operation.RepairExistingWorksheet is null ? 0 : 1) +
                            (operation.ExtendFormulaSeries is null ? 0 : 1) +
                            (operation.EditMacroProcedure is null ? 0 : 1) +
-                           (operation.AuditWorkbookFlows is null ? 0 : 1);
+                           (operation.AuditWorkbookFlows is null ? 0 : 1) +
+                           (operation.ReadWorksheetRange is null ? 0 : 1);
         if (!Enum.IsDefined(operation.Kind))
         {
             error = "Operation kind must be a defined value.";
@@ -592,6 +666,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.AuditWorkbookFlows when operation.AuditWorkbookFlows is not null:
                 normalized = new NormalizedExcelOperation(operation.Kind, AuditWorkbookFlows: new NormalizedAuditWorkbookFlowsOperation());
                 return true;
+
+            case ExcelOperationKind.ReadWorksheetRange when operation.ReadWorksheetRange is not null:
+                return TryNormalizeRead(operation.ReadWorksheetRange, operation.Kind, out normalized, out error);
 
             default:
                 error = "Operation payload does not match its kind.";

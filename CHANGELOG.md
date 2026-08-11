@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.9.0 - 2026-08-10
+
+### Added - the most-requested operation
+
+- **`ReadWorksheetRange` returns the contents of one bounded range**, as
+  displayed values or as R1C1 formulas. Reading cell values was the single
+  largest gap the demand data showed: 31 of 46 measured sessions called for it,
+  and every one of them had to go to a different server to get it.
+
+  This is deliberately the one operation that returns workbook contents. Every
+  other receipt withholds them, because there they would be incidental - nobody
+  asked an audit for cell values, so carrying them would be leakage. Here the
+  contents are the entire request, and refusing would just send the caller
+  elsewhere, which is what real use showed happening. The protection is a hard
+  bound rather than a refusal: at most 400 cells, capped cell text, blanks
+  omitted, and a range larger than the cap rejected rather than silently
+  truncated to a partial answer that would read as a complete one.
+
+  The whole range is fetched in a single array. Blank cells cost nothing.
+
+### Fixed
+
+- **A read would have demanded permission to overwrite the file it only reads.**
+  Save mode `Same` requires `overwriteConfirmed` on Apply; the audit was exempted
+  when it shipped and the range read inherited the rule. Beyond being nonsense,
+  a caller taught to set `overwriteConfirmed` reflexively to get a read through
+  carries it into the next call, which does write. Both read-only operations are
+  now exempt.
+
+- **The full local gate could report a leaked Excel process that was not there,
+  and could pass without having tested for one.** `dotnet test` on the solution
+  runs test assemblies in parallel; two of them drive real desktop Excel and then
+  assert no Excel was left behind, so each saw the other's. `tools/gate.ps1` runs
+  one project at a time and is now the documented gate.
+
+### Changed - measured, and mostly a decision not to change anything
+
+- Recorded in `docs/EXCEL-TUNING.md`, from `tools/excel-config-probe.ps1` and
+  `tools/excel-calc-probe.ps1`. Launching Excel is 274-482 ms; writing 2,000
+  formulas is 58 ms. Starting Excel is the entire cost, and everything done
+  inside it is rounding error beside that.
+
+- **Manual calculation was measured and rejected: it is slower here.** 103 ms
+  against 76 ms. It exists to stop a recalculation per write, and ExcelTask does
+  not write per cell - repairs are grouped by identical R1C1 formula, so 2,000
+  cells cost 43 calls and there is nothing left to suppress. A per-cell loop
+  shows the opposite, which is exactly why it must not be the thing measured.
+  `ScreenUpdating`, `PrintCommunication`, and `DisplayStatusBar` all measured
+  within noise: they are advice for driving a visible Excel, and this one has no
+  window.
+
+- A range read launches Excel once, like the audit. The most-requested operation
+  is already at the floor. A mutating Apply still launches twice, and the reason
+  that second launch cannot simply be deleted - along with the version worth
+  building instead - is written down rather than left as a to-do.
+
 ## 0.8.1 - 2026-08-10
 
 ### Fixed

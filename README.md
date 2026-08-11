@@ -1,4 +1,4 @@
-# ExcelTask 0.4.0
+# ExcelTask 0.9.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -22,11 +22,20 @@ One request can perform exactly one operation:
 3. extend a proven formula series right or down from two adjacent evidence
    periods into an immediately adjacent blank destination; or
 4. replace one named standard-module VBA procedure in an `.xlsm`, guarded by the
-   expected current hash, optionally running it afterwards; then
-5. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+   expected current hash, optionally running it afterwards;
+5. report a read-only map of the workbook's worksheets, tables, defined names,
+   queries, connections, macro procedures, data model, pivots, and external
+   links; or
+6. read the contents of one bounded worksheet range, as displayed values or as
+   R1C1 formulas; then
+7. recalculate, save, close owned Excel, reopen the saved workbook, and verify
    the worksheet, repairs, or procedure; and
-6. return a compact, structured receipt without workbook values or formula
-   text.
+8. return a compact, structured receipt.
+
+Operations 5 and 6 never write, and say so from evidence: their receipts carry a
+check proving the workbook's size and timestamp were identical before and after.
+The receipt withholds workbook values and formula text everywhere except the
+range read, where the contents are the entire request rather than incidental.
 
 Every inspection and execution runs in a short-lived private worker. The MCP
 host enforces a two-minute deadline, reports interrupted mutations as
@@ -49,9 +58,14 @@ suppressed either way.
 - Use `mode: "Plan"` for a non-mutating preview. Normal execution uses
   `mode: "Apply"`.
 - The request has one `operation` union: `CopyExhibit`,
-  `RepairExistingWorksheet`, `ExtendFormulaSeries`, or `EditMacroProcedure`.
-  Supply exactly the one matching payload. It never accepts formula text or
-  `FormulaR1C1`.
+  `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
+  `AuditWorkbookFlows`, or `ReadWorksheetRange`. Supply exactly the one matching
+  payload. It never accepts formula text or `FormulaR1C1`.
+- Start with `AuditWorkbookFlows` when the worksheet names are unknown. Every
+  other operation requires a worksheet name it otherwise has no way to discover.
+- `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
+  cell's text. It rejects a range larger than that rather than truncating to a
+  partial answer that would read as a complete one.
 - The `EditMacroProcedure` operation is deliberately narrow: only an isolated
   `.xlsm` saved as a `Copy`, one named standard-module procedure, full
   replacement guarded by the expected current hash, and an optional no-argument
@@ -101,6 +115,16 @@ dotnet test ExcelTask.slnx --filter "RunType!=OnDemand" -p:NuGetAudit=false
 dotnet run --project src\ExcelTask.McpServer
 ```
 
+The full gate, including the tests that drive real desktop Excel, runs one project at a time:
+
+```powershell
+.\tools\gate.ps1
+```
+
+Use it rather than `dotnet test ExcelTask.slnx` with no filter. The solution form runs test
+assemblies in parallel, and the two real-Excel assemblies each assert that no Excel process was
+left behind - concurrently, each sees the other's.
+
 The disposable desktop-Excel acceptance tests are serial and opt-in:
 
 ```powershell
@@ -128,7 +152,8 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.4.0 is the current stable formula, exhibit, and macro-editing release.
+Version 0.9.0 is the current stable formula, exhibit, macro-editing, discovery,
+and range-reading release.
 It does not yet refresh Power Query or data models, attach to unsaved workbooks,
 edit sheet or class modules, or expose a general automation surface.
 Authentication or IRM can still require a person; a macro dialog or timeout is
