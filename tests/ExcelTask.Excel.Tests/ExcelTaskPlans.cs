@@ -78,6 +78,23 @@ internal static class ExcelTaskPlans
             FindReplace: new NormalizedFindReplaceOperation(
                 worksheet, find, replaceWith, range is null ? null : ToRange(range), wholeCell, matchCase)));
 
+    public static NormalizedExcelTaskRequest NumberFormat(
+        string target,
+        string worksheet,
+        string range,
+        string numberFormat,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.SetNumberFormat,
+            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheet, ToRange(range), numberFormat)));
+
     public static NormalizedExcelTaskRequest Create(
         string target,
         CreateKind kind,

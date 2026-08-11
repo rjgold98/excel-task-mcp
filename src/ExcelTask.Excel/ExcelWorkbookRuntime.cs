@@ -131,9 +131,9 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteWriteCore(plan, observer);
         }
 
-        // Same reason as the write above: both carry their own save, verification and gates, and
-        // neither wants the formula plan the shared path below builds.
-        if (plan.Request.Operation.Kind == ExcelOperationKind.FindReplace)
+        // Same reason as the write above: each carries its own save, verification and gates, and
+        // none of them wants the formula plan the shared path below builds.
+        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetNumberFormat)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -149,7 +149,9 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
             }
 
-            return ExecuteFindReplaceCore(plan, observer);
+            return plan.Request.Operation.Kind == ExcelOperationKind.FindReplace
+                ? ExecuteFindReplaceCore(plan, observer)
+                : ExecuteNumberFormatCore(plan, observer);
         }
 
         // A creation writes the target it names and is refused a copy destination during validation,

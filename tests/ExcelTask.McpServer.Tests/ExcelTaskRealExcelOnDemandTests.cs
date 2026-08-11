@@ -295,6 +295,27 @@ public sealed class ExcelTaskRealExcelOnDemandTests
             var receipt = replaced.StructuredContent!.Value;
             Assert.Equal(nameof(ExcelTaskStatus.Completed), receipt.GetProperty("status").GetString());
 
+            // The last step of a real exhibit, and the gap the write itself created: a number that
+            // is correct but reads wrong is not finished work.
+            var formatted = await client.CallToolAsync(
+                "excel_task",
+                new Dictionary<string, object?>
+                {
+                    ["request"] = new ExcelTaskRequest(
+                        target,
+                        new ExcelOperation(
+                            ExcelOperationKind.SetNumberFormat,
+                            SetNumberFormat: new SetNumberFormatOperation("Rollforward", "B1:B2", "#,##0.00_);(#,##0.00)")),
+                        ExcelTaskMode.Apply,
+                        WorkbookBinding.Isolated,
+                        SaveMode.Same,
+                        null,
+                        OverwriteConfirmed: true)
+                });
+
+            Assert.False(formatted.IsError);
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), formatted.StructuredContent!.Value.GetProperty("status").GetString());
+
             // The match list is the one thing find/replace returns, so it has to survive the worker
             // protocol and both bounding seams the same way a read's contents do.
             var range = receipt.GetProperty("range");

@@ -982,6 +982,106 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
         }
     }
 
+    [Fact]
+    public async Task SetNumberFormatChangesHowTheNumberReadsAndNotTheNumber()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "format.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+        // Parenthesised negatives with the padding that aligns them under positives: the format a
+        // financial exhibit actually uses, and the one whose trailing spaces must survive intact.
+        const string accounting = "#,##0.00_);(#,##0.00)";
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1000.5 }, { -250.25 } });
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("format", ExcelTaskPlans.NumberFormat(
+                target, "Sheet1", "A1:A2", accounting)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+            Assert.Equal(accounting, ExcelTestWorkbook.ReadNumberFormat(target, "A1:A2"));
+
+            // The point of the whole operation: presentation moved, the numbers did not. A format
+            // that quietly rounded or retyped the value would be worse than no format at all.
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", 1000.5d));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", -250.25d));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task SetNumberFormatPlanReportsWhatIsThereAndChangesNothingOnDisk()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "format-plan.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1000.5 }, { 2000.25 } });
+            var stampBefore = (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("format-plan", ExcelTaskPlans.NumberFormat(
+                target, "Sheet1", "A1:A2", "0.0%", ExcelTaskMode.Plan)), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Planned, outcome.Status);
+            // A format is destructive in a way a value write is not - it replaces whatever was there
+            // and the old code is not recoverable from the sheet - so Plan names what it would replace.
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "current-format" && check.Detail.Contains("General", StringComparison.Ordinal));
+            Assert.Equal(stampBefore, (new FileInfo(target).Length, new FileInfo(target).LastWriteTimeUtc));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task SetNumberFormatClearsFormattingWithGeneralAndRejectsAMissingWorksheet()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "format-general.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1000.5 }, { 2000.25 } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var formatted = await runtime.ExecuteAsync(new ExcelTaskPlan("format-set", ExcelTaskPlans.NumberFormat(
+                target, "Sheet1", "A1:A2", "0.0%")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Completed, formatted.Status);
+            Assert.Equal("0.0%", ExcelTestWorkbook.ReadNumberFormat(target, "A1:A2"));
+
+            var cleared = await runtime.ExecuteAsync(new ExcelTaskPlan("format-clear", ExcelTaskPlans.NumberFormat(
+                target, "Sheet1", "A1:A2", "General")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Completed, cleared.Status);
+            Assert.Equal("General", ExcelTestWorkbook.ReadNumberFormat(target, "A1:A2"));
+
+            var missing = await runtime.ExecuteAsync(new ExcelTaskPlan("format-missing", ExcelTaskPlans.NumberFormat(
+                target, "NoSuchSheet", "A1:A2", "0.0%")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, missing.Status);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
     private static bool IsAccessVbomUnavailable(Exception exception)
     {
         for (Exception? current = exception; current is not null; current = current.InnerException)

@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetNumberFormat }
 public enum CreateKind { Workbook, Worksheet }
 public enum FormulaExtensionDirection { Right, Down }
 
@@ -114,6 +114,24 @@ public sealed record CreateOperation(
     [property: Description("Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.")] CreateKind Kind,
     [property: Description("Required when kind is Worksheet: the new sheet's name, which must not already be in use. Omit it for Workbook.")] string? WorksheetName = null);
 
+/// <summary>
+/// Sets one number format code across one bounded range.
+///
+/// This closes a gap the server made for itself. WriteWorksheetValues can put 1000.5 into a cell
+/// and had no way to make it read as 1,000.50 or (1,000.50), so a correct number could still be
+/// presented wrongly - which for a financial exhibit is the difference between usable and not.
+///
+/// It is deliberately only the number format. Fonts, fills, borders, widths and conditional formats
+/// are not here and are not coming without evidence: the measured demand names the tool, not which
+/// of its operations were used, and building all of it on a tool-level count is how a server ends
+/// up with 230 operations and no idea which matter. The name says exactly what it sets so a caller
+/// does not spend a round trip discovering the rest is missing.
+/// </summary>
+public sealed record SetNumberFormatOperation(
+    [property: Description("Existing worksheet name to format. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.")] string Range,
+    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting. Cell values are never changed, only how they are displayed. The code is read back after applying; if Excel stored something different the task reports that rather than claiming success.")] string NumberFormat);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -125,7 +143,8 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
     [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
     [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
-    [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null);
+    [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
+    [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -200,6 +219,8 @@ public sealed record NormalizedFindReplaceOperation(string WorksheetName, string
 
 public sealed record NormalizedCreateOperation(CreateKind Kind, string? WorksheetName);
 
+public sealed record NormalizedSetNumberFormatOperation(string WorksheetName, FormulaRepairRange Range, string NumberFormat);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -211,7 +232,8 @@ public sealed record NormalizedExcelOperation(
     NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null,
     NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null,
     NormalizedFindReplaceOperation? FindReplace = null,
-    NormalizedCreateOperation? Create = null);
+    NormalizedCreateOperation? Create = null,
+    NormalizedSetNumberFormatOperation? SetNumberFormat = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,

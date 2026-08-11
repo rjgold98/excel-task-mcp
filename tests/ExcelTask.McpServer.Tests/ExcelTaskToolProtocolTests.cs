@@ -138,6 +138,14 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "writeWorksheetValues", "Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.");
         AssertDescription(operationProperties, "findReplace", "Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells; Apply rewrites the constants among them.");
         AssertDescription(operationProperties, "create", "Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.");
+        AssertDescription(operationProperties, "setNumberFormat", "Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.");
+
+        // The name says number format and the description says what is absent, because a caller who
+        // reads "format" and sends a font spends a round trip finding out - the exact cost the
+        // interface study measures.
+        var numberFormat = ResolveReference(operationProperties.GetProperty("setNumberFormat"), tool.InputSchema);
+        AssertDescription(numberFormat.GetProperty("properties"), "range", "One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.");
+        AssertDescription(numberFormat.GetProperty("properties"), "numberFormat", "Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting. Cell values are never changed, only how they are displayed. The code is read back after applying; if Excel stored something different the task reports that rather than claiming success.");
 
         // Every rule the engine rejects on has to be readable here, which the A/B study measured at
         // p = 0.0012. For these two that means the search cap, the two text caps, the Plan/Apply

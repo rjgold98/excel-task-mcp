@@ -11,6 +11,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     private const int MaxReceiptItems = 20;
     private const int MaxFindReplaceTextLength = 200;
+
+    /// <summary>Excel's own ceiling on a number format code, so the bound is its rule rather than one invented here.</summary>
+    private const int MaxNumberFormatLength = 255;
     private const int MaxReceiptStringLength = 256;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -755,7 +758,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             operation.ReadWorksheetRange,
             operation.WriteWorksheetValues,
             operation.FindReplace,
-            operation.Create
+            operation.Create,
+            operation.SetNumberFormat
         ];
         var payloadCount = payloads.Count(payload => payload is not null);
         if (!Enum.IsDefined(operation.Kind))
@@ -827,10 +831,56 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.Create when operation.Create is not null:
                 return TryNormalizeCreate(operation.Create, operation.Kind, out normalized, out error);
 
+            case ExcelOperationKind.SetNumberFormat when operation.SetNumberFormat is not null:
+                return TryNormalizeNumberFormat(operation.SetNumberFormat, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
         }
+    }
+
+    private static bool TryNormalizeNumberFormat(
+        SetNumberFormatOperation format,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(format.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (!TryNormalizeA1Range(format.Range, out var range))
+        {
+            error = "Number format range must be a rectangular A1 range such as A1:C10.";
+            return false;
+        }
+
+        var cells = CellCount(range);
+        if (cells > MaxFormulaRepairCells)
+        {
+            error = $"Number format range covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}. Split it across calls.";
+            return false;
+        }
+
+        // Not trimmed. Leading and trailing spaces are meaningful in a format code - "_)" and " " pad
+        // a column so negatives in parentheses line up under positives - so trimming would silently
+        // produce a different format from the one asked for.
+        if (string.IsNullOrEmpty(format.NumberFormat))
+        {
+            error = "A number format code is required; use General to clear formatting.";
+            return false;
+        }
+
+        if (format.NumberFormat.Length > MaxNumberFormatLength)
+        {
+            error = $"A number format code must be at most {MaxNumberFormatLength} characters.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheetName!, ToFormulaRepairRange(range), format.NumberFormat));
+        error = null;
+        return true;
     }
 
     private static bool TryNormalizeFindReplace(

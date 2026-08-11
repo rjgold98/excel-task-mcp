@@ -225,6 +225,32 @@ internal static class ExcelTestWorkbook
         }
     }
 
+    /// <summary>The range's number format off disk, or null when its cells do not share one.</summary>
+    public static string? ReadNumberFormat(string path, string range)
+    {
+        using var application = TestExcelApplication.Start();
+        object? workbook = null;
+        try
+        {
+            var workbooks = Get(application.Value, "Workbooks");
+            try { workbook = Invoke(workbooks, "Open", path, 0, true); }
+            finally { Release(workbooks); }
+            var sheets = Get(workbook, "Worksheets");
+            var sheet = Item(sheets, 1);
+            var target = Get(sheet, "Range", range);
+            var format = ComAccess.GetOrNull(target, "NumberFormat") as string;
+            Release(target);
+            Release(sheet);
+            Release(sheets);
+            return format;
+        }
+        finally
+        {
+            if (workbook is not null) Invoke(workbook, "Close", false);
+            Release(workbook);
+        }
+    }
+
     public static bool HasValue(string path, string range, object expected)
     {
         using var application = TestExcelApplication.Start();

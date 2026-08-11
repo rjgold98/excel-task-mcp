@@ -21,7 +21,8 @@ public sealed class ExcelTaskEngineTests
             typeof(WriteWorksheetValuesOperation),
             typeof(WorksheetCellValue),
             typeof(FindReplaceOperation),
-            typeof(CreateOperation)
+            typeof(CreateOperation),
+            typeof(SetNumberFormatOperation)
         };
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
@@ -725,7 +726,8 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.ReadWorksheetRange, ReadWorksheetRange: new("Sheet1", "A1:B2")),
             new(ExcelOperationKind.WriteWorksheetValues, WriteWorksheetValues: new("Sheet1", [new("A1", "1")])),
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
-            new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook))
+            new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
+            new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00"))
         ];
 
         // The list above is the checklist: a new operation that is not added here fails this line
@@ -876,6 +878,75 @@ public sealed class ExcelTaskEngineTests
         Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
         Assert.True(runtime.InspectionRequest!.TargetMustExist);
     }
+
+    [Fact]
+    public async Task NumberFormatRejectsARangeLargerThanTheCap()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            NumberFormatRequest(range: "A1:Z10000"), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("10,000", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NumberFormatRequiresACode()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            NumberFormatRequest(code: ""), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("use General to clear formatting", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NumberFormatRejectsACodeLongerThanExcelAccepts()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            NumberFormatRequest(code: new string('0', 256)), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("at most 255 characters", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task NumberFormatKeepsThePaddingThatAlignsNegativesUnderPositives()
+    {
+        var runtime = new FakeRuntime();
+        const string padded = "#,##0.00_);(#,##0.00)";
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            NumberFormatRequest(code: $" {padded} "), CancellationToken.None);
+
+        // A format code's leading and trailing spaces are meaningful - they are what makes a column
+        // of parenthesised negatives line up - so trimming would apply a format nobody asked for.
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.Equal($" {padded} ", runtime.Plan!.Request.Operation.SetNumberFormat!.NumberFormat);
+    }
+
+    [Fact]
+    public async Task NumberFormatApplyRequiresOverwriteConfirmationBecauseItChangesTheWorkbook()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            NumberFormatRequest(overwriteConfirmed: false), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+    }
+
+    private static ExcelTaskRequest NumberFormatRequest(
+        string range = "A1:D50",
+        string code = "#,##0.00",
+        bool overwriteConfirmed = true) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(
+                ExcelOperationKind.SetNumberFormat,
+                SetNumberFormat: new SetNumberFormatOperation("Sheet1", range, code)),
+            Mode: ExcelTaskMode.Apply,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: SaveMode.Same,
+            OutputWorkbookPath: null,
+            OverwriteConfirmed: overwriteConfirmed);
 
     private static ExcelTaskRequest FindReplaceRequest(
         string? replaceWith = "FY26",
