@@ -24,6 +24,7 @@ public sealed partial class ExcelWorkbookRuntime
         var checks = new List<TaskCheck>();
         var changes = new List<TaskChange>();
         ExcelSession? session = null;
+        PendingVerification? pendingVerification = null;
         string? stagingPath = null;
         MacroProcedureSnapshot? snapshot = null;
         var mutationAttempted = false;
@@ -59,6 +60,11 @@ public sealed partial class ExcelWorkbookRuntime
                     "The copy output already exists and was not authorized for overwrite.",
                     Checks: [new TaskCheck("copy-output", false, "Existing output requires overwrite confirmation.")]);
             }
+
+            // Started before the session opens, so its launch overlaps the VBA edit, the run, and
+            // the save. On this path it was measured at 31% of all Excel time. Only Apply verifies,
+            // so only Apply pays for one; the outer finally disposes it on every path.
+            if (plan.Request.Mode == ExcelTaskMode.Apply) pendingVerification = PendingVerification.Begin(observer);
 
             observer.OnPhase("session-open");
             session = ExcelSession.Open(
@@ -153,7 +159,7 @@ public sealed partial class ExcelWorkbookRuntime
             }
 
             observer.OnPhase("reopen-verification");
-            if (!VerifySavedMacroProcedure(stagingPath, operation, snapshot.Sha256, observer, out var reopenCheck))
+            if (!VerifySavedMacroProcedure(stagingPath, operation, snapshot.Sha256, pendingVerification!, observer, out var reopenCheck))
             {
                 checks.Add(reopenCheck);
                 AddStagingCleanupCheck(stagingPath, checks);
@@ -229,6 +235,10 @@ public sealed partial class ExcelWorkbookRuntime
         finally
         {
             session?.Close();
+            // Unconditional, and it matters most here: this path has more early returns than any
+            // other - signed projects, locked projects, refused procedures, compile failures - and
+            // each one would otherwise leave a started Excel behind.
+            pendingVerification?.Dispose();
             if (stagingPath is not null) _ = WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
         }
     }
@@ -444,38 +454,28 @@ public sealed partial class ExcelWorkbookRuntime
     /// </summary>
     private sealed class MacroCompilationException(string message) : Exception(message);
 
-    private static bool VerifySavedMacroProcedure(string path, NormalizedEditMacroProcedureOperation operation, string expectedHash, IExcelWorkbookRuntimeObserver observer, out TaskCheck check)
+    private static bool VerifySavedMacroProcedure(
+        string path,
+        NormalizedEditMacroProcedureOperation operation,
+        string expectedHash,
+        PendingVerification verification,
+        IExcelWorkbookRuntimeObserver observer,
+        out TaskCheck check)
     {
-        ExcelSession? verification = null;
-        var contentVerified = false;
         try
         {
-            verification = ExcelSession.OpenForVerification(path, observer);
-            if (!TryReadMacroProcedure(verification.TargetWorkbook, operation.ComponentName, operation.ProcedureName, out var reopened, out _) ||
-                !string.Equals(reopened!.Sha256, expectedHash, StringComparison.Ordinal))
-            {
-                check = new TaskCheck("reopen-verification", false, "The saved macro procedure was not present after reopening.");
-                return false;
-            }
-
-            contentVerified = true;
-            check = new TaskCheck("reopen-verification", true, "Saved macro workbook reopened with the requested procedure fingerprint.");
+            return verification.Verify(path, observer, session =>
+                !TryReadMacroProcedure(session.TargetWorkbook, operation.ComponentName, operation.ProcedureName, out var reopened, out _) ||
+                !string.Equals(reopened!.Sha256, expectedHash, StringComparison.Ordinal)
+                    ? (false, new TaskCheck("reopen-verification", false, "The saved macro procedure was not present after reopening."))
+                    : (true, new TaskCheck("reopen-verification", true, "Saved macro workbook reopened with the requested procedure fingerprint.")),
+                out check);
         }
         catch (Exception)
         {
             check = new TaskCheck("reopen-verification", false, "Saved macro procedure verification did not complete.");
             return false;
         }
-        finally
-        {
-            if (verification is not null && !verification.Close())
-            {
-                contentVerified = false;
-                check = new TaskCheck("verification-process-exit", false, "The owned verification Excel process did not exit.");
-            }
-        }
-
-        return contentVerified;
     }
 
     private static bool TryGetVbaSigned(object workbook, out bool signed)

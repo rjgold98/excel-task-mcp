@@ -196,7 +196,15 @@ internal sealed class WorkerOwnedProcessWatchdog : IAsyncDisposable
     private readonly Action _onRecovery;
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _deadlineTask;
-    private ProcessIdentity? _identity;
+
+    /// <summary>
+    /// Every owned Excel, not the most recent one. This was a single identity while only one owned
+    /// process could exist at a time. Once the verification instance starts before the primary
+    /// closes, a single field would be overwritten by the second launch - and on a deadline the
+    /// watchdog would kill the idle verification Excel and leave the one holding the user's
+    /// workbook mid-write running, which is the exact opposite of what it exists to do.
+    /// </summary>
+    private readonly HashSet<ProcessIdentity> _identities = [];
     private bool _deadlineElapsed;
     private bool _stopped;
 
@@ -218,11 +226,13 @@ internal sealed class WorkerOwnedProcessWatchdog : IAsyncDisposable
         lock (_gate)
         {
             if (_stopped) return;
-            _identity = identity;
+            _identities.Add(identity);
             recoverNow = _deadlineElapsed;
         }
 
-        if (recoverNow) Recover(identity);
+        // A process registered after the deadline has already passed is terminated immediately:
+        // the run is over, and nothing owned may outlive it.
+        if (recoverNow) Recover([identity]);
     }
 
     public async ValueTask DisposeAsync()
@@ -237,22 +247,29 @@ internal sealed class WorkerOwnedProcessWatchdog : IAsyncDisposable
     private async Task WaitForDeadlineAsync(TimeSpan deadline)
     {
         await Task.Delay(deadline, _stop.Token).ConfigureAwait(false);
-        ProcessIdentity? identity;
+        ProcessIdentity[] identities;
         lock (_gate)
         {
             if (_stopped) return;
             _deadlineElapsed = true;
-            identity = _identity;
+            identities = [.. _identities];
         }
 
-        if (identity is not null) Recover(identity);
+        if (identities.Length > 0) Recover(identities);
     }
 
-    private void Recover(ProcessIdentity identity)
+    /// <summary>
+    /// Recovery runs once and then terminates every owned process. One failing to die must not
+    /// stop the others being tried, so each is attempted independently.
+    /// </summary>
+    private void Recover(IReadOnlyList<ProcessIdentity> identities)
     {
         try { _onRecovery(); }
         catch { }
-        try { _ = _terminator.TryTerminateExact(identity); }
-        catch { }
+        foreach (var identity in identities)
+        {
+            try { _ = _terminator.TryTerminateExact(identity); }
+            catch { }
+        }
     }
 }

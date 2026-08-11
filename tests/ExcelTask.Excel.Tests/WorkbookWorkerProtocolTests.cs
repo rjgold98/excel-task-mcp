@@ -225,6 +225,31 @@ public sealed class WorkbookWorkerProtocolTests
     }
 
     [Fact]
+    public async Task WorkerWatchdogRecoversEveryOwnedProcessRatherThanTheLastRegistered()
+    {
+        // Two owned Excels now exist at once: the verification instance starts while the primary
+        // is still writing. When this tracked a single identity, the second registration silently
+        // replaced the first - so on a deadline the watchdog would end the idle verification Excel
+        // and leave the one holding the user's workbook mid-write running.
+        var primary = new ProcessIdentity(1234, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");
+        var verification = new ProcessIdentity(5678, DateTime.UtcNow, "C:\\Excel\\EXCEL.EXE");
+        var terminator = new RecordingTerminator();
+        var recovery = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var watchdog = new WorkerOwnedProcessWatchdog(
+            TimeSpan.FromMilliseconds(20),
+            terminator,
+            () => recovery.TrySetResult());
+
+        watchdog.Track(primary);
+        watchdog.Track(verification);
+        await recovery.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal(2, terminator.Identities.Count);
+        Assert.Contains(primary, terminator.Identities);
+        Assert.Contains(verification, terminator.Identities);
+    }
+
+    [Fact]
     public async Task CompletedWorkerStopsTheWatchdogBeforeItsDeadline()
     {
         var terminator = new RecordingTerminator();

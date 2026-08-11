@@ -212,29 +212,57 @@ public sealed partial class ExcelWorkbookRuntime
 
         public static ExcelSession OpenForVerification(string path, IExcelWorkbookRuntimeObserver observer)
         {
+            var prepared = PrepareForVerification(observer);
+            try
+            {
+                return AttachForVerification(prepared, path);
+            }
+            catch
+            {
+                prepared.Abandon();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// The expensive half of a verification session: start Excel and configure it, with no
+        /// workbook open. Split out so it can be run early, while the primary session is still
+        /// writing, rather than after it closes. Measured at 274-482 ms - on the macro path, 31% of
+        /// all Excel time - against 6 ms for everything the verification then does.
+        /// </summary>
+        public static PreparedVerificationExcel PrepareForVerification(IExcelWorkbookRuntimeObserver observer)
+        {
             var beforeStart = OwnedExcelProcess.SnapshotExcelProcesses();
             var app = CreateApplication();
             try
             {
                 var ownedProcess = OwnedExcelProcess.CaptureNew(app, beforeStart);
+                // Reported the moment it exists, not when it is first used. An owned process the
+                // supervisor has not been told about is one it cannot clean up.
                 observer.OnOwnedProcessCaptured(ownedProcess.Identity);
                 ConfigureOwnedApplication(app);
-                var workbooks = Get(app, "Workbooks");
-                try
-                {
-                    var workbook = OpenWorkbook(workbooks, path, readOnly: true);
-                    return new ExcelSession(app, workbook, workbook, ownsApplication: true, closeTarget: true, closeReference: false, ownedProcess);
-                }
-                finally
-                {
-                    ComReferences.Release(workbooks);
-                }
+                return new PreparedVerificationExcel(app, ownedProcess);
             }
             catch
             {
                 if (OwnedExcelProcess.IsNewlyOwned(app, beforeStart)) TryQuit(app);
                 ComReferences.Release(app);
                 throw;
+            }
+        }
+
+        /// <summary>The cheap half: open the saved file read-only on an instance already running.</summary>
+        public static ExcelSession AttachForVerification(PreparedVerificationExcel prepared, string path)
+        {
+            var workbooks = Get(prepared.Application, "Workbooks");
+            try
+            {
+                var workbook = OpenWorkbook(workbooks, path, readOnly: true);
+                return new ExcelSession(prepared.Application, workbook, workbook, ownsApplication: true, closeTarget: true, closeReference: false, prepared.OwnedProcess);
+            }
+            finally
+            {
+                ComReferences.Release(workbooks);
             }
         }
 
@@ -321,7 +349,7 @@ public sealed partial class ExcelWorkbookRuntime
         private static long GetApplicationHwnd(object application) =>
             Convert.ToInt64(Get(application, "Hwnd"), CultureInfo.InvariantCulture);
 
-        private static void TryQuit(object application)
+        internal static void TryQuit(object application)
         {
             try { Invoke(application, "Quit"); }
             catch (COMException) { }

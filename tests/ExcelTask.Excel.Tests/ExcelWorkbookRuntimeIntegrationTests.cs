@@ -462,6 +462,37 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     // own structure. Measured dialog layouts are recorded in the 0.6.0 release notes.
 
     [Fact]
+    public async Task AnApplyThatFailsBeforeVerifyingStillReleasesThePreLaunchedExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "prelaunch.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // The verification Excel is now started before the work rather than after it, which
+            // buys back a launch but creates a way to leak a process: every path that returns
+            // before verifying leaves one running that nothing else would close. This asks for a
+            // worksheet that does not exist, so preflight rejects and the run returns long before
+            // the verification would have been used. It is the reason the pre-launch is allowed to
+            // exist, and it is worth more than the milliseconds it protects.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,] { { "=ROW()" }, { null }, { "=ROW()" } });
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("prelaunch-reject", ExcelTaskPlans.Repair(
+                target, "NoSuchSheet", [new FormulaRepairRange("A1", "A3")], ExcelTaskMode.Apply, WorkbookBinding.Isolated)),
+                CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task ReadReturnsCellContentsAndOmitsBlanksWithoutChangingTheWorkbook()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

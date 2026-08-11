@@ -134,6 +134,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         }
 
         ExcelSession? session = null;
+        PendingVerification? pendingVerification = null;
         var mutationAttempted = false;
         var verified = false;
         var changes = new List<TaskChange>();
@@ -172,6 +173,11 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                         Checks: [new TaskCheck("isolated-target", false, "Use the exact open-workbook binding or save a copy.")]);
                 }
             }
+
+            // Started here rather than after the save, so its launch runs alongside the analysis,
+            // the writes, and the save instead of after them. Only a mutating run ever verifies,
+            // so only a mutating run pays for one. Disposed unconditionally in the outer finally.
+            if (plan.Request.Mode == ExcelTaskMode.Apply) pendingVerification = PendingVerification.Begin(observer);
 
             SetPhase("session-open");
             session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
@@ -294,7 +300,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
             var verificationPath = stagingPath ?? savedPath;
             SetPhase("reopen-verification");
-            if (!VerifySavedWorkbook(verificationPath, worksheetName, formulaPlan.Repairs, observer, out var verificationCheck))
+            if (!VerifySavedWorkbook(verificationPath, worksheetName, formulaPlan.Repairs, pendingVerification!, observer, out var verificationCheck))
             {
                 checks.Add(verificationCheck);
                 AddStagingCleanupCheck(stagingPath, checks);
@@ -353,6 +359,10 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
         finally
         {
             session?.Close();
+            // Unconditional: every early return above - rejection, preflight failure, exception,
+            // a plan that turned out to need no changes - leaves a started Excel that nothing else
+            // will close. This one line is the whole containment for the pre-launch.
+            pendingVerification?.Dispose();
             if (stagingPath is not null) _ = WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
         }
     }

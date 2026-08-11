@@ -243,17 +243,13 @@ public sealed partial class ExcelWorkbookRuntime
         string path,
         string worksheetName,
         IReadOnlyList<ExpectedFormula> expectedRepairs,
+        PendingVerification verification,
         IExcelWorkbookRuntimeObserver observer,
-        out TaskCheck check)
-    {
-        ExcelSession? verification = null;
-        var contentVerified = false;
-        check = new TaskCheck("reopen-verification", false, "Saved workbook verification did not complete.");
-        try
+        out TaskCheck check) =>
+        verification.Verify(path, observer, session =>
         {
-            verification = ExcelSession.OpenForVerification(path, observer);
             using var references = new ComReferenceScope();
-            var sheets = references.Add(Get(verification.TargetWorkbook, "Worksheets"));
+            var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
             var sheet = references.Add(Item(sheets, worksheetName));
 
             // Read the whole bounding box of the repaired cells in one array rather than fetching
@@ -262,8 +258,7 @@ public sealed partial class ExcelWorkbookRuntime
             // per-call cost of COM, not the work, was the entire verification budget.
             if (!ReadFormulaBox(references, sheet, expectedRepairs, out var box, out var origin))
             {
-                check = new TaskCheck("reopen-verification", false, "The saved workbook could not be read back for verification.");
-                return false;
+                return (false, new TaskCheck("reopen-verification", false, "The saved workbook could not be read back for verification."));
             }
 
             foreach (var expected in expectedRepairs)
@@ -271,25 +266,12 @@ public sealed partial class ExcelWorkbookRuntime
                 var actual = box[expected.Row - origin.Row, expected.Column - origin.Column];
                 if (!string.Equals(actual, expected.FormulaR1C1, StringComparison.Ordinal))
                 {
-                    check = new TaskCheck("reopen-verification", false, "A repaired formula was not present after reopening the saved workbook.");
-                    return false;
+                    return (false, new TaskCheck("reopen-verification", false, "A repaired formula was not present after reopening the saved workbook."));
                 }
             }
 
-            contentVerified = true;
-            check = new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas.");
-        }
-        finally
-        {
-            if (verification is not null && !verification.Close())
-            {
-                check = new TaskCheck("verification-process-exit", false, "The owned verification Excel process did not exit.");
-                contentVerified = false;
-            }
-        }
-
-        return contentVerified;
-    }
+            return (true, new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas."));
+        }, out check);
 
     /// <summary>
     /// Reads the R1C1 formulas of the smallest rectangle covering every expected repair, as one
