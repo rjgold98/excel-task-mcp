@@ -10,12 +10,7 @@ namespace ExcelTask.McpServer;
 [McpServerToolType]
 public sealed class ExcelTaskTool(IExcelTaskEngine engine)
 {
-    private const int MaxReceiptStringLength = 96;
-    private const int MaxReceiptChanges = 20;
-    private const int MaxReceiptChecks = 20;
-    private const int MaxReceiptItems = 20;
     private const int MaxMcpResultBytes = 30 * 1024;
-    private const int MaxMacroMetadataLength = 96;
     private static readonly JsonSerializerOptions ReceiptJsonOptions = new(JsonSerializerDefaults.Web)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -73,7 +68,7 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Save = receipt.Save with { OutputWorkbookPath = Bound(receipt.Save.OutputWorkbookPath) },
         Retry = receipt.Retry with { Reason = Bound(receipt.Retry.Reason) },
         Confirmation = receipt.Confirmation with { Requirements = [] },
-        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeSource: false),
+        MacroProcedure = ReceiptBounds.MacroProcedure(receipt.MacroProcedure, includeSource: false, ReceiptBounds.MaxModelTextLength),
         // The audit report is the largest field a receipt can carry, so a receipt that had to be
         // minimized is precisely the one that must drop it. Keeping it while the summary says
         // details were omitted would be untrue as well as oversized.
@@ -94,94 +89,27 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Range = null
     };
 
+    // The model-facing seam bounds again rather than trusting the layers behind it - defence in
+    // depth is deliberate. What it no longer has is its own opinion of what bounding means: caps,
+    // truncation flags and the macro-source omit rule all come from ReceiptBounds.
     private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool includeMacroSource) => receipt with
     {
         TaskId = BoundRequired(receipt.TaskId),
         Summary = BoundRequired(receipt.Summary),
-        Changes = receipt.Changes.Take(MaxReceiptChanges).Select(change => change with
-        {
-            Kind = BoundRequired(change.Kind),
-            Target = BoundRequired(change.Target),
-            Summary = BoundRequired(change.Summary)
-        }).ToArray(),
-        Checks = receipt.Checks.Take(MaxReceiptChecks).Select(check => check with
-        {
-            Name = BoundRequired(check.Name),
-            Detail = BoundRequired(check.Detail)
-        }).ToArray(),
+        Changes = ReceiptBounds.Changes(receipt.Changes, ReceiptBounds.MaxModelTextLength),
+        Checks = ReceiptBounds.Checks(receipt.Checks, ReceiptBounds.MaxModelTextLength),
         Save = receipt.Save with { OutputWorkbookPath = Bound(receipt.Save.OutputWorkbookPath) },
         Retry = receipt.Retry with { Reason = Bound(receipt.Retry.Reason) },
         Confirmation = receipt.Confirmation with
         {
-            Requirements = receipt.Confirmation.Requirements.Take(MaxReceiptChecks).Select(requirement => requirement with
-            {
-                Code = BoundRequired(requirement.Code),
-                Prompt = BoundRequired(requirement.Prompt)
-            }).ToArray()
+            Requirements = ReceiptBounds.Requirements(receipt.Confirmation.Requirements, ReceiptBounds.MaxModelTextLength)
         },
-        MacroProcedure = BoundMacroProcedure(receipt.MacroProcedure, includeMacroSource),
-        Audit = BoundAudit(receipt.Audit),
-        Range = BoundRange(receipt.Range)
+        MacroProcedure = ReceiptBounds.MacroProcedure(receipt.MacroProcedure, includeMacroSource, ReceiptBounds.MaxModelTextLength),
+        Audit = ReceiptBounds.Audit(receipt.Audit, ReceiptBounds.MaxModelTextLength),
+        Range = ReceiptBounds.Range(receipt.Range, ReceiptBounds.MaxModelTextLength)
     };
 
-    /// <summary>
-    /// Cell text is bounded far shorter than the range is deep: a long cell is usually a note or a
-    /// pasted paragraph, and one of them must not crowd out the four hundred cells around it.
-    /// </summary>
-    private static WorksheetRangeReceipt? BoundRange(WorksheetRangeReceipt? range) => range is null ? null : range with
-    {
-        WorksheetName = BoundRequired(range.WorksheetName),
-        Range = BoundRequired(range.Range),
-        Cells = range.Cells.Take(ExcelTaskEngine.MaxReadCells).Select(cell => cell with
-        {
-            Address = BoundRequired(cell.Address),
-            Text = cell.Text.Length > ExcelTaskEngine.MaxReadCellTextLength
-                ? cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
-                : cell.Text
-        }).ToArray(),
-        Truncated = range.Truncated || range.Cells.Count > ExcelTaskEngine.MaxReadCells
-    };
+    private static string? Bound(string? value) => ReceiptBounds.Text(value, ReceiptBounds.MaxModelTextLength);
 
-    /// <summary>
-    /// The audit report is the one receipt field that grows with the workbook, so the model-facing
-    /// seam bounds it like every other field rather than trusting the layers behind it.
-    /// </summary>
-    private static WorkbookAuditReceipt? BoundAudit(WorkbookAuditReceipt? audit) => audit is null ? null : audit with
-    {
-        Items = audit.Items.Take(MaxReceiptItems).Select(item => item with
-        {
-            Kind = BoundRequired(item.Kind),
-            Name = BoundRequired(item.Name),
-            Detail = BoundRequired(item.Detail),
-            DependsOn = Bound(item.DependsOn)
-        }).ToArray(),
-        Truncated = audit.Truncated || audit.Items.Count > MaxReceiptItems
-    };
-
-    private static string? Bound(string? value) => value is { Length: > MaxReceiptStringLength }
-        ? value[..MaxReceiptStringLength]
-        : value;
-
-    private static string BoundRequired(string value) => Bound(value) ?? string.Empty;
-
-    private static MacroProcedureReceipt? BoundMacroProcedure(MacroProcedureReceipt? receipt, bool includeSource) => receipt is null
-        ? null
-        : receipt with
-        {
-            ComponentName = BoundMacroMetadata(receipt.ComponentName),
-            ProcedureName = BoundMacroMetadata(receipt.ProcedureName),
-            Sha256 = BoundMacroMetadata(receipt.Sha256),
-            Source = includeSource ? BoundMacroSource(receipt.Source) : null
-        };
-
-    private static string BoundMacroMetadata(string value) => value.Length <= MaxMacroMetadataLength
-        ? value
-        : value[..MaxMacroMetadataLength];
-
-    // Omitted rather than truncated, for the same reason as the engine boundary guard: partial VBA is
-    // more dangerous to return than none, because a replacement written from it would destroy the
-    // part the caller never saw.
-    private static string? BoundMacroSource(string? source) => source is { Length: > MacroProcedureText.MaxSourceCharacters }
-        ? null
-        : source;
+    private static string BoundRequired(string value) => ReceiptBounds.RequiredText(value, ReceiptBounds.MaxModelTextLength);
 }

@@ -334,9 +334,13 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var planResult = await CallAsync(MacroRequest(ExcelTaskMode.Plan, planOperation));
         var plannedMacro = planResult.StructuredContent!.Value.GetProperty("macroProcedure");
 
-        Assert.Equal(96, plannedMacro.GetProperty("componentName").GetString()!.Length);
-        Assert.Equal(96, plannedMacro.GetProperty("procedureName").GetString()!.Length);
-        Assert.Equal(96, plannedMacro.GetProperty("sha256").GetString()!.Length);
+        // 160-character metadata survives whole: the model-facing cap is ReceiptBounds's 256, not
+        // the 96 this seam used to impose. A 160-character component name is legal VBA, and the old
+        // cap cut it - along with any engine rejection summary long enough to name every unmet
+        // requirement, which was the cap's real cost.
+        Assert.Equal(160, plannedMacro.GetProperty("componentName").GetString()!.Length);
+        Assert.Equal(160, plannedMacro.GetProperty("procedureName").GetString()!.Length);
+        Assert.Equal(160, plannedMacro.GetProperty("sha256").GetString()!.Length);
         Assert.Equal(MacroProcedureText.MaxSourceCharacters, plannedMacro.GetProperty("source").GetString()!.Length);
         Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(planResult).Length, 1, 30 * 1024);
         Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(new { jsonrpc = "2.0", id = 1, result = planResult }).Length, 1, 32 * 1024);
@@ -348,9 +352,9 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var result = await CallAsync(MacroRequest(ExcelTaskMode.Apply, applyOperation, overwriteConfirmed: true));
         var macro = result.StructuredContent!.Value.GetProperty("macroProcedure");
 
-        Assert.Equal(96, macro.GetProperty("componentName").GetString()!.Length);
-        Assert.Equal(96, macro.GetProperty("procedureName").GetString()!.Length);
-        Assert.Equal(96, macro.GetProperty("sha256").GetString()!.Length);
+        Assert.Equal(160, macro.GetProperty("componentName").GetString()!.Length);
+        Assert.Equal(160, macro.GetProperty("procedureName").GetString()!.Length);
+        Assert.Equal(160, macro.GetProperty("sha256").GetString()!.Length);
         Assert.Equal(JsonValueKind.Null, macro.GetProperty("source").ValueKind);
         Assert.True(macro.GetProperty("runRequested").GetBoolean());
         Assert.True(macro.GetProperty("runCompleted").GetBoolean());

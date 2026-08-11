@@ -149,14 +149,14 @@ public sealed class WorkbookWorkerProtocolTests
         Assert.True(Encoding.UTF8.GetByteCount(resultLine) <= WorkbookWorkerProtocol.MaxFrameBytes);
         var result = JsonDocument.Parse(resultLine).RootElement.GetProperty("result");
         Assert.True(result.GetProperty("summary").GetString()!.Length <= WorkbookWorkerProtocol.MaxTextLength);
-        Assert.True(result.GetProperty("changes").GetArrayLength() <= WorkbookWorkerProtocol.MaxResultItems);
+        Assert.True(result.GetProperty("changes").GetArrayLength() <= ReceiptBounds.MaxItems);
     }
 
     [Fact]
     public async Task HostPreservesTwentyBoundedChangesWithinFrameLimit()
     {
         const string taskId = "worker_test_4";
-        var changes = Enumerable.Range(1, WorkbookWorkerProtocol.MaxResultItems)
+        var changes = Enumerable.Range(1, ReceiptBounds.MaxItems)
             .Select(index => new TaskChange("formula-repaired", $"Sheet1!A{index}", $"Repaired range {index}"))
             .ToArray();
         var request = JsonSerializer.Serialize(new
@@ -204,7 +204,18 @@ public sealed class WorkbookWorkerProtocolTests
         Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.ComponentName.Length);
         Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.ProcedureName.Length);
         Assert.Equal(WorkbookWorkerProtocol.MaxTextLength, bounded.MacroProcedure.Sha256.Length);
-        Assert.Equal(MacroProcedureText.MaxSourceCharacters, bounded.MacroProcedure.Source!.Length);
+
+        // Omitted, never truncated - at this layer too. The protocol used to clip an oversized
+        // source to exactly the limit, which arrived downstream measuring within it and passed as
+        // complete, defeating the two layers that had decided partial VBA is more dangerous than
+        // none: a replacement written from half a procedure destroys the half the caller never saw.
+        Assert.Null(bounded.MacroProcedure.Source);
+
+        var legitimate = outcome with
+        {
+            MacroProcedure = outcome.MacroProcedure! with { Source = new string('x', MacroProcedureText.MaxSourceCharacters) }
+        };
+        Assert.Equal(MacroProcedureText.MaxSourceCharacters, WorkbookWorkerProtocol.Bound(legitimate).MacroProcedure!.Source!.Length);
     }
 
     [Fact]
@@ -305,10 +316,10 @@ public sealed class WorkbookWorkerProtocolTests
         public Task<WorkbookExecutionOutcome> ExecuteAsync(ExcelTaskPlan plan, CancellationToken cancellationToken) => Task.FromResult(new WorkbookExecutionOutcome(
             ExcelTaskStatus.Completed,
             new string('s', WorkbookWorkerProtocol.MaxTextLength * 20),
-            Enumerable.Range(0, WorkbookWorkerProtocol.MaxResultItems * 3)
+            Enumerable.Range(0, ReceiptBounds.MaxItems * 3)
                 .Select(index => new TaskChange(new string('k', 600), new string('t', 600), new string('d', 600)))
                 .ToArray(),
-            Enumerable.Range(0, WorkbookWorkerProtocol.MaxResultItems * 3)
+            Enumerable.Range(0, ReceiptBounds.MaxItems * 3)
                 .Select(index => new TaskCheck(new string('n', 600), true, new string('d', 600)))
                 .ToArray()));
     }

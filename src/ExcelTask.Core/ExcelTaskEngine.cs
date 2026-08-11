@@ -9,12 +9,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     public const int MaxFormulaRepairCells = 10_000;
     public const int MaxFormulaRepairRanges = 16;
 
-    private const int MaxReceiptItems = 20;
     private const int MaxFindReplaceTextLength = 200;
 
     /// <summary>Excel's own ceiling on a number format code, so the bound is its rule rather than one invented here.</summary>
     private const int MaxNumberFormatLength = 255;
-    private const int MaxReceiptStringLength = 256;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
@@ -312,92 +310,24 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             retryReason = "Review and reconcile the reported partial changes before attempting any new task.";
         }
 
+        // Bounded at the model-facing cap even though the MCP tool bounds again: the engine is a
+        // seam of its own (FieldCheck prints these receipts directly), and its former private cap
+        // of 256 was dead code - every string had already been cut to 128 by the worker protocol.
         return new ExcelTaskReceipt(
             taskId,
             status,
-            Bound(summary) ?? string.Empty,
-            BoundChanges(changes),
-            BoundChecks(checks),
-            new SaveReceipt(save, Bound(DisplayOutputPath(outputPath)), overwriteConfirmed),
-            new RetryReceipt(canRetry, Bound(retryReason)),
-            new ConfirmationReceipt(confirmationRequired, BoundRequirements(requirements)),
+            ReceiptBounds.RequiredText(summary, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Changes(changes, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Checks(checks, ReceiptBounds.MaxModelTextLength),
+            new SaveReceipt(save, ReceiptBounds.Text(DisplayOutputPath(outputPath), ReceiptBounds.MaxModelTextLength), overwriteConfirmed),
+            new RetryReceipt(canRetry, ReceiptBounds.Text(retryReason, ReceiptBounds.MaxModelTextLength)),
+            new ConfirmationReceipt(confirmationRequired, ReceiptBounds.Requirements(requirements, ReceiptBounds.MaxModelTextLength)),
             new PhaseTimings(validation, inspection, execution, total),
-            BoundMacroProcedure(macroProcedure, includeMacroSource),
-            BoundAudit(audit),
-            BoundRange(range));
+            ReceiptBounds.MacroProcedure(macroProcedure, includeMacroSource, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Audit(audit, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Range(range, ReceiptBounds.MaxModelTextLength));
     }
 
-    /// <summary>
-    /// Bounds the one receipt field that deliberately carries workbook contents. The cell list is
-    /// capped and each cell's text is capped, so a read of dense cells cannot outgrow the response
-    /// even though its whole purpose is to return what is there.
-    /// </summary>
-    private static WorksheetRangeReceipt? BoundRange(WorksheetRangeReceipt? range)
-    {
-        if (range is null) return null;
-
-        var cells = range.Cells
-            .Take(MaxReadCells)
-            .Select(cell => new WorksheetCell(
-                Bound(cell.Address) ?? string.Empty,
-                cell.Text.Length <= MaxReadCellTextLength ? cell.Text : cell.Text[..MaxReadCellTextLength]))
-            .ToArray();
-
-        return range with
-        {
-            WorksheetName = Bound(range.WorksheetName) ?? string.Empty,
-            Range = Bound(range.Range) ?? string.Empty,
-            Cells = cells,
-            Truncated = range.Truncated || range.Cells.Count > cells.Length
-        };
-    }
-
-    /// <summary>
-    /// Caps the audit at the same receipt limits as everything else. The reported total counts what
-    /// the workbook actually contains, so a bounded report still says how much it is not showing.
-    /// </summary>
-    private static WorkbookAuditReceipt? BoundAudit(WorkbookAuditReceipt? audit)
-    {
-        if (audit is null) return null;
-
-        var items = audit.Items
-            .Take(MaxReceiptItems)
-            .Select(item => new WorkbookFlowItem(
-                Bound(item.Kind) ?? string.Empty,
-                Bound(item.Name) ?? string.Empty,
-                Bound(item.Detail) ?? string.Empty,
-                Bound(item.DependsOn)))
-            .ToArray();
-
-        return new WorkbookAuditReceipt(items, audit.TotalFound, audit.Truncated || audit.Items.Count > items.Length, audit.WorkbookUnchanged);
-    }
-
-    private static MacroProcedureReceipt? BoundMacroProcedure(MacroProcedureReceipt? macroProcedure, bool includeSource)
-    {
-        if (macroProcedure is null) return null;
-
-        // Plan source is evidence read out of the workbook and already bounded by the runtime, so it
-        // is only length-capped here. Re-checking it against the replacement grammar would silently
-        // return a successful plan with no source for procedures that are valid VBA but outside
-        // that deliberately narrow grammar.
-        string? source = null;
-        if (includeSource && macroProcedure.Source is not null)
-        {
-            // Oversized evidence is omitted rather than truncated: a partial procedure could lead a
-            // caller to write a replacement from incomplete source and destroy the remainder. The
-            // runtime already rejects oversized procedures at read time, so this is a boundary guard.
-            var normalized = MacroProcedureText.NormalizeLineEndings(macroProcedure.Source);
-            if (normalized.Length <= MacroProcedureText.MaxSourceCharacters) source = normalized;
-        }
-
-        return new MacroProcedureReceipt(
-            Bound(macroProcedure.ComponentName) ?? string.Empty,
-            Bound(macroProcedure.ProcedureName) ?? string.Empty,
-            Bound(macroProcedure.Sha256) ?? string.Empty,
-            source,
-            macroProcedure.RunRequested,
-            macroProcedure.RunCompleted);
-    }
 
     private static IReadOnlyList<TaskCheck> CombineChecks(IReadOnlyList<TaskCheck>? first, IReadOnlyList<TaskCheck>? second)
     {
@@ -1211,24 +1141,6 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     private static string? DisplayOutputPath(string? outputPath) => string.IsNullOrWhiteSpace(outputPath) ? null : Path.GetFileName(outputPath);
 
-    private static string? Bound(string? value) => value is null
-        ? null
-        : value.Length <= MaxReceiptStringLength ? value : value[..MaxReceiptStringLength];
-
-    private static TaskChange[] BoundChanges(IReadOnlyList<TaskChange> changes) => changes
-        .Take(MaxReceiptItems)
-        .Select(change => new TaskChange(Bound(change.Kind) ?? string.Empty, Bound(change.Target) ?? string.Empty, Bound(change.Summary) ?? string.Empty))
-        .ToArray();
-
-    private static TaskCheck[] BoundChecks(IReadOnlyList<TaskCheck> checks) => checks
-        .Take(MaxReceiptItems)
-        .Select(check => new TaskCheck(Bound(check.Name) ?? string.Empty, check.Passed, Bound(check.Detail) ?? string.Empty))
-        .ToArray();
-
-    private static ConfirmationRequirement[] BoundRequirements(IReadOnlyList<ConfirmationRequirement> requirements) => requirements
-        .Take(MaxReceiptItems)
-        .Select(requirement => new ConfirmationRequirement(Bound(requirement.Code) ?? string.Empty, Bound(requirement.Prompt) ?? string.Empty))
-        .ToArray();
 
     [GeneratedRegex(@"^\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6})(?::\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6}))?$", RegexOptions.CultureInvariant)]
     private static partial Regex A1RangeRegex();

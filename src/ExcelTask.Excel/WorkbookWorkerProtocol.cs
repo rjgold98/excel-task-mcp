@@ -19,15 +19,13 @@ internal static class WorkbookWorkerProtocol
     /// the caller sees.
     /// </summary>
     internal const int MaxFrameBytes = 64 * 1024;
-    internal const int MaxTextLength = 128;
-
+    internal const int MaxTextLength = ReceiptBounds.MaxFrameTextLength;
 
     /// <summary>
     /// Phase labels are progress annotations, not data. The supervisor both parses and validates
     /// against this one bound, so a long label can never make a healthy run look malformed.
     /// </summary>
     internal const int MaxPhaseLength = 64;
-    internal const int MaxResultItems = 20;
 
     internal static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -97,75 +95,24 @@ internal static class WorkbookWorkerProtocol
 
     internal static WorkbookInspection Bound(WorkbookInspection inspection) => inspection with
     {
-        OpenWorkbookDescription = Bound(inspection.OpenWorkbookDescription),
-        Checks = BoundChecks(inspection.Checks)
+        OpenWorkbookDescription = ReceiptBounds.Text(inspection.OpenWorkbookDescription, MaxTextLength),
+        Checks = ReceiptBounds.Checks(inspection.Checks, MaxTextLength)
     };
 
+    // Bounded for the frame budget, using the one implementation of what bounding means. The macro
+    // source rule matters most here: this layer used to TRUNCATE an oversized source while the two
+    // layers downstream deliberately omit one - so a source clipped to exactly the limit arrived
+    // measuring within it and passed as complete, defeating both. ReceiptBounds omits, everywhere.
     internal static WorkbookExecutionOutcome Bound(WorkbookExecutionOutcome outcome) => outcome with
     {
-        Summary = BoundRequired(outcome.Summary),
-        Changes = (outcome.Changes ?? []).Take(MaxResultItems).Select(change => change with
-        {
-            Kind = BoundRequired(change.Kind),
-            Target = BoundRequired(change.Target),
-            Summary = BoundRequired(change.Summary)
-        }).ToArray(),
-        Checks = BoundChecks(outcome.Checks),
-        RetryReason = Bound(outcome.RetryReason),
-        MacroProcedure = Bound(outcome.MacroProcedure),
-        Audit = Bound(outcome.Audit),
-        Range = Bound(outcome.Range)
+        Summary = ReceiptBounds.RequiredText(outcome.Summary, MaxTextLength),
+        Changes = ReceiptBounds.Changes(outcome.Changes, MaxTextLength),
+        Checks = ReceiptBounds.Checks(outcome.Checks, MaxTextLength),
+        RetryReason = ReceiptBounds.Text(outcome.RetryReason, MaxTextLength),
+        MacroProcedure = ReceiptBounds.MacroProcedure(outcome.MacroProcedure, includeSource: true, MaxTextLength),
+        Audit = ReceiptBounds.Audit(outcome.Audit, MaxTextLength),
+        Range = ReceiptBounds.Range(outcome.Range, MaxTextLength)
     };
-
-    /// <summary>
-    /// Capped at the engine's read limit rather than at MaxResultItems, because these cells are the
-    /// answer the caller asked for: trimming them to twenty would not be a bound, it would be a
-    /// wrong result. The frame budget is what makes that safe to carry.
-    /// </summary>
-    private static WorksheetRangeReceipt? Bound(WorksheetRangeReceipt? range) => range is null ? null : range with
-    {
-        WorksheetName = BoundRequired(range.WorksheetName),
-        Range = BoundRequired(range.Range),
-        Cells = range.Cells.Take(ExcelTaskEngine.MaxReadCells).Select(cell => cell with
-        {
-            Address = BoundRequired(cell.Address),
-            Text = cell.Text.Length > ExcelTaskEngine.MaxReadCellTextLength
-                ? cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
-                : cell.Text
-        }).ToArray(),
-        Truncated = range.Truncated || range.Cells.Count > ExcelTaskEngine.MaxReadCells
-    };
-
-    private static TaskCheck[] BoundChecks(IReadOnlyList<TaskCheck>? checks) => (checks ?? [])
-        .Take(MaxResultItems)
-        .Select(check => check with { Name = BoundRequired(check.Name), Detail = BoundRequired(check.Detail) })
-        .ToArray();
-
-    private static string? Bound(string? value) => value is { Length: > MaxTextLength } ? value[..MaxTextLength] : value;
-
-    private static string BoundRequired(string? value) => Bound(value) ?? string.Empty;
-
-    private static MacroProcedureReceipt? Bound(MacroProcedureReceipt? receipt) => receipt is null ? null : receipt with
-    {
-        ComponentName = BoundRequired(receipt.ComponentName),
-        ProcedureName = BoundRequired(receipt.ProcedureName),
-        Sha256 = BoundRequired(receipt.Sha256),
-        Source = receipt.Source is { Length: > MacroProcedureText.MaxSourceCharacters } source ? source[..MacroProcedureText.MaxSourceCharacters] : receipt.Source
-    };
-
-    private static WorkbookAuditReceipt? Bound(WorkbookAuditReceipt? audit) => audit is null ? null : audit with
-    {
-        Items = audit.Items.Take(MaxResultItems).Select(item => item with
-        {
-            Kind = BoundRequired(item.Kind),
-            Name = BoundRequired(item.Name),
-            Detail = BoundRequired(item.Detail),
-            DependsOn = Bound(item.DependsOn)
-        }).ToArray(),
-        // The real total survives the cap, so a trimmed report still says what it is not showing.
-        Truncated = audit.Truncated || audit.Items.Count > MaxResultItems
-    };
-
 }
 
 internal sealed record WorkbookWorkerRequest(
