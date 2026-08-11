@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.13.0 - 2026-08-11
+
+An architecture release: no new operations, one closed leak, three deep modules
+where twelve hand-kept copies were, and two defects that only consolidation
+could surface. Short-term churn accepted deliberately for long-term stability -
+every change re-proven against real Excel, 231 tests green including the full
+serial desktop-Excel gate.
+
+### Fixed - a real leak in the product's central claim
+
+- **The pre-launched verification Excel could be left running.** Verify marks
+  itself consumed on entry, so once Excel had started for verification, an
+  attach failure (Workbooks.Open throwing on the just-saved file) left a
+  process nothing would ever shut down: the catch only closed a session that
+  was still null, and Dispose skips its abandon branch once consumed. The
+  catch now abandons the prepared instance, and the correct-but-orphaned
+  `OpenForVerification` wrapper - built, documented, zero call sites - is
+  deleted rather than left to mislead. `Abandon` itself now escalates the way
+  `Close` always has: Quit, wait, terminate by identity, then report.
+- **A staging promotion failure destroyed verified output silently.**
+  `IOException` from the post-verification file move was in no operation's
+  catch filter, so it escaped through the `finally` that deletes the verified
+  staging file and reached the caller as an Unknown with no receipt. Caught
+  and named once, in the pipeline.
+- **Rejection summaries reached the model cut mid-word.** The MCP tool's
+  96-character cap silently truncated engine-authored summaries - including
+  the four-part macro policy rejection written so one resubmission can fix
+  everything, a rule the interface study paid for, which arrived missing its
+  fourth requirement and the instruction. The engine's own 256-character test
+  passed the whole time because it read the engine directly. The model-facing
+  cap is now 256 everywhere.
+- **An oversized macro source is omitted at every seam, never truncated.** The
+  worker protocol used to truncate one to exactly the limit, which then
+  arrived downstream measuring within it and passed as complete - defeating
+  the two layers that had decided partial VBA is more dangerous than none.
+
+### Changed - three deep modules
+
+- **`ExecuteMutation` owns the mutate-save-verify choreography.** Twelve steps
+  in a fixed order were restated in every operation (91% of the write path was
+  scaffolding shared with another operation) and had drifted six ways - one
+  path skipped the writability preflight, catch filters disagreed, one verify
+  block was inverted. Write, FindReplace, NumberFormat and worksheet creation
+  now supply only their own middle; the tail is not their code, so it cannot
+  run out of order. Macro and the shared formula path stay bespoke
+  deliberately - their extra machinery (hash preconditions, dialog
+  containment, two-phase revalidation) would have made the pipeline interface
+  as wide as the bodies it replaced.
+- **`ComAccess.IsComFailure` is the one definition of "a COM call failed",**
+  replacing 29 catch sites in five mutually inconsistent forms. The narrowest
+  omitted the exception `ComAccess` itself throws, so a preflight fault on
+  four operations was attributed to the wrong phase in the receipt.
+- **`ReceiptBounds` is the one implementation of receipt bounding,** replacing
+  three modules' private opinions: four independently declared item caps, a
+  dead 256-character cap behind the protocol's 128, and the truncate-vs-omit
+  disagreement above. The three seams still bound - each has a reason to
+  distrust the layers behind it - but none decides what bounding means.
+
+### Tested
+
+- **The choreography is asserted at the observer seam.** The runtime always
+  reported every phase, owned process, and staging path; every test discarded
+  it through the null observer. A recording adapter now asserts the ordering
+  invariants - cleanup proven before verification opens the file, staging
+  announced while the supervisor can act on it, both owned processes announced
+  - against real Excel, before and after the rewrite they guard.
+- **The engine's inspection-driven decision surface is reached.** Every Core
+  test ran against a closed target, leaving both confirmations, both
+  rejections, the inspection-failure receipt and the retry coercion untested -
+  including the arm whose wrong message was the v0.11.0 bug. Eight tests hold
+  it now, and `WorkbookExecutionOutcome` finally states that a runtime's
+  CanRetry/RetryReason are advisory: the retry policy belongs to the engine.
+
+### Not done, deliberately
+
+- The operation union's registration shape stays hand-rolled. The schema it
+  generates is a measured product surface (15 KB budget, wording validated at
+  p = 0.0012), the worker protocol already needs zero edits per operation, and
+  the arity checklist test catches the one silent failure that actually
+  shipped. Revisit only if a second class of silent miss appears.
+
 ## 0.12.0 - 2026-08-11
 
 ### Added
