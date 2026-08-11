@@ -26,74 +26,45 @@ public sealed partial class ExcelWorkbookRuntime
     private static WorkbookExecutionOutcome ExecuteFindReplaceCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
     {
         var operation = plan.Request.Operation.FindReplace!;
-        var apply = plan.Request.Mode == ExcelTaskMode.Apply;
-        var checks = new List<TaskCheck>();
-        var changes = new List<TaskChange>();
-        ExcelSession? session = null;
-        PendingVerification? pendingVerification = null;
-        string? stagingPath = null;
-        var mutationAttempted = false;
-
-        try
+        return ExecuteMutation(plan, observer, "find-replace", "The find/replace", context =>
         {
-            WorkbookRuntimeHelpers.EnsureReadableWorkbook(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath), "Target workbook");
-            if (plan.Request.Save == SaveMode.Copy) WorkbookRuntimeHelpers.EnsureWritableCopyOutput(plan.Request.OutputWorkbookPath);
-            if (apply && plan.Request.Save == SaveMode.Same)
-            {
-                WorkbookRuntimeHelpers.EnsureWritableSameTarget(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath));
-            }
-        }
-        catch (InvalidOperationException exception)
-        {
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook inputs cannot be safely executed.",
-                Checks: [new TaskCheck("workbook-inputs", false, exception.Message)]);
-        }
-
-        var savedPath = WorkbookRuntimeHelpers.NormalizePath(plan.Request.Save == SaveMode.Copy
-            ? plan.Request.OutputWorkbookPath ?? throw new InvalidOperationException("Copy output path is required.")
-            : plan.Request.TargetWorkbookPath);
-
-        try
-        {
-            if (apply) pendingVerification = PendingVerification.Begin(observer);
-
-            observer.OnPhase("session-open");
-            session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: !apply);
-
-            observer.OnPhase("find-preflight");
-            var preflight = PreflightWorksheetExists(session, operation.WorksheetName);
-            checks.AddRange(preflight.Checks);
+            context.OnPhase("find-preflight");
+            var preflight = PreflightWorksheetExists(context.Session, operation.WorksheetName);
+            context.Checks.AddRange(preflight.Checks);
             if (!preflight.IsFeasible)
             {
-                return ExcelSession.CloseAndProve(ref session, "find preflight", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "The requested worksheet was not found.", Checks: checks);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "The requested worksheet was not found.", Checks: context.Checks),
+                    "find preflight");
             }
 
-            observer.OnPhase("find");
-            if (!ScanForMatches(session, operation, out var searched, out var matches, out var scanCheck))
+            context.OnPhase("find");
+            if (!ScanForMatches(context.Session, operation, out var searched, out var matches, out var scanCheck))
             {
-                checks.Add(scanCheck);
-                return ExcelSession.CloseAndProve(ref session, "the find", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "The requested range could not be searched.", Checks: checks);
+                context.Checks.Add(scanCheck);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "The requested range could not be searched.", Checks: context.Checks),
+                    "the find");
             }
 
-            checks.Add(scanCheck);
+            context.Checks.Add(scanCheck);
             var editable = matches.Where(match => !match.IsFormula).ToArray();
             if (matches.Count > editable.Length)
             {
-                checks.Add(new TaskCheck("formula-cells-untouched", true,
+                context.Checks.Add(new TaskCheck("formula-cells-untouched", true,
                     $"{matches.Count - editable.Length} matching cell(s) get their text from a formula; they are listed and never rewritten."));
             }
 
             var receipt = MatchReceipt(operation, searched, matches);
-            if (!apply)
+            if (!context.Apply)
             {
-                changes.Add(new TaskChange("find", $"{operation.WorksheetName}!{searched.Address}",
+                context.Changes.Add(new TaskChange("find", $"{operation.WorksheetName}!{searched.Address}",
                     $"Planned replacement of {editable.Length} constant cell(s)."));
-                return ExcelSession.CloseAndProve(ref session, "the find", checks, changes)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
                         $"Found {matches.Count} matching cell(s) in {operation.WorksheetName}!{searched.Address}; {editable.Length} would be rewritten. Nothing was changed.",
-                        changes, checks, Range: receipt);
+                        context.Changes, context.Checks, Range: receipt),
+                    "the find");
             }
 
             // Every replacement is computed and checked before any of them is written, so a request
@@ -102,110 +73,45 @@ public sealed partial class ExcelWorkbookRuntime
             // leaves "=1" - and that is the one thing this server never writes.
             if (!TryComposeReplacements(operation, editable, out var replacements, out var composeCheck))
             {
-                checks.Add(composeCheck);
-                return ExcelSession.CloseAndProve(ref session, "the find", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
-                        "The requested replacement would write formula text; nothing was changed.", Checks: checks);
+                context.Checks.Add(composeCheck);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                        "The requested replacement would write formula text; nothing was changed.", Checks: context.Checks),
+                    "the find");
             }
 
             if (replacements.Count == 0)
             {
-                return ExcelSession.CloseAndProve(ref session, "the find", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
                         matches.Count == 0
                             ? $"No cell in {operation.WorksheetName}!{searched.Address} matched; nothing was changed."
                             : $"All {matches.Count} matching cell(s) get their text from formulas; nothing was changed.",
-                        changes, checks, Range: receipt);
+                        context.Changes, context.Checks, Range: receipt),
+                    "the find");
             }
 
-            observer.OnPhase("replace");
-            if (!ApplyReplacements(session, operation, replacements, () => mutationAttempted = true, out var replaceCheck))
+            context.OnPhase("replace");
+            if (!ApplyReplacements(context.Session, operation, replacements, context.MarkMutationAttempted, out var replaceCheck))
             {
-                checks.Add(replaceCheck);
-                return ExcelSession.CloseAndProve(ref session, "the replace", checks, changes)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
-                        "Excel did not store the replacement text as written.", changes, checks,
-                        CanRetry: false, RetryReason: "Inspect the workbook before retrying.");
+                context.Checks.Add(replaceCheck);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
+                        "Excel did not store the replacement text as written.", context.Changes, context.Checks,
+                        CanRetry: false, RetryReason: "Inspect the workbook before retrying."),
+                    "the replace");
             }
 
-            checks.Add(replaceCheck);
-            changes.Add(new TaskChange("find-replace", $"{operation.WorksheetName}!{replacements[0].Address}",
+            context.Checks.Add(replaceCheck);
+            context.Changes.Add(new TaskChange("find-replace", $"{operation.WorksheetName}!{replacements[0].Address}",
                 $"Replaced text in {replacements.Count} constant cell(s)."));
 
-            observer.OnPhase("save");
-            if (plan.Request.Save == SaveMode.Copy)
-            {
-                stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(savedPath, plan.TaskId);
-                observer.OnStagingPathCreated(stagingPath);
-                Invoke(session.TargetWorkbook, "SaveAs", stagingPath);
-            }
-            else
-            {
-                Invoke(session.TargetWorkbook, "Save");
-            }
-
-            checks.Add(new TaskCheck("save", true, "Excel completed the requested save operation."));
-            observer.OnPhase("primary-cleanup");
-            var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the find/replace save", checks, changes);
-            if (cleanupFailure is not null)
-            {
-                AddStagingCleanupCheck(stagingPath, checks);
-                return cleanupFailure with { RetryReason = "Inspect workbook state before retrying." };
-            }
-
-            var verificationPath = stagingPath ?? savedPath;
-            if (plan.Request.WorkbookBinding != WorkbookBinding.UseOpen && !WorkbookRuntimeHelpers.CanOpenExclusively(verificationPath))
-            {
-                checks.Add(new TaskCheck("file-lock", false, "The saved workbook remained locked after owned Excel cleanup."));
-                AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but the owned Excel session did not release its file lock for verification.",
-                    changes, checks, CanRetry: false, RetryReason: "Inspect the Excel process and file lock before retrying.");
-            }
-
-            observer.OnPhase("reopen-verification");
-            if (!VerifySavedReplacements(verificationPath, operation, replacements, pendingVerification!, observer, out var reopenCheck))
-            {
-                checks.Add(reopenCheck);
-                AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but reopen verification did not confirm every replacement.",
-                    changes, checks, CanRetry: false, RetryReason: "Inspect the saved workbook before attempting another apply operation.");
-            }
-
-            checks.Add(reopenCheck);
-            if (stagingPath is not null)
-            {
-                observer.OnPhase("copy-promotion");
-                WorkbookRuntimeHelpers.PromoteStaging(stagingPath, savedPath, plan.Request.OverwriteConfirmed);
-                stagingPath = null;
-                changes.Add(new TaskChange("copy-promotion", "workbook", "Promoted the verified staging workbook to the requested output path."));
-            }
-
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
+            return new MutationStep.SaveAndVerify(
+                verification => VerifySavedReplacementsBody(verification, operation, replacements),
                 $"Replaced text in {replacements.Count} of {matches.Count} matching cell(s), saved, and verified them after reopening.",
-                changes, checks,
+                "Excel saved the workbook, but reopen verification did not confirm every replacement.",
                 Range: receipt with { Cells = [.. replacements.Select(item => new WorksheetCell(item.Address, item.Replacement))] });
-        }
-        catch (Exception exception) when (ComAccess.IsComFailure(exception))
-        {
-            checks.Add(new TaskCheck("find-replace", false, DescribeFailure("find-replace", exception)));
-            var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed find/replace", checks, changes);
-            if (cleanupFailure is not null) return cleanupFailure;
-            return new WorkbookExecutionOutcome(
-                mutationAttempted ? ExcelTaskStatus.Unknown : ExcelTaskStatus.Rejected,
-                mutationAttempted
-                    ? "The find/replace failed after changes were attempted."
-                    : "The find/replace was rejected before any change was attempted.",
-                changes, checks, CanRetry: !mutationAttempted,
-                RetryReason: mutationAttempted ? "Inspect workbook state before retrying." : null);
-        }
-        finally
-        {
-            session?.Close();
-            pendingVerification?.Dispose();
-            if (stagingPath is not null) _ = WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-        }
+        });
     }
 
     /// <summary>The area a search covered: its A1 span and how many cells that is.</summary>
@@ -378,31 +284,27 @@ public sealed partial class ExcelWorkbookRuntime
         return true;
     }
 
-    private static bool VerifySavedReplacements(
-        string path,
+    private static (bool Verified, TaskCheck Check) VerifySavedReplacementsBody(
+        ExcelSession session,
         NormalizedFindReplaceOperation operation,
-        IReadOnlyList<PlannedReplacement> replacements,
-        PendingVerification verification,
-        IExcelWorkbookRuntimeObserver observer,
-        out TaskCheck check) =>
-        verification.Verify(path, observer, session =>
+        IReadOnlyList<PlannedReplacement> replacements)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Item(sheets, operation.WorksheetName));
+        foreach (var item in replacements)
         {
-            using var references = new ComReferenceScope();
-            var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
-            var sheet = references.Add(Item(sheets, operation.WorksheetName));
-            foreach (var item in replacements)
+            var target = references.Add(Get(sheet, "Range", item.Address));
+            if (!string.Equals(Render(GetOrNull(target, "Value2")), item.Replacement, StringComparison.Ordinal))
             {
-                var target = references.Add(Get(sheet, "Range", item.Address));
-                if (!string.Equals(Render(GetOrNull(target, "Value2")), item.Replacement, StringComparison.Ordinal))
-                {
-                    return (false, new TaskCheck("reopen-verification", false,
-                        "A replaced value was not present after reopening the saved workbook."));
-                }
+                return (false, new TaskCheck("reopen-verification", false,
+                    "A replaced value was not present after reopening the saved workbook."));
             }
+        }
 
-            return (true, new TaskCheck("reopen-verification", true,
-                $"Saved workbook reopened with all {replacements.Count} replacement(s) in place."));
-        }, out check);
+        return (true, new TaskCheck("reopen-verification", true,
+            $"Saved workbook reopened with all {replacements.Count} replacement(s) in place."));
+    }
 
     private static WorksheetRangeReceipt MatchReceipt(
         NormalizedFindReplaceOperation operation,

@@ -55,7 +55,7 @@ public sealed partial class ExcelWorkbookRuntime
 
         return operation.Kind == CreateKind.Workbook
             ? CreateWorkbook(targetPath, observer)
-            : CreateWorksheet(plan, operation, targetPath, observer);
+            : CreateWorksheet(plan, operation, observer);
     }
 
     private static WorkbookExecutionOutcome CreateWorkbook(string targetPath, IExcelWorkbookRuntimeObserver observer)
@@ -120,98 +120,40 @@ public sealed partial class ExcelWorkbookRuntime
     private static WorkbookExecutionOutcome CreateWorksheet(
         ExcelTaskPlan plan,
         NormalizedCreateOperation operation,
-        string targetPath,
-        IExcelWorkbookRuntimeObserver observer)
-    {
-        var apply = plan.Request.Mode == ExcelTaskMode.Apply;
-        var checks = new List<TaskCheck>();
-        var changes = new List<TaskChange>();
-        ExcelSession? session = null;
-        PendingVerification? pendingVerification = null;
-        var mutationAttempted = false;
-
-        try
+        IExcelWorkbookRuntimeObserver observer) =>
+        ExecuteMutation(plan, observer, "worksheet-create", "The worksheet creation", context =>
         {
-            if (apply) pendingVerification = PendingVerification.Begin(observer);
-
-            observer.OnPhase("session-open");
-            session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: !apply);
-
-            observer.OnPhase("worksheet-preflight");
-            if (WorksheetExists(session, operation.WorksheetName!))
+            context.OnPhase("worksheet-preflight");
+            if (WorksheetExists(context.Session, operation.WorksheetName!))
             {
-                checks.Add(new TaskCheck("worksheet-name", false, "A worksheet with that name already exists; creating one never replaces it."));
-                return ExcelSession.CloseAndProve(ref session, "worksheet preflight", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "That worksheet name is already in use.", Checks: checks);
+                context.Checks.Add(new TaskCheck("worksheet-name", false, "A worksheet with that name already exists; creating one never replaces it."));
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "That worksheet name is already in use.", Checks: context.Checks),
+                    "worksheet preflight");
             }
 
-            checks.Add(new TaskCheck("worksheet-name", true, "No worksheet in the target workbook carries that name."));
-            if (!apply)
+            context.Checks.Add(new TaskCheck("worksheet-name", true, "No worksheet in the target workbook carries that name."));
+            if (!context.Apply)
             {
-                changes.Add(new TaskChange("worksheet-create", operation.WorksheetName!, "Planned an empty worksheet."));
-                return ExcelSession.CloseAndProve(ref session, "worksheet planning", checks, changes)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
-                        $"The name is free; applying would add an empty worksheet. Nothing was changed.", changes, checks);
+                context.Changes.Add(new TaskChange("worksheet-create", operation.WorksheetName!, "Planned an empty worksheet."));
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Planned,
+                        $"The name is free; applying would add an empty worksheet. Nothing was changed.", context.Changes, context.Checks),
+                    "worksheet planning");
             }
 
-            observer.OnPhase("worksheet-create");
-            mutationAttempted = true;
-            AddWorksheet(session, operation.WorksheetName!);
-            changes.Add(new TaskChange("worksheet-create", operation.WorksheetName!, "Added an empty worksheet."));
+            context.OnPhase("worksheet-create");
+            context.MarkMutationAttempted();
+            AddWorksheet(context.Session, operation.WorksheetName!);
+            context.Changes.Add(new TaskChange("worksheet-create", operation.WorksheetName!, "Added an empty worksheet."));
 
-            observer.OnPhase("save");
-            Invoke(session.TargetWorkbook, "Save");
-            checks.Add(new TaskCheck("save", true, "Excel completed the requested save operation."));
-
-            observer.OnPhase("primary-cleanup");
-            var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the worksheet creation save", checks, changes);
-            if (cleanupFailure is not null) return cleanupFailure with { RetryReason = "Inspect workbook state before retrying." };
-
-            if (plan.Request.WorkbookBinding != WorkbookBinding.UseOpen && !WorkbookRuntimeHelpers.CanOpenExclusively(targetPath))
-            {
-                checks.Add(new TaskCheck("file-lock", false, "The saved workbook remained locked after owned Excel cleanup."));
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but the owned Excel session did not release its file lock for verification.",
-                    changes, checks, CanRetry: false, RetryReason: "Inspect the Excel process and file lock before retrying.");
-            }
-
-            observer.OnPhase("reopen-verification");
-            var verified = pendingVerification!.Verify(targetPath, observer, verification =>
-                WorksheetExists(verification, operation.WorksheetName!)
+            return new MutationStep.SaveAndVerify(
+                verification => WorksheetExists(verification, operation.WorksheetName!)
                     ? (true, new TaskCheck("reopen-verification", true, "The saved workbook reopened with the new worksheet present."))
                     : (false, new TaskCheck("reopen-verification", false, "The new worksheet was not present after reopening the saved workbook.")),
-                out var reopenCheck);
-
-            checks.Add(reopenCheck);
-            if (!verified)
-            {
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but reopen verification did not find the new worksheet.",
-                    changes, checks, CanRetry: false, RetryReason: "Inspect the saved workbook before attempting another apply operation.");
-            }
-
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed,
-                $"Added an empty worksheet, saved, and confirmed it after reopening.", changes, checks);
-        }
-        catch (Exception exception) when (ComAccess.IsComFailure(exception))
-        {
-            checks.Add(new TaskCheck("worksheet-create", false, DescribeFailure("worksheet-create", exception)));
-            var cleanupFailure = ExcelSession.CloseAndProve(ref session, "the failed worksheet creation", checks, changes);
-            if (cleanupFailure is not null) return cleanupFailure;
-            return new WorkbookExecutionOutcome(
-                mutationAttempted ? ExcelTaskStatus.Unknown : ExcelTaskStatus.Rejected,
-                mutationAttempted
-                    ? "The worksheet creation failed after the change was attempted."
-                    : "The worksheet creation was rejected before any change was attempted.",
-                changes, checks, CanRetry: !mutationAttempted,
-                RetryReason: mutationAttempted ? "Inspect workbook state before retrying." : null);
-        }
-        finally
-        {
-            session?.Close();
-            pendingVerification?.Dispose();
-        }
-    }
+                $"Added an empty worksheet, saved, and confirmed it after reopening.",
+                "Excel saved the workbook, but reopen verification did not find the new worksheet.");
+        });
 
     private static bool WorksheetExists(ExcelSession session, string worksheetName)
     {
