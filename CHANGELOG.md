@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.9.1 - 2026-08-10
+
+### Changed - speed
+
+- **The verification Excel now starts before the work instead of after it.** A
+  mutating Apply launches Excel twice: once to make the change, once more to
+  reopen the saved file and prove it. The second launch cannot be deleted -
+  verifying in the process that did the writing would be verifying against the
+  memory that produced it - so it is started early and its launch overlaps the
+  writes and the save. Every property is unchanged: a separate process, freshly
+  launched, opening the file only after the primary closed and released its lock.
+
+  Measured A/B on one successful macro Apply, 5 trials each: **5,398 ms to
+  5,244 ms**, about 3%, with non-overlapping ranges. Less than the 326 ms a
+  launch costs alone, because two Excels starting at once contend for the same
+  disk and CPU.
+
+### Fixed
+
+- **The deadline watchdog would have killed the wrong Excel.** It tracked a
+  single owned process identity, which was correct while only one owned Excel
+  could exist at a time. With the verification instance alive alongside the
+  primary, the later registration silently replaced the earlier one - so on a
+  deadline the watchdog would have ended the idle verification instance and left
+  the one holding the user's workbook mid-write running. It now tracks every
+  owned process and terminates all of them.
+
+### Measured
+
+- **A macro Apply is 5,244 ms; the COM it performs is 1,035 ms.** Roughly four
+  seconds happens inside the runtime and has never been attributed. That is now
+  the largest known unexplained cost in the product, and the next measurement is
+  aimed at it rather than at another three hundred milliseconds. An attempt to
+  attribute it to Excel's process teardown is recorded as invalid: measuring that
+  from PowerShell measures PowerShell's own COM references. See
+  `docs/EXCEL-TUNING.md`.
+
 ## 0.9.0 - 2026-08-10
 
 ### Added - the most-requested operation

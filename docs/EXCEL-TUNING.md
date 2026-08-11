@@ -112,12 +112,42 @@ It cannot simply be removed. Verifying in the process that just did the writing 
 against the same memory that produced them; the reopen is what makes the receipt evidence rather
 than intent.
 
-The version worth building is to start the verification instance **early**, so its launch overlaps
-the write and save phases instead of following them. That keeps every property intact - still a
-separate process, still freshly launched, still opening the file only after the primary closed - and
-costs only latency. It is not built yet, because a pre-launched instance is a new way to leak an
-Excel process on every early-return path, and this project's central claim is that it never does.
-That work needs the leak test to come first.
+So it is started **early** instead, while the primary session is still writing. Every property is
+intact - still a separate process, still freshly launched, still opening the saved file only after
+the primary closed and released its lock. Only when the clock starts changed. Shipped in v0.9.1.
 
-`ReadWorksheetRange` and `AuditWorkbookFlows` already launch once. The most-requested operation is
-therefore already at the floor.
+### What it was actually worth
+
+A/B on one successful macro Apply through the real runtime, 5 trials each, measured with a harness
+that calls `ExecuteAsync` directly rather than through the test suite:
+
+| Build | Median | Range |
+| --- | --- | --- |
+| serial launch | 5,398 ms | 5,383 - 5,528 |
+| pre-launched | **5,244 ms** | 5,125 - 5,343 |
+
+**154 ms, about 3%.** The ranges do not overlap across five trials each, so the effect is real, but
+it is well under the 326 ms the launch costs in isolation: two Excels starting at once contend for
+the same disk and CPU, so overlapping a launch does not make it free.
+
+The test suite cannot measure this at all. Those runs are dominated by test-host startup and by the
+leak detector's settle waits - both constant, both far larger - and an A/B there returned an
+11 ms difference on a 24-second test, which is noise.
+
+## The thing worth looking at next: 4.2 seconds nobody has accounted for
+
+One macro Apply is **5,244 ms** end to end. The COM sequence it performs was measured at
+**1,035 ms**. Roughly four seconds happens inside the runtime and has never been attributed.
+
+The obvious suspect is proving that Excel exited. `Quit` returns immediately; the runtime then waits
+for the process to genuinely die, twice, because "no Excel is ever left behind" is the product's
+central claim and that wait is what earns it. An attempt to measure Excel's teardown directly from
+PowerShell is recorded here as **invalid**: PowerShell holds its own references to the COM object, so
+Excel stayed alive to the 10-second timeout in every trial. That measured the probe, not Excel.
+
+Attributing this properly needs timing inside the runtime, where the phase observer already sits.
+That is the next measurement, and it is aimed at four seconds rather than at three hundred
+milliseconds. Nothing should be optimized here until it exists.
+
+`ReadWorksheetRange` and `AuditWorkbookFlows` launch once and never verify, so neither pays any of
+this. The most-requested operation is already at the floor.

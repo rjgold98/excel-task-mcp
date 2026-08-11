@@ -22,6 +22,8 @@ All four original phases landed and were field-validated on the work computer on
    Field-confirmed safe on a real business workbook.
 5. **Bounded range read** (v0.9.0): the contents of one range, as values or as
    R1C1 formulas. The most-requested operation in the whole history.
+6. **Overlapped verification launch** (v0.9.1): the verification Excel starts
+   while the primary is still writing, measured at 3% of a macro Apply.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -99,14 +101,18 @@ demand at all - which is most of the 8.1x schema ExcelTask does not carry.
   after Excel is open, producing `Unknown` - the worst answer for a caller, since
   it means the file may or may not have changed. Preflight makes it a clean
   `Rejected`.
-- **The second Excel launch on a mutating Apply.** Now the largest measured cost
-  in the product by a wide margin. The full macro edit-run-save-verify sequence
-  is 1,035 ms of COM, and 610 ms of that is the two launches; the VBIDE work
-  everyone assumes is expensive - find, read, replace, run - is 21 ms. This also
-  retires the "macro session sharing" entry that used to sit here: the 28.1s
-  against 26.4s regression was attributed to Plan and Apply each opening their
+- **The four seconds inside a macro Apply that nobody has accounted for.** One
+  Apply is 5,244 ms end to end; the COM it performs is 1,035 ms. That gap is now
+  the largest known cost in the product, and it is twelve times the launch
+  overlap just shipped. Attributing it needs timing inside the runtime, where the
+  phase observer already sits - and nothing here should be optimized before that
+  exists. An attempt to blame Excel's process teardown was confounded by the
+  probe itself and is recorded as invalid rather than quietly dropped.
+
+  This also retires the "macro session sharing" entry that used to sit here: the
+  28.1s against 26.4s regression was blamed on Plan and Apply each opening their
   own Excel, but four launches is about 1.2 seconds. The other 27 were never
-  Excel. They are worker startup, MCP round trips, and model coordination, and
+  Excel - they are worker startup, MCP round trips, and model coordination, and
   the only lever on those is fewer calls.
   It cannot be deleted - verifying in the process that did the writing would be
   verifying against the memory that produced it - but it can be started early so

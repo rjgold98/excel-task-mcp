@@ -1,4 +1,4 @@
-# ExcelTask 0.9.0
+# ExcelTask 0.9.1
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -152,7 +152,7 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.9.0 is the current stable formula, exhibit, macro-editing, discovery,
+Version 0.9.1 is the current stable formula, exhibit, macro-editing, discovery,
 and range-reading release.
 It does not yet refresh Power Query or data models, attach to unsaved workbooks,
 edit sheet or class modules, or expose a general automation surface.
