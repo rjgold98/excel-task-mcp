@@ -115,6 +115,7 @@ public static class WorkbookWorkerHost
             ExcelOperationKind.ExtendFormulaSeries => $"sheet={operation.ExtendFormulaSeries!.WorksheetName} direction={operation.ExtendFormulaSeries.Direction} evidence={operation.ExtendFormulaSeries.EvidenceRange} destination={operation.ExtendFormulaSeries.DestinationRange}",
             ExcelOperationKind.CopyExhibit => $"referenceSheet={operation.CopyExhibit!.ReferenceWorksheet} newSheet={operation.CopyExhibit.NewWorksheetName} repairRanges={operation.CopyExhibit.RepairRanges.Count}",
             ExcelOperationKind.EditMacroProcedure => $"component={operation.EditMacroProcedure!.ComponentName} procedure={operation.EditMacroProcedure.ProcedureName} run={operation.EditMacroProcedure.RunAfterEdit}",
+            ExcelOperationKind.ScanWorkbookStructure => "direct file scan, no Excel",
             _ => "no options"
         };
         trace.Note($"  {detail}");

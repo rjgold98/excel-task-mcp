@@ -1083,6 +1083,42 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task TheScanReadsAWorkbookExcelActuallyWroteWithoutStartingExcel()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "scan-real.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Written by real Excel - the fixture launch is the ONLY Excel in this test - so the
+            // scan is proven against the XML Excel actually produces (shared formulas as Excel
+            // writes them), not only against the hand-authored packages in the fast tier.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A3", new object?[,] { { "=ROW()" }, { "=ROW()" }, { "=ROW()" } }, "B1", 42d);
+            var before = OwnedExcelProcess.SnapshotExcelProcesses();
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("scan-real", ExcelTaskPlans.Scan(target)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Planned,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            var sheet = Assert.Single(outcome.Audit!.Items, item => item.Kind == "scan-sheet");
+            Assert.Contains("3 formula cell(s)", sheet.Detail, StringComparison.Ordinal);
+            Assert.Contains("1 constant cell(s)", sheet.Detail, StringComparison.Ordinal);
+
+            // The operation's entire promise: the process table is untouched.
+            Assert.Equal(before, OwnedExcelProcess.SnapshotExcelProcesses());
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task AReadSaysWhichCellsAreFormulasSoNobodyHasToReadTheRangeTwice()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -1248,6 +1284,51 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
 
         // Exactly two owned processes for an Apply: the primary and the pre-launched verification.
         Assert.Equal(2, observer.CountOf("owned-process"));
+    }
+
+    [Fact]
+    public async Task ScanReadsAWorkbookExcelItselfWroteAndStartsNoExcelToDoIt()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "scan-real.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Built by real Excel - shared formulas, its namespaces, its quirks - because the fast
+            // tests pin the parser against hand-authored XML and this pins it against the real thing.
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A30", new object?[,]
+            {
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" },
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" },
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" },
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" },
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" },
+                { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }, { "=ROW()*2" }
+            }, constantCell: "A15", constantValue: 12345.67d);
+
+            var observer = new RecordingRuntimeObserver();
+            using var runtime = new ExcelWorkbookRuntime(observer);
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("scan-real", ExcelTaskPlans.Scan(target)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Planned,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+
+            var sheet = Assert.Single(outcome.Audit!.Items, item => item.Kind == "scan-sheet");
+            Assert.Contains("29 formula cell(s)", sheet.Detail, StringComparison.Ordinal);
+            var island = Assert.Single(outcome.Audit.Items, item => item.Kind == "constant-island");
+            Assert.Contains("A15", island.Detail, StringComparison.Ordinal);
+
+            // The operation's whole claim, held at the observer seam: the scan started nothing.
+            Assert.Equal(0, observer.CountOf("owned-process"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
     }
 
     private static bool IsAccessVbomUnavailable(Exception exception)

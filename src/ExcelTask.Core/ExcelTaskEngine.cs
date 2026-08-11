@@ -250,7 +250,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         // cannot happen would teach the caller that the confirmation means nothing - and the caller
         // that learns to set overwriteConfirmed reflexively to get a read through will still have
         // it set on the call after, which does write.
-        if (request.Operation.AuditWorkbookFlows is not null || request.Operation.ReadWorksheetRange is not null) return requirements;
+        if (request.Operation.AuditWorkbookFlows is not null || request.Operation.ReadWorksheetRange is not null || request.Operation.ScanWorkbookStructure is not null) return requirements;
 
         // Creating a workbook is refused outright if anything already exists at the path, so there is
         // nothing an overwrite confirmation could authorize. Adding a worksheet does change the
@@ -435,6 +435,12 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         if (operation.ReadWorksheetRange is not null && (request.Save == SaveMode.Copy || output is not null))
         {
             error = "Reading a worksheet range never writes, so it must not be given a save destination.";
+            return false;
+        }
+
+        if (operation.ScanWorkbookStructure is not null && (request.Save == SaveMode.Copy || output is not null))
+        {
+            error = "Scanning workbook structure never writes, so it must not be given a save destination.";
             return false;
         }
 
@@ -712,7 +718,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             operation.WriteWorksheetValues,
             operation.FindReplace,
             operation.Create,
-            operation.SetNumberFormat
+            operation.SetNumberFormat,
+            operation.ScanWorkbookStructure
         ];
         var payloadCount = payloads.Count(payload => payload is not null);
         if (!Enum.IsDefined(operation.Kind))
@@ -786,6 +793,10 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
             case ExcelOperationKind.SetNumberFormat when operation.SetNumberFormat is not null:
                 return TryNormalizeNumberFormat(operation.SetNumberFormat, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.ScanWorkbookStructure when operation.ScanWorkbookStructure is not null:
+                normalized = new NormalizedExcelOperation(operation.Kind, ScanWorkbookStructure: new NormalizedScanWorkbookStructureOperation());
+                return true;
 
             default:
                 error = "Operation payload does not match its kind.";

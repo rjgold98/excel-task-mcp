@@ -22,7 +22,8 @@ public sealed class ExcelTaskEngineTests
             typeof(WorksheetCellValue),
             typeof(FindReplaceOperation),
             typeof(CreateOperation),
-            typeof(SetNumberFormatOperation)
+            typeof(SetNumberFormatOperation),
+            typeof(ScanWorkbookStructureOperation)
         };
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
@@ -727,7 +728,8 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.WriteWorksheetValues, WriteWorksheetValues: new("Sheet1", [new("A1", "1")])),
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
             new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
-            new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00"))
+            new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00")),
+            new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new())
         ];
 
         // The list above is the checklist: a new operation that is not added here fails this line
@@ -1025,6 +1027,41 @@ public sealed class ExcelTaskEngineTests
         Assert.False(receipt.Retry.CanRetry);
         Assert.NotEqual("runtime says retry", receipt.Retry.Reason);
         Assert.False(string.IsNullOrWhiteSpace(receipt.Retry.Reason));
+    }
+
+    [Fact]
+    public async Task ScanningStructureNeverTakesASaveDestination()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            new ExcelTaskRequest(
+                ".\\model.xlsx",
+                new ExcelOperation(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new()),
+                ExcelTaskMode.Plan,
+                WorkbookBinding.Isolated,
+                SaveMode.Copy,
+                ".\\out.xlsx"),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("never writes", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ScanningStructureAsksForNoOverwriteConfirmationBecauseItCannotWrite()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            new ExcelTaskRequest(
+                ".\\model.xlsx",
+                new ExcelOperation(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new()),
+                ExcelTaskMode.Apply,
+                WorkbookBinding.Isolated,
+                SaveMode.Same,
+                null,
+                OverwriteConfirmed: false),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        Assert.False(receipt.Confirmation.Required);
     }
 
     [Fact]

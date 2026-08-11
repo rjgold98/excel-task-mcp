@@ -118,6 +118,12 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return ExecuteAuditCore(plan, observer);
         }
 
+        // First in spirit as well as in order: the one operation that never starts Excel at all.
+        if (plan.Request.Operation.Kind == ExcelOperationKind.ScanWorkbookStructure)
+        {
+            return ExecuteScanCore(plan, observer);
+        }
+
         if (plan.Request.Operation.Kind == ExcelOperationKind.ReadWorksheetRange)
         {
             return ExecuteReadCore(plan, observer);

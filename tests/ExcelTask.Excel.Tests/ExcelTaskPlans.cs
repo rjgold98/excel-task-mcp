@@ -95,6 +95,19 @@ internal static class ExcelTaskPlans
             ExcelOperationKind.SetNumberFormat,
             SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheet, ToRange(range), numberFormat)));
 
+    public static NormalizedExcelTaskRequest Scan(
+        string target,
+        ExcelTaskMode mode = ExcelTaskMode.Plan) => new(
+        target,
+        mode,
+        WorkbookBinding.Isolated,
+        SaveMode.Same,
+        null,
+        false,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ScanWorkbookStructure,
+            ScanWorkbookStructure: new NormalizedScanWorkbookStructureOperation()));
+
     public static NormalizedExcelTaskRequest Create(
         string target,
         CreateKind kind,

@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added - the first operation that never starts Excel
+
+- **`ScanWorkbookStructure` maps a workbook by reading the file directly.** An
+  .xlsx or .xlsm is physically a ZIP of XML, and everything structural is
+  legible from it without Excel: every sheet's name and dimension, and per cell
+  whether a formula or a constant put the value there. The trace had already
+  measured that 92% of a small task's wall time is owned-Excel teardown and
+  verification; a scan pays none of it.
+
+  The reason it exists is planning - "algorithmically scan the workbook so the
+  fixes can be planned before the file is ever opened." Its signature report is
+  the **constant island**: a column that is overwhelmingly formulas holding a
+  scattering of constants, which is the shape of a manual override sitting in a
+  calculated column. On a 20,000-row spike fixture it named all 37 hardcoded
+  overrides in a formula column by exact address - a fact no bounded 400-cell
+  read could affordably discover, and the audit could not see at all.
+
+  It reports shape, never contents: names, dimensions, counts and addresses -
+  no cell values, no formula text. It handles Excel's shared-formula encoding
+  (member cells whose f element is empty), resolves sheet parts through the
+  relationships file rather than assuming their order, prohibits DTDs, and
+  carries a five-million-cell budget so a hostile file exhausts a disposable
+  worker rather than the machine. An encrypted workbook is an OLE container
+  rather than a ZIP; the rejection says so and names the road still open - the
+  Excel-based operations can open what the scan cannot.
+
+  It still runs inside the supervised worker deliberately: a malformed file
+  takes down a subprocess with a deadline, never the server. But its behaviour
+  tests need no Excel and run in the fast tier in milliseconds - hand-authored
+  OOXML for the parser's claims, plus one integration test against a workbook
+  real Excel wrote, with the observer proving zero owned processes started.
+
+  Schema budget rises 15 KB to 16 KB - the eleventh operation, and the only
+  reason the budget is allowed to grow.
+
 ### Changed - measured against fresh assistants on plain-English prompts
 
 Round 12 of the interface study stopped testing schema comprehension and tested

@@ -34,11 +34,14 @@ One request can perform exactly one operation:
 9. create an empty workbook, or add an empty worksheet, never overwriting
    either; or
 10. set one number format code across a bounded range, changing how numbers
-    display and never the numbers themselves; then
-11. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+    display and never the numbers themselves; or
+11. map a workbook's structure by reading the file directly - no Excel process
+    at all: sheets, dimensions, formula/constant counts, and the constant
+    islands that mark manual overrides inside calculated columns; then
+12. recalculate, save, close owned Excel, reopen the saved workbook, and verify
     the worksheet, repairs, procedure, written values, replacements, or format;
     and
-12. return a compact, structured receipt.
+13. return a compact, structured receipt.
 
 Operations 5 and 6 never write, and say so from evidence: their receipts carry a
 check proving the workbook's size and timestamp were identical before and after.
@@ -68,7 +71,7 @@ suppressed either way.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `FindReplace`, `Create`, or `SetNumberFormat`. Supply exactly the one matching payload. It never
+  `FindReplace`, `Create`, `SetNumberFormat`, or `ScanWorkbookStructure`. Supply exactly the one matching payload. It never
   accepts formula text or `FormulaR1C1`: `WriteWorksheetValues` takes constants
   only and rejects any value starting with `=`, and `FindReplace` refuses a
   replacement that would leave a cell starting with `=` even when the
@@ -86,6 +89,10 @@ suppressed either way.
   changes no cell values and sets no fonts, fills, borders, widths, or
   conditional formats. Codes are not trimmed, because a format's leading and
   trailing spaces are what align parenthesised negatives under positives.
+- `ScanWorkbookStructure` is the one operation that never starts Excel: it reads
+  the file as the ZIP of XML it physically is. Counts and addresses only, never
+  contents. Encrypted workbooks cannot be scanned this way; the Excel-based
+  operations still open them.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
   cell's text. It rejects a range larger than that rather than truncating to a
   partial answer that would read as a complete one.

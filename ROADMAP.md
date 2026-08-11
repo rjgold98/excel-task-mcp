@@ -37,6 +37,13 @@ All four original phases landed and were field-validated on the work computer on
 10. **Writability preflight** (v0.11.0): a read-only same-file target is refused
     before Excel is ever started, so it is a clean `Rejected` rather than the
     `Unknown` a failed save produced. On every one of the five write paths.
+11. **Structure scan** (unreleased): the first operation that never starts
+    Excel - the workbook read as the ZIP of XML it is. Sheets, dimensions,
+    formula/constant counts, and constant islands (manual overrides inside
+    calculated columns) by address. Measured end to end at 1.2 s against 4.6 s
+    for the Excel-based audit on the same 80,000-cell workbook, with zero owned
+    processes. Built for planning: what to read, what to fix, before any file
+    opens.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
