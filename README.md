@@ -1,4 +1,4 @@
-# ExcelTask 0.11.0
+# ExcelTask 0.12.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -32,10 +32,13 @@ One request can perform exactly one operation:
 8. find the cells whose text matches, and rewrite the constants among them,
    leaving any cell whose text comes from a formula reported but untouched; or
 9. create an empty workbook, or add an empty worksheet, never overwriting
-   either; then
-10. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-    the worksheet, repairs, procedure, written values, or replacements; and
-11. return a compact, structured receipt.
+   either; or
+10. set one number format code across a bounded range, changing how numbers
+    display and never the numbers themselves; then
+11. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+    the worksheet, repairs, procedure, written values, replacements, or format;
+    and
+12. return a compact, structured receipt.
 
 Operations 5 and 6 never write, and say so from evidence: their receipts carry a
 check proving the workbook's size and timestamp were identical before and after.
@@ -65,7 +68,7 @@ suppressed either way.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `FindReplace`, or `Create`. Supply exactly the one matching payload. It never
+  `FindReplace`, `Create`, or `SetNumberFormat`. Supply exactly the one matching payload. It never
   accepts formula text or `FormulaR1C1`: `WriteWorksheetValues` takes constants
   only and rejects any value starting with `=`, and `FindReplace` refuses a
   replacement that would leave a cell starting with `=` even when the
@@ -79,6 +82,10 @@ suppressed either way.
 - `Create` writes the target it names, so it takes no save destination and
   requires binding `Isolated`. It never overwrites: an existing file, or an
   existing worksheet name, is refused outright.
+- `SetNumberFormat` sets only the number format, on at most 10,000 cells. It
+  changes no cell values and sets no fonts, fills, borders, widths, or
+  conditional formats. Codes are not trimmed, because a format's leading and
+  trailing spaces are what align parenthesised negatives under positives.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
   cell's text. It rejects a range larger than that rather than truncating to a
   partial answer that would read as a complete one.
@@ -168,11 +175,12 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.11.0 is the current stable release: formula, exhibit, macro editing,
-discovery, range reading, constant writes, find/replace, and creation.
-It does not yet format cells, refresh Power Query or data models, attach to
-unsaved workbooks, edit sheet or class modules, or expose a general automation
-surface.
+Version 0.12.0 is the current stable release: formula, exhibit, macro editing,
+discovery, range reading, constant writes, find/replace, creation, and number
+formats.
+It does not yet set fonts, fills, borders or widths, refresh Power Query or data
+models, attach to unsaved workbooks, edit sheet or class modules, or expose a
+general automation surface.
 Authentication or IRM can still require a person; a macro dialog or timeout is
 `Unknown` and must be reconciled before retrying.
 

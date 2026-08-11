@@ -563,6 +563,47 @@ does not - made one assembly's fixtures look like the other's leaks. Four tests 
 that way and none had leaked anything. The assertion no longer depends on the caller
 remembering to serialize.
 
+## Round 11 - can a model actually write an Excel number format code?
+
+`SetNumberFormat` (v0.12.0) turns on a question none of the earlier rounds asked. Every
+round so far measured whether a model picks the right operation and obeys the policy
+envelope, and operation selection has been perfect in 484 of 484 decisions. This
+operation's risk is elsewhere: it takes a **format code**, a small hostile language of
+its own where `_)` is a padding directive, `[Red]` is a colour section, and the
+positive and negative cases are separated by a semicolon. If a model cannot write one,
+a schema that describes the operation perfectly still ships something unusable.
+
+So this round is a capability check rather than an arm comparison, and the oracle is as
+strong as it gets: **every proposed code is applied to a real Excel workbook**, then
+read back, then rendered against a sample positive and a sample negative. Excel decides.
+
+Four requests phrased the way a finance user would phrase them - never naming a format
+code - x 3 reps.
+
+| Task | Code produced (all 3 runs) | Positive | Negative |
+|---|---|---|---|
+| thousands, 2dp, negatives in aligned parentheses | `#,##0.00_);(#,##0.00)` | `1,234,567.89` | `(1,234,567.89)` |
+| whole dollars, red parenthesised negatives | `$#,##0;[Red]($#,##0)` | `$1,234,568` | `($1,234,568)` |
+| ratios as one-decimal percentages | `0.0%` | `18.4%` | `-7.3%` |
+| ISO dates | `yyyy-mm-dd` | `2026-07-31` | - |
+
+**12 of 12 accepted by Excel, 12 of 12 round-tripped verbatim, and all three runs
+produced byte-identical codes for every task.** Including the `_)` padding, which is
+the one part a person hand-writing a format usually gets wrong and the reason the
+engine does not trim.
+
+Two things follow.
+
+- **Format-code authoring is not a bottleneck**, so the operation is usable as shipped
+  and no worked-example text needs to be spent on it in the schema.
+- **The read-back is still not redundant.** It cost nothing here because nothing failed,
+  and it is the only thing standing between a code Excel silently coerces and a receipt
+  claiming success. Zero failures in twelve tries is not evidence that the guard is
+  unnecessary; it is evidence that this model, on these four cases, did not need it.
+
+Recorded caveat: the codes are deterministic across runs, which means n = 3 buys much
+less than it looks like. This measures four format families, not the space of them.
+
 ## Reproducing
 
 Round 10's harness is a different one. It lives outside the repo, at

@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.12.0 - 2026-08-11
+
+### Added
+
+- **`SetNumberFormat` sets one number format code across one bounded range.**
+  This closes a gap the server made for itself: `WriteWorksheetValues` could put
+  1000.5 into a cell and nothing could make it read as `1,000.50` or
+  `(1,000.50)`, so a correct number could still be presented wrongly - which for
+  a financial exhibit is the difference between usable and not.
+
+  It is deliberately *only* the number format. Fonts, fills, borders, widths and
+  conditional formats are not here. The measured demand names the `range_format`
+  tool, not which of its operations were used, and building all of it on a
+  tool-level count is how a server ends up with 230 operations and no idea which
+  matter. The operation is named for what it sets so a caller does not spend a
+  round trip discovering the rest is missing, and its description says outright
+  what is absent.
+
+  Unlike every other mutation here it is a single COM assignment no matter how
+  many cells it covers, since Excel applies a format to a whole range at once.
+  What it does need is the read-back: an unrecognized code can be kept verbatim,
+  coerced, or rejected outright, and all three look identical from the caller's
+  side of the assignment. The code is read back in session and again from the
+  reopened file, and a mismatch is reported rather than called success.
+
+  Format codes are **not trimmed**. Leading and trailing spaces are meaningful -
+  `_)` and a trailing space are what make parenthesised negatives line up under
+  positives in a column - so trimming would silently apply a different format
+  from the one asked for.
+
+  Plan reports the range's current format before changing anything, because a
+  format is destructive in a way a value write is not: it replaces whatever was
+  there and the old code is not recoverable from the sheet afterwards.
+
+  Bounded at 10,000 cells, the same bound find/replace and repair use, and at
+  Excel's own 255-character ceiling on a format code.
+
+- Schema is 15,029 bytes against the 15 KB budget set in 0.11.0, so the tenth
+  operation fits without raising it.
+
+### Measured
+
+- **A model can write these format codes.** The operation's real risk was never
+  the interface - operation selection has been perfect in 484 of 484 decisions
+  across the study - but the format code itself, a small hostile language where
+  `_)` is padding and `[Red]` is a colour section. Round 11 put four requests
+  phrased the way a finance user phrases them, never naming a code, through
+  three runs, and applied every proposed code to real Excel: **12 of 12 accepted,
+  12 of 12 round-tripped verbatim, all three runs byte-identical**, including the
+  `_)` padding that is the usual hand-written mistake. Details in
+  `docs/INTERFACE-AB-STUDY.md`. The read-back stays: zero failures in twelve
+  tries is not evidence the guard is unnecessary.
+
 ## 0.11.0 - 2026-08-10
 
 ### Added - the three faithful-rebuild gaps

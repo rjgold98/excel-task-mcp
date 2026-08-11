@@ -31,6 +31,9 @@ All four original phases landed and were field-validated on the work computer on
    `Create` makes an empty workbook or adds an empty worksheet and never
    overwrites either. Together with the write, this is the first release that
    can compose new work from nothing rather than only edit what exists.
+9. **Number formats** (v0.12.0): one format code across one bounded range, read
+   back in session and again from the reopened file. Only the number format -
+   the one part of `range_format` the write operation itself made necessary.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -94,20 +97,19 @@ is the weakest of them:
 **What is left, and what each one needs before it is built.** Nothing here is
 blocked on effort; each is blocked on evidence, which is the standing rule.
 
-- **`range_format`, 12 sessions.** The demand data records the *tool*, not which
-  of its operations were called, so "12 sessions used formatting" says nothing
-  about whether they set number formats, fonts, widths, or borders. Building all
-  of it would be the dead-weight problem this project exists to avoid; building
-  the wrong tenth of it is worse than building none. **Gate:** an operation-level
-  count from the session history, the same way `docs/field-reports/2026-08-10-demand/`
-  produced the tool-level one.
+- **`range_format`, 12 sessions - the number-format tenth shipped in v0.12.0, the
+  rest is still gated.** `SetNumberFormat` was built on an argument rather than a
+  measurement, and the argument is narrow enough to state exactly: the write
+  operation *created* that gap, since a correct number that reads wrong is not
+  finished work. Nothing else in `range_format` has that property.
 
-  One part of it is arguable without that count, and is the strongest candidate
-  in this list: a number format on a bounded range. `WriteWorksheetValues` can
-  now put 1000.5 into a cell and cannot make it read as `1,000.50` or `(1,000.50)`,
-  so the gap is one this project created rather than one it inherited. It is
-  still not built, because "the write made it necessary" is an argument and the
-  operation-level count is a measurement.
+  The demand data records the *tool*, not which of its operations were called, so
+  "12 sessions used formatting" still says nothing about whether they set fonts,
+  widths, borders, or conditional formats. Building all of it would be the
+  dead-weight problem this project exists to avoid; building the wrong tenth of it
+  is worse than building none. **Gate for anything beyond the number format:** an
+  operation-level count from the session history, the same way
+  `docs/field-reports/2026-08-10-demand/` produced the tool-level one.
 
 - **`screenshot`, 13 sessions (11 of them `capture`).** Worth stating plainly
   rather than leaving on the list: most of this demand is *verification*, and
