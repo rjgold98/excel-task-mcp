@@ -51,8 +51,39 @@ surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
 execution 13% slower, the advantage being entirely the removal of model
 coordination. One run per workflow; not yet a benchmark.
 
+## From the 2026-08-11 field log, not yet addressed
+
+A full day's real work produced four frictions. Two are fixed in 0.16.0 - the
+SharePoint identity refusals and the audit truncating its worksheet list, the
+latter already answered by `ScanWorkbookStructure`. These two are not.
+
+- **`CopyExhibit` leaves the copied worksheet pointing at the source workbook.**
+  Copying a sheet from a reference workbook produced 305 formula cells on the
+  new tab carrying external references back to the source - and the follow-up
+  repair fixed none of them, because Excel normalized the proposed internal
+  references straight back into external ones. The workbook was left with an
+  external link the owner did not ask for and could not remove, and the session
+  ended with its state unknown. This is the flagship operation, and it is the
+  largest product gap the log exposed. Worth measuring first: whether writing
+  the formulas as R1C1 after the copy, or copying cell contents rather than the
+  sheet, avoids the normalization.
+
+- **`UseOpen` bound to a stray `Book1` instead of the named workbook.** Live
+  verification reported an active workbook of `Book1` containing `iwe_getinst`
+  and `Sheet1` - an add-in artifact, not the target. `RotWorkbookLocator.Find`
+  and `HasExternalWorkbookAtPath` both bind the moniker and re-read `FullName`;
+  `ContainsPath` matches on the ROT display name alone and is what
+  `InspectCore` uses to set `TargetIsOpen`, which becomes "The exact target
+  workbook is open." The word *exact* is carrying weight that code path does not
+  supply. Fix is to bind and confirm, as its two siblings already do.
+
 ## Open field gates (small, when convenient)
 
+- **One `UseOpen` against a OneDrive-backed workbook.** 0.16.0 resolves a
+  reported SharePoint URL back to the local path through the sync client's
+  registry mapping, and the mapping and comparison are pinned by tests - but a
+  machine that syncs nothing registers no providers, so the lookup itself has
+  never run. This is the only part of that change still unproven.
 - Audit one workbook the owner *knows* contains Power Query and Data Model
   flows; owner confirms the reported categories. Closes phase 4's last gap.
 - The repeated benchmark: one MCP catalog per client profile, three or more
