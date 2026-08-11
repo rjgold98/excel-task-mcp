@@ -26,6 +26,11 @@ All four original phases landed and were field-validated on the work computer on
    while the primary is still writing, measured at 3% of a macro Apply.
 7. **Constant writes** (v0.10.0): values into named cells, read back in session
    and again from the reopened file. Formula text is still refused.
+8. **Find/replace and creation** (v0.11.0): the three faithful-rebuild gaps.
+   `FindReplace` lists matches on Plan and rewrites only constants on Apply;
+   `Create` makes an empty workbook or adds an empty worksheet and never
+   overwrites either. Together with the write, this is the first release that
+   can compose new work from nothing rather than only edit what exists.
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -71,24 +76,56 @@ together:
   those two already cover - measurable rather than arguable, and not yet
   measured.
 
-**4. Then, in demand order.** `range_edit` find and replace (13 sessions),
-`screenshot` for verification (13), `range_format` (12), `table` beyond listing
-(11), Data Model and Power Query mutation (10 each).
+**4. Find and replace shipped in v0.11.0** (`range_edit`, 13 sessions). What
+remains in demand order is below.
 
-**Faithful-rebuild gaps the demand data surfaced, previously unlisted.** Three
-things the original can do that ExcelTask cannot do at all, each with real
-observed use:
+**The faithful-rebuild gaps are closed.** Workbook creation (9 sessions) and
+blank worksheet creation (7) shipped in v0.11.0. One of the three remains, and it
+is the weakest of them:
 
-- **Create a workbook.** `file create` appeared in 9 sessions; every ExcelTask
-  operation requires an existing target. A bounded "create empty workbook at
-  this path" is small and removes a hard wall.
-- **Add a blank worksheet.** `worksheet create`, 7 sessions. `CopyExhibit` can
-  only copy an existing sheet; there is no way to add an empty one.
 - **Discover open workbooks.** `file list` appeared in 35 sessions on the
   session-based server. ExcelTask's equivalent question - "what is open in Excel
   right now" - is answerable per-target through `AskIfOpen` but not as a survey.
-  Demand here is partly an artifact of the other server's session model, so this
-  ranks below the two above; measure again after real ExcelTask use.
+  Demand here is largely an artifact of the other server's session model, which
+  forced an open call before any work at all. Still unbuilt, and deliberately:
+  measure it against real ExcelTask use before building to a number that may be
+  entirely the other design's overhead.
+
+**What is left, and what each one needs before it is built.** Nothing here is
+blocked on effort; each is blocked on evidence, which is the standing rule.
+
+- **`range_format`, 12 sessions.** The demand data records the *tool*, not which
+  of its operations were called, so "12 sessions used formatting" says nothing
+  about whether they set number formats, fonts, widths, or borders. Building all
+  of it would be the dead-weight problem this project exists to avoid; building
+  the wrong tenth of it is worse than building none. **Gate:** an operation-level
+  count from the session history, the same way `docs/field-reports/2026-08-10-demand/`
+  produced the tool-level one.
+
+  One part of it is arguable without that count, and is the strongest candidate
+  in this list: a number format on a bounded range. `WriteWorksheetValues` can
+  now put 1000.5 into a cell and cannot make it read as `1,000.50` or `(1,000.50)`,
+  so the gap is one this project created rather than one it inherited. It is
+  still not built, because "the write made it necessary" is an argument and the
+  operation-level count is a measurement.
+
+- **`screenshot`, 13 sessions (11 of them `capture`).** Worth stating plainly
+  rather than leaving on the list: most of this demand is *verification*, and
+  ExcelTask already answers it by a different means - it reopens the saved file
+  and reads back what it wrote, which is stronger evidence than a picture of a
+  window. What a screenshot does that nothing here does is show a **person** the
+  result. That is a real need and a different one, and it would put workbook
+  contents into an image, which the receipt bounds cannot inspect. **Gate:** an
+  observed case where reopen-verification was insufficient.
+
+- **`table` beyond listing (11), Data Model and Power Query mutation (10 each).**
+  Each is a large surface with a small measured slice. **Gate:** the same
+  operation-level count.
+
+**Not to be built.** `chart_config`, `pivottable_calc` and `worksheet_style` were
+never called once in five weeks; `chart`, `slicer` and `table_column` appeared in
+one session each. Roughly half of the original server's 230 operations show no
+demand at all - which is most of the 8.1x schema ExcelTask does not carry.
 
 **Not to be built.** `chart_config`, `pivottable_calc` and `worksheet_style` were
 never called once in five weeks; `chart`, `slicer` and `table_column` appeared in

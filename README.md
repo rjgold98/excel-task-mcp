@@ -1,4 +1,4 @@
-# ExcelTask 0.10.0
+# ExcelTask 0.11.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -28,10 +28,14 @@ One request can perform exactly one operation:
    links; or
 6. read the contents of one bounded worksheet range, as displayed values or as
    R1C1 formulas; or
-7. write constants into named cells, never formula text; then
-8. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-   the worksheet, repairs, procedure, or written values; and
-9. return a compact, structured receipt.
+7. write constants into named cells, never formula text; or
+8. find the cells whose text matches, and rewrite the constants among them,
+   leaving any cell whose text comes from a formula reported but untouched; or
+9. create an empty workbook, or add an empty worksheet, never overwriting
+   either; then
+10. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+    the worksheet, repairs, procedure, written values, or replacements; and
+11. return a compact, structured receipt.
 
 Operations 5 and 6 never write, and say so from evidence: their receipts carry a
 check proving the workbook's size and timestamp were identical before and after.
@@ -60,12 +64,21 @@ suppressed either way.
   `mode: "Apply"`.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
-  `AuditWorkbookFlows`, `ReadWorksheetRange`, or `WriteWorksheetValues`. Supply
-  exactly the one matching payload. It never accepts formula text or
-  `FormulaR1C1`: `WriteWorksheetValues` takes constants only and rejects any
-  value starting with `=`.
+  `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
+  `FindReplace`, or `Create`. Supply exactly the one matching payload. It never
+  accepts formula text or `FormulaR1C1`: `WriteWorksheetValues` takes constants
+  only and rejects any value starting with `=`, and `FindReplace` refuses a
+  replacement that would leave a cell starting with `=` even when the
+  replacement text itself is a legal constant.
 - Start with `AuditWorkbookFlows` when the worksheet names are unknown. Every
   other operation requires a worksheet name it otherwise has no way to discover.
+- `FindReplace` matches plain text on what the cell displays; `*` and `?` are
+  literal rather than wildcards, which is where it deliberately differs from
+  Excel's own Find. It searches at most 10,000 cells, and refuses rather than
+  silently searching part of a larger used range.
+- `Create` writes the target it names, so it takes no save destination and
+  requires binding `Isolated`. It never overwrites: an existing file, or an
+  existing worksheet name, is refused outright.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
   cell's text. It rejects a range larger than that rather than truncating to a
   partial answer that would read as a complete one.
@@ -155,10 +168,11 @@ client cache untouched.
 
 ## Current boundary
 
-Version 0.10.0 is the current stable formula, exhibit, macro-editing, discovery,
-and range-reading release.
-It does not yet refresh Power Query or data models, attach to unsaved workbooks,
-edit sheet or class modules, or expose a general automation surface.
+Version 0.11.0 is the current stable release: formula, exhibit, macro editing,
+discovery, range reading, constant writes, find/replace, and creation.
+It does not yet format cells, refresh Power Query or data models, attach to
+unsaved workbooks, edit sheet or class modules, or expose a general automation
+surface.
 Authentication or IRM can still require a person; a macro dialog or timeout is
 `Unknown` and must be reconciled before retrying.
 

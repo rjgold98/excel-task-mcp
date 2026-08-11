@@ -1,5 +1,108 @@
 # Changelog
 
+## 0.11.0 - 2026-08-10
+
+### Added - the three faithful-rebuild gaps
+
+Until this release ExcelTask could only change a workbook that already existed,
+with sheets that already existed. Two operations from the demand data closed
+that, and together with the existing write they are the first time the server
+can compose new work from nothing: create a workbook, add a sheet, write values
+into it, change them. That sequence is now a test, end to end through the real
+MCP boundary.
+
+- **`FindReplace` finds cells whose text matches, and on Apply rewrites the
+  constants among them.** `range_edit` appeared in 13 of 46 measured sessions.
+  Plan lists the matches and changes nothing, because replace-across-a-sheet is
+  the operation most likely to be regretted and the caller should see the cells
+  before authorizing them. A cell whose text comes from a formula is reported as
+  a match and never rewritten, the same refusal every other operation makes.
+
+  Excel's own `Find` and `Replace` are deliberately not used, for three separate
+  reasons. `Find` treats `*`, `?` and `~` as wildcards, so a search for `Q1*`
+  would quietly match text nobody asked about. Its omitted arguments inherit
+  from the last search performed anywhere in the application - including one a
+  person ran by hand - so the same request can mean different things on
+  different machines. And `Replace` reports how many cells it changed and never
+  which, so a receipt built on it could not name what moved. Reading the range
+  once and matching in code costs two COM calls regardless of how many cells
+  match, against three per match for a `Find`/`FindNext` walk, and it makes the
+  matching rule something this repository states and tests rather than something
+  Excel decides.
+
+  Every replacement is composed and checked before any is written. A partial
+  replacement can turn a label into a formula - `x=1` losing its `x` leaves
+  `=1`, which Excel stores as a formula - so the whole request is refused before
+  a single cell changes rather than half a sheet being rewritten and then
+  stopped.
+
+- **`Create` makes an empty workbook, or adds an empty worksheet.** `file
+  create` appeared in 9 sessions and `worksheet create` in 7; both were hard
+  walls, since every other operation requires a target that already exists.
+  Creation never overwrites: an existing file or an existing sheet name is
+  refused outright, and there is no confirmation that unlocks it, because a
+  caller who wants to replace a workbook should say so with a save. A new sheet
+  is added after the last one, so it never displaces the sheet the workbook
+  opens on. Creation is deliberately empty - no template, no seeded content -
+  because the operations that fill a sheet already exist and each verifies its
+  own work.
+
+  Creating a workbook is the one operation whose target must *not* exist, so
+  inspection now carries `TargetMustExist` and this is the only request that
+  sets it false. It also never asks to confirm an overwrite, because it is
+  refused outright if anything is there - asking would authorize nothing and
+  teach the caller to set the flag reflexively.
+
+### Fixed - all three found by the A/B run, before any user hit them
+
+- **Two operations shipped unreachable.** The operation union counts its
+  payloads by hand, and `FindReplace` and `Create` were absent from that count,
+  so a request carrying only one of them failed the arity check and never
+  reached its own validation. Both looked complete in every other respect. The
+  count is now a list rather than a chain of additions, and a test builds one
+  request per `ExcelOperationKind` and asserts none fails on arity, so the next
+  operation cannot ship the same way.
+- **`NeedsConfirmation` described the wrong thing.** A same-file Apply missing
+  its overwrite flag came back saying "The requested copy output already exists"
+  - a sentence about a file the request never mentioned. The requirement's own
+  prompt was correct all along; only the summary lied, and the summary is the
+  line a caller reads first. It is now built from the requirements themselves.
+- **`Create` enforced a weaker rule than it stated.** The schema and the
+  rejection message both said Isolated; the check only rejected `UseOpen`, so
+  `AskIfOpen` reached a confirmation whose two answers are an option creation
+  refuses and an option inspection then rejects. Now Isolated exactly, matching
+  macro editing.
+- **The real-Excel MCP tests could report leaks that never happened.** They
+  snapshotted the process table once, the instant the test body returned, while
+  the Excel project's equivalent has settled and retried since 0.9.0. Excel
+  exits asynchronously, and running both assemblies at once - which
+  `dotnet test` on the solution does and `scripts/Test-Mvp.ps1` deliberately
+  does not - made one assembly's fixtures look like the other's leaks. The
+  assertion no longer depends on the caller remembering to serialize.
+
+### Interface
+
+- Every rule the engine rejects on for the two new operations is stated in the
+  schema. Measured this release, not assumed: on the creation tasks the arm
+  without those clauses scored **0 of 6** against 5 of 6 with them, every failure
+  the identical binding rejection (Fisher exact two-sided p = 0.015). On
+  find/replace the 10,000-cell bound accounted for all three failures of a
+  546,000-cell used range. The `* and ? are literal` clause is recorded as
+  **unvalidated** - both arms got it right without being told.
+- **The overwrite gate's wording is the study's most persistent defect and is
+  now rewritten.** Six of seven remaining failures were a same-file Apply sent
+  without `overwriteConfirmed` - round 1's headline failure recurring on a rule
+  that *was* stated. "An existing save destination" does not read as *the
+  workbook you are editing*. It now names the rule per save mode, and
+  `auditWorkbookFlows` now says to supply `{}` rather than only that it takes no
+  options. With both, the surface scored **18/18 clean on every task and every
+  dimension**, against 14/18 before. Directional rather than proven (p = 0.104,
+  and all four failures came from one run), applied on the same mechanical
+  grounds as the round 5 live-binding clause: most frequent failure in the whole
+  study, 180 bytes, nothing regressed.
+- The schema budget rises from 13 KB to 15 KB, which is what two operations with
+  29 sessions of measured demand between them buy.
+
 ## 0.10.1 - 2026-08-10
 
 - Closed the interface study's follow-on audit: the eight rules the engine

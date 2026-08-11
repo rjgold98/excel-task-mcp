@@ -449,9 +449,130 @@ and the save attempted - producing `Unknown`, the worst possible answer for a ca
 it means "your file may or may not have changed." sbroenne refuses cleanly at open. Checking
 writability during preflight would turn this into a clean `Rejected`.
 
+## Round 10 - the v0.11.0 operations, and a defect the run found in the old ones
+
+Two new operations shipped in v0.11.0 (`FindReplace`, `Create`). This round asks the
+same question rounds 3 and 6 asked, about them: does stating the rules the engine
+rejects on change the first call?
+
+Two changes to method, both worth keeping:
+
+- **The oracle is the shipped code, not a transcription of it.** A small console app
+  references `ExcelTask.Core` and runs each proposed call through the real
+  `ExcelTaskEngine` with execution faked. Round 7's lesson was that a hand-written
+  oracle can be wrong; this one cannot disagree with the product because it *is* the
+  product. Three scorer bugs inverted results in earlier rounds, and none was
+  possible here.
+- **Both arms are generated from the schema the server publishes**, by textual
+  removal of exactly the clauses that state a rejection rule. The arms differ by
+  576 characters and nothing else.
+
+Sonnet 5, 6 tasks x 3 reps per arm. `clean` means the shipped validation accepts the
+call *and* the call does what the user asked.
+
+| Arm | Clean | Creation tasks | Find/replace tasks |
+|---|---:|---:|---:|
+| `unstated` | 0.67 | **0/6** | 12/12 |
+| `stated` | 0.78 | 5/6 | 9/12 |
+| `statedplus` | **1.00** | 6/6 | 12/12 |
+
+### Creation: the binding rule is worth its bytes
+
+Every one of the six `unstated` creation failures is the identical rejection -
+`Creating a workbook or worksheet requires workbook binding Isolated` - because the
+arm's schema never said so. **5/6 versus 0/6, Fisher exact two-sided p = 0.015**;
+pooling both stated arms gives 11/12 versus 0/6, p = 0.0004. This replicates the
+round 3 and 6 finding on a new pair of operations.
+
+### Find/replace: one clause validated, one not
+
+Round 1's tasks stayed inside the search bound, so the cap it documents was never
+exercised - a flaw in the tasks, not a result. A second round of three tasks built
+to reach the new rules found:
+
+| Task | `stated` | `unstated` |
+|---|---:|---:|
+| `over_cap` - used range 546,000 cells | 1/2 | **0/3** |
+| `wildcard_urge` - literal `Q1*` in the search text | 1/2 | 3/3 |
+| `strip_prefix` - replacement would leave `=Opening balance` | 2/2 | 2/3 |
+
+**The 10,000-cell bound pays.** All three `unstated` runs failed `over_cap`; two were
+rejected verbatim with `A find/replace range must be at most 10,000 cells` and the
+third named no range at all, which the runtime refuses against a 546,000-cell used
+range. Small n, same mechanism as the round 7 end-to-end result.
+
+**The wildcard clause did not pay, and is recorded as unvalidated.** Every run in both
+arms used the literal `Q1*` correctly. `* and ? are literal, not wildcards` costs
+about 40 bytes and bought nothing measurable here. It is kept because it documents a
+deliberate divergence from Excel's own Find that a reader would otherwise assume the
+other way, but it should not be counted among the proven clauses.
+
+### The defect the run found: the overwrite gate, again
+
+Six of the seven `stated`-arm failures across both rounds were the same thing, and it
+had nothing to do with the new operations: **a same-file Apply sent without
+`overwriteConfirmed`**. This is round 1's headline defect - 44 of its 51 failures -
+recurring on a rule that *is* stated.
+
+The wording was the cause. "Explicit authorization required before Apply can overwrite
+an existing save destination" does not read as *the workbook you are editing*; a model
+that is not writing a copy concludes there is no save destination to overwrite. The
+`statedplus` arm spells it per save mode instead, and adds one clause for a second
+thing the run exposed - `auditWorkbookFlows` says "takes no options", so a run omitted
+the payload entirely and was rejected for supplying none.
+
+`statedplus` scored **18/18, a perfect clean rate on every task and every dimension.**
+
+Against `stated` that is 18/18 versus 14/18, **Fisher exact two-sided p = 0.104** - the
+direction is right and this is *not* significant. Two honest caveats:
+
+- All four `stated` failures came from a **single run**, so the 18 decisions are not
+  independent. Per run it is 3/3 perfect versus 2/3, which is n = 3 and no statistic
+  at all.
+- `statedplus` changed **two** clauses, so the improvement cannot be attributed to
+  either alone.
+
+It is applied anyway, on the same mechanical grounds as round 5's live-binding clause:
+the failure it addresses is the most frequent one in the entire study across four
+years of rounds and two models, the cost is 180 bytes, and nothing regressed.
+
+### Three product defects this round found before any user did
+
+The A/B was measuring the interface and kept finding the engine instead. All three are
+fixed in v0.11.0.
+
+1. **`FindReplace` and `Create` were unreachable.** The operation union counts its
+   payloads by hand and neither new one was in the count, so a request carrying only
+   one of them failed the arity check before reaching its own validation. Every other
+   part of both operations was complete and tested. A test now builds one request per
+   `ExcelOperationKind` and asserts none fails on arity.
+2. **`NeedsConfirmation` described the wrong thing.** A same-file Apply missing its
+   overwrite flag came back saying *"The requested copy output already exists"* - a
+   sentence about a file the request never mentioned. The requirement's own prompt was
+   correct; only the summary lied, and the summary is the line a caller reads first.
+3. **`Create` enforced a weaker rule than it stated.** The schema and the rejection
+   message both said Isolated; the check only rejected `UseOpen`, so `AskIfOpen` slipped
+   through to a confirmation whose two answers are an option creation refuses and an
+   option inspection then rejects. Now Isolated exactly, matching macro editing.
+
+A fourth, in the harness rather than the product: the McpServer real-Excel tests
+snapshotted the process table once, the instant the test body returned, while the Excel
+project's equivalent has settled and retried since 0.9.0. Running both assemblies at
+once - which `dotnet test` on the solution does and `scripts/Test-Mvp.ps1` deliberately
+does not - made one assembly's fixtures look like the other's leaks. Four tests failed
+that way and none had leaked anything. The assertion no longer depends on the caller
+remembering to serialize.
+
 ## Reproducing
 
-Harness lives outside the repo (scratchpad `abtest/`): `variants.py` builds the surfaces,
+Round 10's harness is a different one and also lives outside the repo (scratchpad
+`abtest/`): `dump-schema.ps1` speaks MCP to the built server and captures the real
+`tools/list`, `build-arms.ps1` derives the `unstated` arm from it by textual clause
+removal and fails loudly if a clause it expects is missing, `generate-prompts.ps1`
+emits self-contained prompts, `oracle/` is the console app that replays decisions
+through `ExcelTaskEngine`, and `score.ps1` joins the two.
+
+Rounds 1-9 (scratchpad `abtest/`): `variants.py` builds the surfaces,
 `tasks_hard.py` / `tasks_big.py` hold the suites, `generate_*.py` emit self-contained
 prompts, and `score_hard.py` / `score_big.py` replay decisions against the engine oracle.
 Agents are told not to read the task or scoring modules, so the rules never leak into the
