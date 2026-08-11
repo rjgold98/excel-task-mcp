@@ -58,6 +58,16 @@ coordination. One run per workflow; not yet a benchmark.
 - The repeated benchmark: one MCP catalog per client profile, three or more
   repetitions per workflow, median and spread, order alternated. Until then no
   percentage above is quoted as characteristic.
+- **The schema budget is nearly spent: 16,012 bytes of 16,384 at 0.15.1.** The
+  next description that states a rule will fail the pin test, and the strategy
+  this project chose - no new tools, richer descriptions on the one that exists
+  - spends exactly that budget. So the next addition has to buy its space from
+  text already there rather than append. Two candidates to reclaim it: the
+  eleven payload descriptions each re-state "all other payloads must be null"
+  (~400 bytes of pure repetition, and the enum plus the `required` list already
+  carry the rule), and several restate their kind name, which the property name
+  already gives. Do that reclamation *before* the next feature, not during one,
+  so a budget failure never arrives disguised as a feature bug.
 
 ## Candidates, ranked by measured demand
 
