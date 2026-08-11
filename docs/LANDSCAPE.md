@@ -5,6 +5,14 @@ extracted, top 25 adversarially verified by three independent votes each — 22 
 refuted (listed at the end, and not used). Repository facts are as of this date in a fast-moving
 ecosystem.
 
+Spot-check, same day, independent of the original run: eight of the load-bearing citations were
+re-fetched at source. All eight held, including the two carrying the most specific numbers — the
+tool-description study's 97.1%/856/103 and the verified-tool-calls 100%-vs-64%, the latter found
+in the body (Section 6.1) rather than the abstract, where checking only the abstract would have
+produced a false refusal. Two attributions were softer than the sources supported and have been
+narrowed in place: EPPlus's function count carried a version the wiki does not state, and
+SpreadsheetBench's venue is not named on its own project page.
+
 ## The fault line: live Excel vs the file format
 
 Every spreadsheet MCP server picks one of two mechanisms.
@@ -70,7 +78,8 @@ Outlier does not mean wrong. The two loudest corroborations come from outside:
 
 The headless C# path (EPPlus, ClosedXML) is not formula-blind:
 [EPPlus](https://github.com/EPPlusSoftware/EPPlus/wiki/Formula-Calculation) "evaluates formulas
-entirely in .NET" (478 functions in v8.6), and
+entirely in .NET" (478 built-in functions; the wiki page states the count without attributing it
+to a version), and
 [ClosedXML](https://github.com/ClosedXML/ClosedXML/blob/develop/docs/concepts/formula-calculation.rst)
 walks a calculation chain with dirty tracking and cycle detection. Both are partial
 re-implementations of Excel semantics — function subsets, no iterative calculation — which is the
@@ -83,8 +92,9 @@ The survey's verified tier established the *design contrast* (everyone else acce
 formulas); the *empirical grounding* below was extracted from primary sources but fell outside
 the 25-claim verification budget — treat as sourced leads, not confirmed findings:
 
-- [SpreadsheetBench](https://spreadsheetbench.github.io/) (NeurIPS 2024): best model/scaffold
-  ~70% Pass@1 on 912 real-world spreadsheet edits.
+- [SpreadsheetBench](https://spreadsheetbench.github.io/): best reported score 70.48% on 912
+  questions derived from real-world scenarios. (The project page links an OpenReview paper but
+  does not itself name the venue; a NeurIPS 2024 attribution was not confirmed from the page.)
 - FLARE benchmark ([arXiv 2506.17330](https://arxiv.org/pdf/2506.17330)): "most models fail
   silently: they produce plausible outputs that conceal" errors — the exact failure mode the
   refusal-plus-verification stance targets.

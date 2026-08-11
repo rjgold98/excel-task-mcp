@@ -183,8 +183,8 @@ client cache untouched.
 ## Current boundary
 
 Version 0.14.0 is the current stable release: formula, exhibit, macro editing,
-discovery, range reading, constant writes, find/replace, creation, and number
-formats.
+discovery, range reading, constant writes, find/replace, creation, number
+formats, and structure scanning without Excel.
 It does not yet set fonts, fills, borders or widths, refresh Power Query or data
 models, attach to unsaved workbooks, edit sheet or class modules, or expose a
 general automation surface.
