@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.15.0 - 2026-08-11
+
+### Added - the scan reports three more things, and stays silent about four
+
+- **`ScanWorkbookStructure` now reports defined names, tables, and external
+  links**, alongside the sheets, formula/constant counts and constant islands it
+  already found. All three are plain XML inside the package, so they cost
+  nothing beyond the read already happening and still start no Excel.
+- **External links are reported by file name only.** A link's stored target is
+  a full path - `file:///C:/Work/Shared/Ref.xlsx` names a share, a machine, or
+  a person's directory layout. The scan reports `Ref.xlsx` and a test asserts
+  the reported name contains no separator, holding the same line the audit does.
+- **It deliberately reports nothing about macros, queries, the data model, or
+  connections**, and a test asserts that silence against a fixture that contains
+  a VBA project. A part-by-part inventory found those four are not readable from
+  the package: VBA is a binary OLE compound file, Power Query is base64 of a
+  nested ZIP under an undocumented element, and the model is opaque. An
+  operation that answered some categories behind a summary reading as complete
+  would be a receipt that lies, so the scan does not answer them at all - use
+  `AuditWorkbookFlows`, which opens Excel and can.
+
+### Changed - the field survey, tested rather than adopted
+
+- **`docs/LANDSCAPE.md` corrected at three points** after going to the primary
+  sources. Its headline finding - that a published study measured +67% execution
+  steps from richer tool descriptions, seemingly refuting this project's own
+  measured 32% *fewer* calls - does not conflict: the study counts model
+  invocations, not tool calls, and its baseline was defect-carrying descriptions
+  found in the wild rather than our fixed-schema comparison. Also closed an open
+  question from a competitor's own docs and hedged a uniqueness claim that
+  rested on a five-server sample.
+- **The README states where Microsoft stands.** KB 257757 says server-side
+  Office automation is unsupported and points at Open XML instead. That targets
+  unattended service use and this is client-side automation with a person in the
+  loop, but anyone in a regulated environment should read it up front rather
+  than find it later.
+
+### Fixed
+
+- **A test whose assertions passed no longer fails on `rmdir`.** The macro
+  round-trip threw `IOException` from its cleanup after correctly proving owned
+  Excel had exited - Windows had not yet released the file behind the process it
+  watched die. All 52 temp-directory cleanups now retry briefly, then give up
+  silently.
+
 ## 0.14.1 - 2026-08-11
 
 ### Fixed - the field check could fail a machine that had leaked nothing
