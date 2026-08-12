@@ -41,11 +41,9 @@ ordinary untrusted review input.
 The normative token grammar is:
 
 ```text
-slug       = [a-z0-9]+(?:-[a-z0-9]+)*
-positive   = [1-9][0-9]*
-request    = ^<!-- excel-task-agent-relay:v1 kind=request from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) -->$
-response   = ^<!-- excel-task-agent-relay:v1 kind=response from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) in-reply-to=(positive) -->$
-ack        = ^<!-- excel-task-agent-relay:v1 kind=ack from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) in-reply-to=(positive) -->$
+request  = ^<!-- excel-task-agent-relay:v1 kind=request from=(codex|claude) to=(claude|codex) thread=([a-z0-9]+(?:-[a-z0-9]+)*) turn=([1-9][0-9]*) -->$
+response = ^<!-- excel-task-agent-relay:v1 kind=response from=(codex|claude) to=(claude|codex) thread=([a-z0-9]+(?:-[a-z0-9]+)*) turn=([1-9][0-9]*) in-reply-to=([1-9][0-9]*) -->$
+ack      = ^<!-- excel-task-agent-relay:v1 kind=ack from=(codex|claude) to=(claude|codex) thread=([a-z0-9]+(?:-[a-z0-9]+)*) turn=([1-9][0-9]*) in-reply-to=([1-9][0-9]*) -->$
 ```
 
 The regexes are ASCII and apply to the complete first line before its newline.
