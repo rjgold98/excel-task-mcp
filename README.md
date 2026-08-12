@@ -1,4 +1,4 @@
-# ExcelTask 0.17.2
+# ExcelTask 0.18.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -33,16 +33,25 @@ One request can perform exactly one operation:
    leaving any cell whose text comes from a formula reported but untouched; or
 9. create an empty workbook, or add an empty worksheet, never overwriting
    either; or
-10. set one number format code across a bounded range, changing how numbers
-    display and never the numbers themselves; or
+10. set how a bounded range looks - number format, bold, italic, font size, name
+    and colour, fill, borders, column width, row height - changing no cell value;
+    or
 11. map a workbook's structure by reading the file directly - no Excel process
     at all: sheets, dimensions, formula/constant counts, the constant islands
     that mark manual overrides inside calculated columns, plus defined names,
-    tables, and external links by file name; then
-12. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-    the worksheet, repairs, procedure, written values, replacements, or format;
-    and
-13. return a compact, structured receipt.
+    tables, and external links by file name; or
+12. create, rename, restyle, resize, or convert back to plain cells one Excel
+    table, keeping every cell when the table goes; or
+13. create, replace, or delete one Power Query, guarded by the fingerprint a Plan
+    reports. Plan never returns the expression, because an M expression usually
+    names a server; or
+14. create, replace, or delete one Data Model measure, guarded the same way -
+    and here Plan does return the DAX, because it names model tables and columns
+    rather than servers; then
+15. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+    the worksheet, repairs, procedure, written values, replacements, format,
+    table, query, or measure; and
+16. return a compact, structured receipt.
 
 Operations 5 and 6 never write, and say so from evidence: their receipts carry a
 check proving the workbook's size and timestamp were identical before and after.
@@ -72,7 +81,8 @@ suppressed either way.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `FindReplace`, `Create`, `SetNumberFormat`, or `ScanWorkbookStructure`. Supply exactly the one matching payload. It never
+  `FindReplace`, `Create`, `SetRangeFormat`, `ScanWorkbookStructure`, `ManageTable`,
+  `ManageQuery`, or `ManageModelMeasure`. Supply exactly the one matching payload. It never
   accepts formula text or `FormulaR1C1`: `WriteWorksheetValues` takes constants
   only and rejects any value starting with `=`, and `FindReplace` refuses a
   replacement that would leave a cell starting with `=` even when the
@@ -183,13 +193,13 @@ client cache untouched.
 
 ## Current boundary
 
-Eleven operations ship today: formula, exhibit, macro editing, discovery, range
-reading, constant writes, find/replace, creation, number formats, worksheet
-repair, and structure scanning without Excel. The version is the heading above,
+Fourteen operations ship today: formula, exhibit, macro editing, discovery, range
+reading, constant writes, find/replace, creation, worksheet repair, structure
+scanning without Excel, range formatting, table management, Power Query
+mutation, and Data Model measures. The version is the heading above,
 and the build is always the
 [latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest).
-It does not yet set fonts, fills, borders or widths, refresh Power Query or data
-models, attach to unsaved workbooks, edit sheet or class modules, or expose a
+It does not yet refresh Power Query or data models, add Data Model relationships, attach to unsaved workbooks, edit sheet or class modules, or expose a
 general automation surface.
 Authentication or IRM can still require a person; a macro dialog or timeout is
 `Unknown` and must be reconciled before retrying.

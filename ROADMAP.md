@@ -62,13 +62,13 @@ Updated every release; `docs/FIELD-TASK.md` step 4 checks against these.
 
 | Suite | Count |
 |---|---|
-| Core | 134 |
+| Core | 146 |
 | Excel (fast) | 88 |
 | McpServer (fast) | 18 |
-| **Fast total** | **240** |
-| Excel (OnDemand, real Excel) | 37 |
+| **Fast total** | **252** |
+| Excel (OnDemand, real Excel) | 44 |
 | McpServer (OnDemand) | 4 |
-| **Full gate total** | **281** |
+| **Full gate total** | **300** |
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -168,6 +168,14 @@ latter already answered by `ScanWorkbookStructure`. These two are not.
   `InspectCore` uses to set `TargetIsOpen`, which becomes "The exact target
   workbook is open." The word *exact* is carrying weight that code path does not
   supply. Fix is to bind and confirm, as its two siblings already do.
+
+- **`ManageModelMeasure` has no field-check step.** Exercising it needs a
+  workbook whose Data Model holds a table, which only exists once a query has
+  been loaded into the model - buildable, but it makes the check depend on
+  Power Query being permitted by policy on the machine under test. The coverage
+  line will name it as not exercised on every run, which is the honest state and
+  exactly what that reporter is for. Close it by building the model fixture in
+  the check, tolerating the case where policy forbids it.
 
 ## Open field gates (small, when convenient)
 

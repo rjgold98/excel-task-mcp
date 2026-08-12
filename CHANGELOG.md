@@ -16,6 +16,75 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.18.0 - 2026-08-12
+
+Four capabilities the owner asked for by name. Eleven operations become
+fourteen, and the number-format operation becomes the whole of `range_format`.
+
+### Added - `SetRangeFormat` replaces `SetNumberFormat`
+
+- **Fonts, fills, borders and widths**, alongside the number format it already
+  had: bold, italic, font size, name and colour, fill colour, borders and their
+  weight, column width, row height. Every field is optional and independent -
+  formatting is the one mutation with no recoverable prior state on the sheet,
+  so changing a fill must not require restating a font. Supplying nothing is
+  refused rather than performed, because a no-op returning `Completed` hides a
+  caller who meant to send a field.
+- Colours are `#RRGGBB` and converted to the byte order Excel actually stores,
+  which is the whole difference between asking for red and getting blue.
+  Clearing a fill is `None` and changes the pattern rather than painting white.
+- **Verification cannot catch a misspelled font, and the description says so.**
+  Excel stores whatever name it is given and substitutes only when rendering, so
+  the read-back always agrees. This was assumed to work the other way while the
+  operation was being built; the test that expected `Unknown` and got
+  `Completed` is what corrected it, and it now pins the real behaviour.
+
+### Added - `ManageTable`, beyond listing
+
+- Create a table over a range, rename, restyle, resize, or convert one back to
+  plain cells. `ConvertToRange` is the only action another call cannot undo, so
+  it keeps every cell and drops only the table over them.
+- A style Excel does not have is reported rather than ignored: Excel keeps the
+  style it had, which reads as success from the assignment.
+
+### Added - `ManageQuery`, Power Query mutation
+
+- Create, replace, or delete one Power Query, guarded by the fingerprint a Plan
+  reports - the same precondition a macro edit uses, because a query decides
+  where a workbook's numbers come from.
+- **Plan never returns the M expression.** An M expression usually names a
+  server and a database and sometimes a key, and `AuditWorkbookFlows` already
+  refuses to return query text for that reason. Returning it here would have
+  been a hole in a rule the rest of the product keeps. The fingerprint proves
+  the caller is replacing what they looked at; the expression is read in Excel.
+
+### Added - `ManageModelMeasure`, Data Model mutation
+
+- Create, replace, or delete one Data Model measure, guarded the same way. Here
+  Plan **does** return the DAX, because DAX names model tables and columns
+  rather than servers - the two operations differ because the risk differs.
+- A leading equals sign is refused by name. Excel's own measure editor shows
+  one, the object model rejects it, and the COM error says only "value does not
+  fall within the expected range".
+- Only measures. Model tables come from loading a query into the model, which
+  `ManageQuery` now makes possible. Relationships are deliberately absent: a
+  wrong one silently changes every number the model produces, and the operation
+  that adds one should be able to show what it would join first.
+
+### Changed
+
+- **The schema bound rose 16 KB to 22 KB, and was paid down first.** Reclaiming
+  repetition returned enough that `ManageTable` fitted with no rise at all; the
+  query and measure operations then cost what a thirteenth and fourteenth
+  operation genuinely cost. What remains is load-bearing prose, so the pin now
+  records that fourteen is where a one-tool server should be asking whether the
+  fifteenth earns its bytes.
+- **A safety guard was narrowed, deliberately.** A test banned any schema
+  property named `*model*`, written to stop a field selecting an LLM. Excel's
+  Data Model is now legitimately part of the surface, so the ban is on the names
+  that would actually mean model selection. The enforcement that matters - no
+  model SDK, no such parameter - is unchanged.
+
 ## 0.17.2 - 2026-08-12
 
 A code review of 0.17.1, and a leak the gate caught that the review did not.
