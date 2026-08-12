@@ -12,15 +12,29 @@ using ExcelTask.Core;
 namespace ExcelTask.Excel;
 internal sealed class StaComDispatcher : IDisposable
 {
+    private static int _liveInstances;
+
     private readonly BlockingCollection<IWorkItem> _queue = new(boundedCapacity: 32);
     private readonly Thread _thread;
     private bool _disposed;
+
+    /// <summary>
+    /// Dispatchers constructed and not yet disposed, which is one STA thread each.
+    ///
+    /// Instrumentation rather than bookkeeping: nothing here reads it. A redundant field
+    /// initializer once constructed a second dispatcher on every mutating Apply and immediately
+    /// orphaned it - the thread parked forever, the queue was never disposed - and that was
+    /// invisible for the defect's entire life precisely because nothing counted. A test can now
+    /// assert the count returns to where it started.
+    /// </summary>
+    internal static int LiveInstances => Volatile.Read(ref _liveInstances);
 
     public StaComDispatcher()
     {
         _thread = new Thread(Run) { IsBackground = true, Name = "ExcelTask COM STA" };
         _thread.SetApartmentState(ApartmentState.STA);
         _thread.Start();
+        Interlocked.Increment(ref _liveInstances);
     }
 
     public Task<T> InvokeAsync<T>(Func<T> callback, CancellationToken cancellationToken)
@@ -43,6 +57,7 @@ internal sealed class StaComDispatcher : IDisposable
         _queue.CompleteAdding();
         _thread.Join();
         _queue.Dispose();
+        Interlocked.Decrement(ref _liveInstances);
     }
 
     private void Run()

@@ -121,7 +121,13 @@ public sealed partial class ExcelWorkbookRuntime
                     ? "The workbook creation failed after the save was attempted."
                     : "The workbook creation was rejected before anything was written.",
                 changes, checks, CanRetry: !mutationAttempted,
-                RetryReason: mutationAttempted ? "Inspect the requested path before retrying." : null);
+                // A retryable rejection has to say what to change, or the caller resubmits the same
+                // request. The only failure that reaches here before the save is naming the starting
+                // worksheet, and the reason is almost always a name Excel reserves - History, and its
+                // few siblings - which the engine's character-and-length validation cannot know about.
+                RetryReason: mutationAttempted
+                    ? "Inspect the requested path before retrying."
+                    : "Excel refused the request before writing anything. If a worksheet name was supplied, try another - Excel reserves a few names that are otherwise valid.");
         }
         finally
         {

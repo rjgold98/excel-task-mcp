@@ -47,19 +47,39 @@ public static class ReceiptBounds
 
     public static string RequiredText(string? value, int maxText) => Text(value, maxText) ?? string.Empty;
 
+    // Every method here rewrites the fields it caps and must carry the rest through untouched, so
+    // all of them use `with` rather than a constructor. Rebuilding positionally is what silently
+    // reset WorksheetCell.IsFormula to its default on every read: a field the caller never named
+    // was dropped by omission, at all three seams, and no test could see it because the receipts
+    // going in were built the same way. `with` fails safe - a field added to any of these records
+    // survives by default instead of vanishing until someone notices.
+
     public static TaskChange[] Changes(IReadOnlyList<TaskChange>? changes, int maxText) => (changes ?? [])
         .Take(MaxItems)
-        .Select(change => new TaskChange(RequiredText(change.Kind, maxText), RequiredText(change.Target, maxText), RequiredText(change.Summary, maxText)))
+        .Select(change => change with
+        {
+            Kind = RequiredText(change.Kind, maxText),
+            Target = RequiredText(change.Target, maxText),
+            Summary = RequiredText(change.Summary, maxText)
+        })
         .ToArray();
 
     public static TaskCheck[] Checks(IReadOnlyList<TaskCheck>? checks, int maxText) => (checks ?? [])
         .Take(MaxItems)
-        .Select(check => new TaskCheck(RequiredText(check.Name, maxText), check.Passed, RequiredText(check.Detail, maxText)))
+        .Select(check => check with
+        {
+            Name = RequiredText(check.Name, maxText),
+            Detail = RequiredText(check.Detail, maxText)
+        })
         .ToArray();
 
     public static ConfirmationRequirement[] Requirements(IReadOnlyList<ConfirmationRequirement>? requirements, int maxText) => (requirements ?? [])
         .Take(MaxItems)
-        .Select(requirement => new ConfirmationRequirement(RequiredText(requirement.Code, maxText), RequiredText(requirement.Prompt, maxText)))
+        .Select(requirement => requirement with
+        {
+            Code = RequiredText(requirement.Code, maxText),
+            Prompt = RequiredText(requirement.Prompt, maxText)
+        })
         .ToArray();
 
     /// <summary>
@@ -69,11 +89,14 @@ public static class ReceiptBounds
     /// capped far shorter than the range is deep: a long cell is usually a pasted paragraph, and one
     /// of them must not crowd out the four hundred cells around it.
     ///
-    /// Bounding rewrites two fields and must carry the rest through untouched. Constructing a fresh
-    /// <see cref="WorksheetCell"/> here silently reset <c>IsFormula</c> to its default of false on
-    /// every cell, at all three seams - so every read told the caller that nothing in the range was
-    /// a formula. `with` is used rather than a constructor precisely so that a field added later
-    /// survives by default instead of being dropped by omission.
+    /// Constructing a fresh <see cref="WorksheetCell"/> here silently reset <c>IsFormula</c> to its
+    /// default of false on every cell, at all three seams - so every read told the caller that
+    /// nothing in the range was a formula. That is why every method in this module uses `with`.
+    ///
+    /// Cell text goes through <see cref="RequiredText"/> rather than an inline length test, because
+    /// the receipt this bounds arrives deserialized from the worker pipe, where a non-nullable
+    /// annotation buys nothing: a frame carrying a null text would have made the inline
+    /// <c>cell.Text.Length</c> throw inside the seam whose job is to make an untrusted receipt safe.
     /// </summary>
     public static WorksheetRangeReceipt? Range(WorksheetRangeReceipt? range, int maxText)
     {
@@ -84,9 +107,7 @@ public static class ReceiptBounds
             .Select(cell => cell with
             {
                 Address = RequiredText(cell.Address, maxText),
-                Text = cell.Text.Length <= ExcelTaskEngine.MaxReadCellTextLength
-                    ? cell.Text
-                    : cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
+                Text = RequiredText(cell.Text, ExcelTaskEngine.MaxReadCellTextLength)
             })
             .ToArray();
 
@@ -106,14 +127,20 @@ public static class ReceiptBounds
 
         var items = audit.Items
             .Take(MaxItems)
-            .Select(item => new WorkbookFlowItem(
-                RequiredText(item.Kind, maxText),
-                RequiredText(item.Name, maxText),
-                RequiredText(item.Detail, maxText),
-                Text(item.DependsOn, maxText)))
+            .Select(item => item with
+            {
+                Kind = RequiredText(item.Kind, maxText),
+                Name = RequiredText(item.Name, maxText),
+                Detail = RequiredText(item.Detail, maxText),
+                DependsOn = Text(item.DependsOn, maxText)
+            })
             .ToArray();
 
-        return new WorkbookAuditReceipt(items, audit.TotalFound, audit.Truncated || audit.Items.Count > items.Length, audit.WorkbookUnchanged);
+        return audit with
+        {
+            Items = items,
+            Truncated = audit.Truncated || audit.Items.Count > items.Length
+        };
     }
 
     /// <summary>
@@ -135,12 +162,12 @@ public static class ReceiptBounds
             if (normalized.Length <= MacroProcedureText.MaxSourceCharacters) source = normalized;
         }
 
-        return new MacroProcedureReceipt(
-            RequiredText(receipt.ComponentName, maxText),
-            RequiredText(receipt.ProcedureName, maxText),
-            RequiredText(receipt.Sha256, maxText),
-            source,
-            receipt.RunRequested,
-            receipt.RunCompleted);
+        return receipt with
+        {
+            ComponentName = RequiredText(receipt.ComponentName, maxText),
+            ProcedureName = RequiredText(receipt.ProcedureName, maxText),
+            Sha256 = RequiredText(receipt.Sha256, maxText),
+            Source = source
+        };
     }
 }

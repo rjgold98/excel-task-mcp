@@ -946,6 +946,50 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task CreateRefusesAWorksheetNameExcelReservesWithoutClaimingAnythingWasWritten()
+    {
+        // Excel reserves a handful of worksheet names, and they pass the engine's validation, which
+        // only knows about length and forbidden characters. The rename therefore fails inside the
+        // runtime with the target path still free and nothing on disk.
+        //
+        // That used to report Unknown and not-retryable, sending the caller to reconcile a file
+        // that was never created. The fix is one line - marking the mutation attempted after the
+        // rename rather than before - and nothing observed it, which is why this exists.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "reserved.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(
+                new ExcelTaskPlan("create-reserved", ExcelTaskPlans.Create(target, CreateKind.Workbook, "History")),
+                CancellationToken.None);
+
+            // Excel builds vary in which names they refuse. If this one was accepted the operation
+            // simply succeeds, and the assertion below would be about the wrong thing.
+            if (outcome.Status == ExcelTaskStatus.Completed)
+            {
+                Assert.True(File.Exists(target));
+                return;
+            }
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+            Assert.True(outcome.CanRetry);
+            // A retryable rejection has to say what to change, or the caller resubmits unchanged.
+            Assert.False(string.IsNullOrWhiteSpace(outcome.RetryReason));
+            // The whole basis for calling it Rejected rather than Unknown: nothing was written.
+            Assert.False(File.Exists(target));
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task CreateAddsAWorksheetAfterTheLastAndProvesItAfterReopening()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
