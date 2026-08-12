@@ -19,7 +19,7 @@ Three questions, in order of value. Everything else is confirmation.
 2. **What does the agent reach for instead of ExcelTask?** A previous session
    made 216 PowerShell calls against 71 ExcelTask calls. Knowing which receipt
    sent it away is worth more than any feature on the roadmap. Step 6.
-3. **Do all eleven operations still work on managed hardware?** Step 3.
+3. **Do all fifteen operations still work on managed hardware?** Step 3.
 
 ## Boundaries
 
@@ -34,6 +34,33 @@ These bind, and they come from `docs/AGENT-BRIDGE.md`.
   disposable copy step 5 asks for. Never a real business workbook.
 - Do not reconfigure or interfere with any other MCP install. Measuring is fine.
 - Anything this task does not cover is a question for Ross, not an improvisation.
+
+---
+
+## Step 0 — record what else is loaded (~2 min)
+
+This is new, and it comes from a finding rather than a guess. Two Excel skills
+were enabled on this machine during earlier sessions. One names nineteen tools,
+none of which exist here — ExcelTask advertises exactly one, `excel_task`. The
+other drives a **separate** Excel automation binary with its own sessions, and
+its own documentation says unclosed sessions leave Excel processes running.
+
+That second one matters to this task specifically: an Excel process started by
+something else **while the check is running** is counted as a process ExcelTask
+leaked, and the run prints `result=FAIL` for a leak that is not ours. Step 1a
+clears strays *before* the run; nothing protects the run from something started
+*during* it.
+
+1. List every skill currently **loaded and enabled**, whether or not it fires.
+   In the Copilot app that is `/skills`. **Paste the list into the report.**
+2. If any Excel-related skill is enabled, **say so and stop for Ross's decision**
+   before disabling anything. Disabling a client-side skill is not the same as
+   touching another MCP install, but it is close enough to the boundary above
+   that the owner makes the call, not the agent.
+3. Run nothing else that automates Excel for the duration of this task.
+
+A skill that shaped behaviour without ever being invoked is invisible to an
+invocation log, which is why the inventory is asked for separately from step 6.
 
 ---
 
@@ -171,12 +198,27 @@ changes no setting, and touches nothing of yours.
 & "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check
 ```
 
-It prints a digest of about fifteen lines and writes three files to
+It prints a digest of about twenty lines and writes three files to
 `Desktop\ExcelTask-FieldCheck`.
 
 **What good looks like:** every operation row reads `Completed` or `Planned`,
-every row ends `leaked=0`, the last line reads `Coverage: all 11 operations
-exercised.`, and the digest ends `leaked=0 result=PASS`. Exit code `0`.
+the last line reads `Coverage: all 15 operations exercised.`, and the digest
+ends `leaked=0 result=PASS`. Exit code `0`.
+
+A live row ending `excelStillUp=1` or `=2` is **not** a leak. It means Excel was
+still shutting down when that operation stopped waiting, which is ordinary here:
+four connected COM add-ins load into every instance and unload again on exit, so
+teardown runs past the twenty seconds the per-row wait allows. The written report
+reconciles every row against a final snapshot taken after everything has stopped.
+Judge leaks by the report's `Leaked Excel` column and the digest's `leaked=`,
+never by the console line — the 2026-08-12 run printed `L2` against three
+operations and `leaked=0 result=PASS` in the same file.
+
+The four Data Model rows — two `ManageModelMeasure`, two `ManageModelRelationship`
+— need a Data Model, which needs Power Query.
+If policy forbids it here, those rows are absent and a note says why — that is
+a machine answer, not a product failure, and the run can still pass. **Report
+the note verbatim if it appears.**
 
 ```powershell
 $LASTEXITCODE
@@ -274,7 +316,11 @@ VBA, no full paths, no prompt or reasoning content.
    operation kind, the mode, and the receipt status returned. **Not** arguments.
 2. Any `tool.execution_start` with no matching `tool.execution_complete`: which
    tool, when, and what followed it.
-3. Every skill invocation: name, timestamp, duration.
+3. Every skill invocation: name, timestamp, duration. Separately, every skill
+   **loaded and enabled** for the session, invoked or not — the step 0 list. A
+   skill that shaped the agent's behaviour without ever firing leaves no
+   invocation to log, and would otherwise confound exactly the question this
+   step exists to answer.
 4. Every subagent: label, duration, whether it completed.
 5. **For each `excel_task` call, the tool names of the three calls immediately
    before and after it.** This is the important one — it shows what the agent

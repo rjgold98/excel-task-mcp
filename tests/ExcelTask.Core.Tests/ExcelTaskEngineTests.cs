@@ -9,22 +9,19 @@ public sealed class ExcelTaskEngineTests
     [Fact]
     public void EveryModelFacingInputFieldHasADescription()
     {
-        var modelTypes = new[]
-        {
-            typeof(ExcelTaskRequest),
-            typeof(ExcelOperation),
-            typeof(CopyExhibitOperation),
-            typeof(RepairExistingWorksheetOperation),
-            typeof(ExtendFormulaSeriesOperation),
-            typeof(EditMacroProcedureOperation),
-            typeof(ReadWorksheetRangeOperation),
-            typeof(WriteWorksheetValuesOperation),
-            typeof(WorksheetCellValue),
-            typeof(FindReplaceOperation),
-            typeof(CreateOperation),
-            typeof(SetRangeFormatOperation),
-            typeof(ScanWorkbookStructureOperation)
-        };
+        // Derived from the union, not hand-kept. The list that used to be written out here had
+        // fallen three operations behind without failing - the same way the parallel payload array
+        // this project already replaced once went stale, and for the same reason: a list of what to
+        // check is only as current as the last person who remembered it exists.
+        var modelTypes = new[] { typeof(ExcelTaskRequest), typeof(ExcelOperation), typeof(WorksheetCellValue) }
+            .Concat(typeof(ExcelOperation).GetProperties()
+                .Select(property => Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType)
+                .Where(type => type.IsClass && type.Namespace == typeof(ExcelOperation).Namespace))
+            .Distinct()
+            .ToArray();
+
+        // Cheap proof the derivation found the payloads rather than an empty set that passes.
+        Assert.Equal(OperationCatalog.AllKinds.Count + 3, modelTypes.Length);
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
         {
@@ -182,6 +179,39 @@ public sealed class ExcelTaskEngineTests
         Assert.Equal(SaveMode.Same, runtime.InspectionRequest.Save);
         Assert.Equal(SaveMode.Same, receipt.Save.Mode);
         Assert.False(receipt.Save.OverwriteConfirmed);
+    }
+
+    [Theory]
+    [MemberData(nameof(ImpossibleRelationships))]
+    public async Task RejectsARelationshipThatCannotExistBeforeExcelIsStarted(ExcelOperation operation, string expected)
+    {
+        // Both are cheap to state and expensive to discover: Replace sounds like it would re-point
+        // an existing join and has no counterpart in the object model, and a table joined to itself
+        // is accepted as an argument and refused as a relationship. Naming them here means the
+        // caller learns why without an Excel launch.
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(operation), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
+        Assert.Contains(expected, receipt.Checks.Single().Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static IEnumerable<object[]> ImpossibleRelationships()
+    {
+        yield return
+        [
+            new ExcelOperation(ExcelOperationKind.ManageModelRelationship,
+                ManageModelRelationship: new("Sales", "CustomerId", "Customers", "Id", QueryAction.Replace)),
+            "delete it and create the new one"
+        ];
+        yield return
+        [
+            new ExcelOperation(ExcelOperationKind.ManageModelRelationship,
+                ManageModelRelationship: new("Sales", "ManagerId", "Sales", "Id", QueryAction.Create)),
+            "cannot be the same table"
+        ];
     }
 
     [Theory]
@@ -765,7 +795,8 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new()),
             new(ExcelOperationKind.ManageTable, ManageTable: new("Sheet1", TableAction.Rename, "Payroll", NewName: "PayrollFY26")),
             new(ExcelOperationKind.ManageQuery, ManageQuery: new("ProbeQuery", QueryAction.Delete)),
-            new(ExcelOperationKind.ManageModelMeasure, ManageModelMeasure: new("Sales", "Total", QueryAction.Delete))
+            new(ExcelOperationKind.ManageModelMeasure, ManageModelMeasure: new("Sales", "Total", QueryAction.Delete)),
+            new(ExcelOperationKind.ManageModelRelationship, ManageModelRelationship: new("Sales", "CustomerId", "Customers", "Id", QueryAction.Create))
         ];
 
         // The list above is the checklist: a new operation that is not added here fails this line

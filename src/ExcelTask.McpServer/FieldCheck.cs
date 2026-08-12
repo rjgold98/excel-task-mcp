@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ExcelTask.Core;
 using ExcelTask.Excel;
 using Microsoft.Win32;
@@ -51,7 +52,10 @@ internal sealed record OperationResult(
     int LeakedExcel,
     string Summary,
     string Checks,
-    string? Error);
+    string? Error,
+    // Excel processes still up when this operation's own wait expired. Kept out of the report
+    // because it is working data: the run's final snapshot turns it into the LeakedExcel above.
+    [property: JsonIgnore] IReadOnlyList<ProcessIdentity>? StillUpAtDeadline = null);
 
 /// <summary>
 /// Validates ExcelTask on a real machine and records comparable measurements. This is compiled
@@ -68,6 +72,9 @@ internal static class FieldCheck
     private const string MacroProcedure = "FieldMarker";
     private const string MacroBefore = "Public Sub FieldMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"before\"\nEnd Sub";
     private const string MacroAfter = "Public Sub FieldMarker()\n    ThisWorkbook.Worksheets(1).Range(\"A1\").Value2 = \"after\"\nEnd Sub";
+    private const string ModelTable = "FieldModel";
+    private const string ModelLookupTable = "FieldLookup";
+    private const string ModelMeasure = "FieldTotalK";
 
     public static async Task<int> RunAsync(string[] args)
     {
@@ -118,6 +125,9 @@ internal static class FieldCheck
             var macroNote = fixtures.TryCreateMacroFixture(
                 System.IO.Path.Combine(work, "macro-target.xlsm"), MacroComponent, MacroBefore);
             if (macroNote is not null) notes.Add(macroNote);
+            var modelNote = fixtures.TryCreateModelFixture(
+                System.IO.Path.Combine(work, "model-target.xlsx"), ModelTable, ModelLookupTable);
+            if (modelNote is not null) notes.Add(modelNote);
 
             Write("[3/4] Measuring the advertised tool surface...");
             var mine = await FieldCheckProbe.MeasureAsync("ExcelTask", serverPath, [], work, CancellationToken.None);
@@ -142,7 +152,7 @@ internal static class FieldCheck
             }
 
             Write("[4/4] Exercising each operation on disposable workbooks...");
-            await RunOperationsAsync(serverPath, work, macroNote is null, fixtures, operations, notes);
+            await RunOperationsAsync(serverPath, work, macroNote is null, modelNote is null, fixtures, operations, notes);
             ReportCoverageGaps(operations, notes);
         }
         catch (Exception exception)
@@ -158,8 +168,49 @@ internal static class FieldCheck
 
         // The headline number, so it gets the longest wait: teardown time scales with what the
         // operation did, and this figure is the product's central claim.
-        var leaked = FieldCheckFixtures.CountLeakedAfterSettling(preExisting, fixtures.OwnedProcesses, TimeSpan.FromSeconds(30));
-        return WriteReport(outputDirectory, serverPath, environment, surfaces, operations, notes, leaked);
+        var leaked = FieldCheckFixtures.LeakedAfterSettling(preExisting, fixtures.OwnedProcesses, TimeSpan.FromSeconds(30));
+        ReconcilePerOperationLeaks(operations, leaked, notes);
+        return WriteReport(outputDirectory, serverPath, environment, surfaces, operations, notes, leaked.Count);
+    }
+
+    /// <summary>
+    /// Turns each operation's provisional figure into what actually leaked.
+    ///
+    /// An operation waits twenty seconds for the Excel processes it started to finish exiting. That
+    /// is ample on a clean machine and not always enough on a managed one: the work computer loads
+    /// four connected COM add-ins into every Excel instance and unloads them again on every exit.
+    /// The run's own thirty-second snapshot is taken after everything has stopped and the harness
+    /// has terminated what it owns, so it is the only authoritative answer. A process in an
+    /// operation's list that is no longer running never leaked - it was still shutting down when
+    /// that operation stopped looking.
+    ///
+    /// Without this the field report read "Leaked Excel: 2" against three operations while stating
+    /// excelLeakedByProduct = 0 in the same file. Both cannot be true, and the one the eye lands on
+    /// was the wrong one: a false accusation of the single defect this product exists to rule out,
+    /// raised only on the class of machine whose verdict actually matters.
+    /// </summary>
+    internal static void ReconcilePerOperationLeaks(
+        List<OperationResult> operations,
+        IReadOnlyList<ProcessIdentity> leaked,
+        List<string> notes)
+    {
+        var stillRunning = leaked.ToHashSet();
+        var corrected = 0;
+        for (var index = 0; index < operations.Count; index++)
+        {
+            var operation = operations[index];
+            if (operation.StillUpAtDeadline is not { Count: > 0 } suspected) continue;
+
+            var actual = suspected.Count(stillRunning.Contains);
+            if (actual == operation.LeakedExcel) continue;
+            operations[index] = operation with { LeakedExcel = actual };
+            corrected++;
+        }
+
+        if (corrected > 0)
+        {
+            notes.Add($"{corrected} operation(s) still had an Excel process shutting down when their own twenty-second wait expired. Those processes had exited by the end of the run, so the per-operation counts above report only what was still running at the end. Excel teardown is slower here than that wait assumes, which is ordinary on a machine that loads COM add-ins into every instance.");
+        }
     }
 
     /// <summary>
@@ -186,6 +237,7 @@ internal static class FieldCheck
         string serverPath,
         string work,
         bool macroReady,
+        bool modelReady,
         FieldCheckFixtures fixtures,
         List<OperationResult> operations,
         List<string> notes)
@@ -321,6 +373,49 @@ internal static class FieldCheck
                     Formula: "let Source = #table({\"A\"}, {{1}}) in Source")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
+        // The last operation the coverage reporter still named as never exercised. It needs a model
+        // table, which only exists once a query has been loaded into the model - so it runs on its
+        // own fixture and only when this machine let that fixture be built. Create then delete,
+        // because the delete is what proves the fingerprint precondition round-trips.
+        if (modelReady)
+        {
+            var modelTarget = System.IO.Path.Combine(work, "model-target.xlsx");
+            await RunAsync(client, fixtures, operations, "ManageModelMeasure (Create)", new ExcelTaskRequest(
+                modelTarget,
+                new ExcelOperation(
+                    ExcelOperationKind.ManageModelMeasure,
+                    ManageModelMeasure: new ManageModelMeasureOperation(
+                        ModelTable, ModelMeasure, QueryAction.Create, Formula: $"SUM({ModelTable}[K])")),
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+            await RunAsync(client, fixtures, operations, "ManageModelMeasure (Delete)", new ExcelTaskRequest(
+                modelTarget,
+                new ExcelOperation(
+                    ExcelOperationKind.ManageModelMeasure,
+                    ManageModelMeasure: new ManageModelMeasureOperation(
+                        ModelTable, ModelMeasure, QueryAction.Delete,
+                        ExpectedFormulaSha256: MacroProcedureText.ComputeSha256($"SUM({ModelTable}[K])"))),
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+            // Create then delete on the same fixture, because a relationship left behind would
+            // change what a re-run of the measure steps above is measuring.
+            await RunAsync(client, fixtures, operations, "ManageModelRelationship (Create)", new ExcelTaskRequest(
+                modelTarget,
+                new ExcelOperation(
+                    ExcelOperationKind.ManageModelRelationship,
+                    ManageModelRelationship: new ManageModelRelationshipOperation(
+                        ModelTable, "K", ModelLookupTable, "K", QueryAction.Create)),
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+            await RunAsync(client, fixtures, operations, "ManageModelRelationship (Delete)", new ExcelTaskRequest(
+                modelTarget,
+                new ExcelOperation(
+                    ExcelOperationKind.ManageModelRelationship,
+                    ManageModelRelationship: new ManageModelRelationshipOperation(
+                        ModelTable, "K", ModelLookupTable, "K", QueryAction.Delete)),
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+        }
+
         // Creation names a path that must not exist, so it is the one operation the check must be
         // careful never to leave behind for a second run.
         var createdWorkbook = System.IO.Path.Combine(work, "created.xlsx");
@@ -399,10 +494,13 @@ internal static class FieldCheck
 
         timer.Stop();
         // Waits for a dying Excel rather than counting it. Bounded, so a genuine leak still reports.
-        var leaked = FieldCheckFixtures.CountLeakedAfterSettling(before, fixtures.OwnedProcesses, TimeSpan.FromSeconds(20));
+        // Provisional: whatever is still up here is reconciled against the run's final snapshot
+        // before the report is written, so this figure never reaches the reader as a leak claim.
+        var stillUp = FieldCheckFixtures.LeakedAfterSettling(before, fixtures.OwnedProcesses, TimeSpan.FromSeconds(20));
 
-        operations.Add(new OperationResult(label, status, Math.Round(timer.Elapsed.TotalSeconds, 2), leaked, summary, checks, error));
-        Write($"      {label,-34} {status,-16} {timer.Elapsed.TotalSeconds,6:F1}s  leaked={leaked}");
+        operations.Add(new OperationResult(
+            label, status, Math.Round(timer.Elapsed.TotalSeconds, 2), stillUp.Count, summary, checks, error, stillUp));
+        Write($"      {label,-34} {status,-16} {timer.Elapsed.TotalSeconds,6:F1}s  excelStillUp={stillUp.Count}");
         return structured;
     }
 
@@ -480,30 +578,13 @@ internal static class FieldCheck
             ["computerName"] = Environment.MachineName,
             ["osVersion"] = Environment.OSVersion.VersionString,
             ["runtime"] = RuntimeInformation.FrameworkDescription,
-            ["dotnetRoot"] = Environment.GetEnvironmentVariable("DOTNET_ROOT") ?? "not set",
-            ["powerShellLockdownPolicy"] = Environment.GetEnvironmentVariable("__PSLockdownPolicy") ?? "not set"
+            ["dotnetRoot"] = WithoutUserProfile(Environment.GetEnvironmentVariable("DOTNET_ROOT")),
+            // Named for the one thing it reads. AppLocker and WDAC also put PowerShell into
+            // Constrained Language Mode without ever setting this variable, so "not set" is not
+            // "no lockdown" - and a security control reported absent while it is being enforced is
+            // the more damaging of the two mistakes this line can make.
+            ["psLockdownPolicyVariable"] = Environment.GetEnvironmentVariable("__PSLockdownPolicy") ?? "not set"
         };
-
-        foreach (var version in (string[])["16.0", "15.0"])
-        {
-            using var security = Registry.CurrentUser.OpenSubKey($@"Software\Microsoft\Office\{version}\Excel\Security");
-            if (security is not null)
-            {
-                environment["officeVersion"] = version;
-                // 1 means programmatic VBA project access is trusted; without it macro work is impossible.
-                environment["accessVBOM"] = security.GetValue("AccessVBOM")?.ToString() ?? "not set";
-                // 1 enable all, 2 disable with notification, 3 signed only, 4 disable all.
-                environment["vbaWarnings"] = security.GetValue("VBAWarnings")?.ToString() ?? "not set";
-            }
-
-            using var policy = Registry.CurrentUser.OpenSubKey($@"Software\Policies\Microsoft\Office\{version}\Excel\Security");
-            if (policy is not null)
-            {
-                environment["policyAccessVBOM"] = policy.GetValue("AccessVBOM")?.ToString() ?? "not set";
-                environment["policyVBAWarnings"] = policy.GetValue("VBAWarnings")?.ToString() ?? "not set";
-                notes.Add("Group Policy sets Excel macro security on this machine; the organization controls it, not this product.");
-            }
-        }
 
         ProbeStorage(environment, notes);
 
@@ -570,10 +651,82 @@ internal static class FieldCheck
             environment.TryAdd("excelVersion", "unavailable");
         }
 
+        // Read last, because it is keyed on the Excel that actually answered the probe.
+        ReadOfficeSecurity(environment, notes);
+
         return environment;
 
         static string Read(object target, string member) =>
             target.GetType().InvokeMember(member, BindingFlags.GetProperty, null, target, null, CultureInfo.InvariantCulture)?.ToString() ?? "";
+    }
+
+    /// <summary>
+    /// Rewrites the user profile directory as %USERPROFILE%.
+    ///
+    /// The Windows account name is an employee number at most large employers, and this report
+    /// already carries the machine name, so leaving the account name in a path names a person as
+    /// well as a computer. It earns nothing in exchange: what matters about DOTNET_ROOT or the
+    /// server path is whether it is set and where it sits relative to the profile, never whose
+    /// profile it is. The sibling artifact - the diagnostic trace - already promises never to
+    /// record a full path or a user name; this is the same promise kept in the other file.
+    /// </summary>
+    internal static string WithoutUserProfile(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "not set";
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return string.IsNullOrEmpty(profile)
+            ? value
+            : value.Replace(profile, "%USERPROFILE%", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Excel's macro-trust settings, read from the registry hive belonging to the Excel that is
+    /// actually running.
+    ///
+    /// This used to walk 16.0 then 15.0 and overwrite as it went, so the last hive present won.
+    /// A machine carrying a stale Office 15.0 key reported officeVersion 15.0 while Excel 16.0 was
+    /// the version answering every probe - and, because the same loop assigned them, accessVBOM and
+    /// vbaWarnings came from that dead hive too. Those two values are the entire reason this section
+    /// exists: they are what decides whether macro editing can work on a managed computer. Read from
+    /// the wrong Office, they answer for an Excel that is not the one about to open the workbook,
+    /// and the report states them as plainly as if they were right.
+    /// </summary>
+    private static void ReadOfficeSecurity(Dictionary<string, string> environment, List<string> notes)
+    {
+        // Excel reports its version as "16.0", which is already how the hive is named.
+        var running = environment.GetValueOrDefault("excelVersion");
+        string[] candidates = running is { Length: > 0 } and not "unavailable"
+            ? [running, "16.0", "15.0"]
+            : ["16.0", "15.0"];
+
+        foreach (var version in candidates)
+        {
+            using var security = Registry.CurrentUser.OpenSubKey($@"Software\Microsoft\Office\{version}\Excel\Security");
+            if (security is null) continue;
+
+            environment["officeVersion"] = version;
+            // 1 means programmatic VBA project access is trusted; without it macro work is impossible.
+            environment["accessVBOM"] = security.GetValue("AccessVBOM")?.ToString() ?? "not set";
+            // 1 enable all, 2 disable with notification, 3 signed only, 4 disable all.
+            environment["vbaWarnings"] = security.GetValue("VBAWarnings")?.ToString() ?? "not set";
+
+            using var policy = Registry.CurrentUser.OpenSubKey($@"Software\Policies\Microsoft\Office\{version}\Excel\Security");
+            if (policy is not null)
+            {
+                environment["policyAccessVBOM"] = policy.GetValue("AccessVBOM")?.ToString() ?? "not set";
+                environment["policyVBAWarnings"] = policy.GetValue("VBAWarnings")?.ToString() ?? "not set";
+                notes.Add("Group Policy sets Excel macro security on this machine; the organization controls it, not this product.");
+            }
+
+            if (running is not null && version != running)
+            {
+                notes.Add($"Excel {running} is running but carries no macro-security key of its own, so accessVBOM and vbaWarnings were read from the Office {version} hive and describe that version. The EditMacroProcedure steps below are what actually settle whether macro work is permitted here.");
+            }
+
+            return;
+        }
+
+        notes.Add("No Excel macro-security registry key was found. accessVBOM and vbaWarnings are unknown rather than permissive; the EditMacroProcedure steps are the only evidence in this report about macro trust.");
     }
 
     private static int WriteReport(
@@ -593,9 +746,10 @@ internal static class FieldCheck
         File.WriteAllText(jsonPath, JsonSerializer.Serialize(new
         {
             completedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
-            serverPath,
+            serverPath = WithoutUserProfile(serverPath),
             environment,
-            toolSurfaces = surfaces,
+            // Same rule as serverPath: the probe is told where each server lives, the report is not.
+            toolSurfaces = surfaces.Select(surface => surface with { Path = WithoutUserProfile(surface.Path) }),
             operations,
             notes
         }, ReportJsonOptions), Encoding.UTF8);

@@ -20,12 +20,12 @@ perform and verify it. The server never delegates planning to a hidden model.
 ### Task Engine
 
 The external module interface is `IExcelTaskEngine.RunAsync`. Its request has a
-manual closed operation union of eleven kinds, so the MCP schema stays small
+manual closed operation union of fourteen kinds, so the MCP schema stays small
 without generic action language:
 
 | Operation | Reads or writes | Notes |
 |---|---|---|
-| `CopyExhibit` | writes | Copies a modelled worksheet into the target |
+| `CopyExhibit` | writes | Copies a modelled worksheet into the target, then binds its references home |
 | `RepairExistingWorksheet` | writes | Infers blank formulas from their neighbours |
 | `ExtendFormulaSeries` | writes | Extends a series right or down |
 | `EditMacroProcedure` | writes | One named procedure; isolated `.xlsm` + `Save=Copy` only |
@@ -34,8 +34,12 @@ without generic action language:
 | `WriteWorksheetValues` | writes | Constants only; never formula text |
 | `FindReplace` | both | Plan locates, Apply rewrites constants |
 | `Create` | writes | Empty workbook or worksheet; never overwrites |
-| `SetNumberFormat` | writes | Display only; no values, fonts, fills, or borders |
+| `SetRangeFormat` | writes | Appearance only: number format, font, fill, borders, width, height |
 | `ScanWorkbookStructure` | reads | **Starts no Excel** — reads the package directly |
+| `ManageTable` | writes | Create over a range, rename, restyle, resize, or convert back to cells |
+| `ManageQuery` | writes | One Power Query, under a fingerprint; Plan never returns the M expression |
+| `ManageModelMeasure` | writes | One Data Model measure, under a fingerprint; Plan does return the DAX |
+| `ManageModelRelationship` | writes | One Data Model relationship, many side to one side; Create or Delete, never Replace |
 
 The engine hides normalization, overwrite and live-workbook confirmation, plan
 compilation, outcome classification, and receipt construction. Tests use an

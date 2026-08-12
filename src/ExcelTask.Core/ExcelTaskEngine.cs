@@ -808,6 +808,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.ManageModelMeasure when operation.ManageModelMeasure is not null:
                 return TryNormalizeModelMeasure(operation.ManageModelMeasure, mode, operation.Kind, out normalized, out error);
 
+            case ExcelOperationKind.ManageModelRelationship when operation.ManageModelRelationship is not null:
+                return TryNormalizeModelRelationship(operation.ManageModelRelationship, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
@@ -1124,6 +1127,44 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             ManageModelMeasure: new NormalizedManageModelMeasureOperation(
                 tableName!, measureName!, measure.Action, formula,
                 needsFingerprint ? measure.ExpectedFormulaSha256!.ToLowerInvariant() : null));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// A relationship has no expression, so there is nothing to fingerprint and nothing to reject on
+    /// length. What it does have is a direction, and two ways to get it wrong that this catches by
+    /// name: Replace, which sounds like it would re-point an existing join and does not exist, and a
+    /// column joined to itself, which Excel accepts as an argument and refuses as a relationship.
+    /// </summary>
+    private static bool TryNormalizeModelRelationship(
+        ManageModelRelationshipOperation relationship,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(relationship.FromTable, out var fromTable, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.FromColumn, out var fromColumn, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.ToTable, out var toTable, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.ToColumn, out var toColumn, out error)) return false;
+
+        if (relationship.Action is not (QueryAction.Create or QueryAction.Delete))
+        {
+            error = "Relationship action must be Create or Delete. A relationship is not replaced in place; delete it and create the new one.";
+            return false;
+        }
+
+        if (string.Equals(fromTable, toTable, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "A relationship joins two different model tables; the many side and the one side cannot be the same table.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageModelRelationship: new NormalizedManageModelRelationshipOperation(
+                fromTable!, fromColumn!, toTable!, toColumn!, relationship.Action));
         error = null;
         return true;
     }

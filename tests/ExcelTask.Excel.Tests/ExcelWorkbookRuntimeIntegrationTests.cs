@@ -1027,6 +1027,91 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task ACopiedExhibitReadsTheTargetWorkbookRatherThanTheOneItCameFrom()
+    {
+        // The field defect, reproduced and closed. Copying a worksheet whose formulas read another
+        // sheet does not copy them verbatim: Excel rewrites =Data!A1 to ='[reference.xlsx]Data'!A1,
+        // because the sheet it named is not in the destination. The copy still calculates, which is
+        // what made this quiet - one real session produced 305 externally linked cells and a
+        // receipt that said Completed.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "target.xlsx");
+        var reference = Path.Combine(directory, "reference.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Both workbooks have a Data sheet, and they hold DIFFERENT numbers - which is the only
+            // way to tell a bound formula from an externally linked one by its value.
+            ExcelTestWorkbook.CreateCrossSheetExhibit(reference, sourceValue: 10d);
+            ExcelTestWorkbook.CreateCrossSheetExhibit(target, sourceValue: 100d, withoutExhibit: true);
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("copy", ExcelTaskPlans.Copy(
+                target, reference, "Exhibit", "Imported", [],
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, output: null, overwrite: true)),
+                CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "copy-rebind" && check.Passed);
+
+            // 200, not 20: the copied exhibit reads this workbook's Data, not the reference's.
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", 200d, worksheet: "Imported"),
+                "The copied exhibit is still reading the reference workbook's numbers.");
+            Assert.Equal(0, ExcelTestWorkbook.CountExternalLinks(target));
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task ACopyThatCannotBeBoundHomeSaysSoInsteadOfReportingCleanSuccess()
+    {
+        // The other half, and the more important one. When the target has no sheet of that name
+        // the reference cannot be made internal - rewriting it would turn a wrong number into a
+        // #REF - so nothing is rewritten and the receipt names what is missing. Silence here is
+        // what let an exhibit report a template's figures for a quarter.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "target.xlsx");
+        var reference = Path.Combine(directory, "reference.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateCrossSheetExhibit(reference, sourceValue: 10d);
+            ExcelTestWorkbook.CreateTarget(target);   // no Data sheet at all
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("copy-orphan", ExcelTaskPlans.Copy(
+                target, reference, "Exhibit", "Imported", [],
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, output: null, overwrite: true)),
+                CancellationToken.None);
+
+            // The status, first and hardest. Asserting only that a failed check exists is what let
+            // this path return Completed over a saved exhibit reading another workbook's numbers -
+            // a caller keying on status sees success and ships it. Partial is the honest answer:
+            // the copy happened, and part of it is not what was asked for.
+            Assert.Equal(ExcelTaskStatus.Partial, outcome.Status);
+            Assert.DoesNotContain(outcome.Checks ?? [], check => check.Name == "copy-rebind" && check.Passed);
+
+            var rebind = Assert.Single(outcome.Checks ?? [], check => check.Name == "copy-rebind");
+            Assert.False(rebind.Passed);
+            Assert.Contains("Data", rebind.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task ADataModelMeasureIsCreatedReplacedUnderItsFingerprintAndDeleted()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -1041,8 +1126,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             // than reporting a failure that belongs to the machine.
             if (!ExcelTestWorkbook.CreateModelTarget(target, "ModelProbe"))
             {
-                Assert.True(true, "This Excel build did not produce a Data Model table; the measure path cannot be exercised here.");
-                return;
+                throw Xunit.Sdk.SkipException.ForSkip("This Excel build did not produce a Data Model table; the measure path cannot be exercised here.");
             }
 
             using var runtime = new ExcelWorkbookRuntime();
@@ -1077,6 +1161,92 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
                 target, QueryAction.Delete, "ModelProbe", "TotalK",
                 expectedSha256: MacroProcedureText.ComputeSha256("COUNTROWS(ModelProbe)"))), CancellationToken.None);
             Assert.True(deleted.Status == ExcelTaskStatus.Completed, deleted.Summary);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task ADataModelRelationshipIsPlannedCreatedAndDeleted()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "model-pair.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // Skipped, not passed. Assert.True(true, ...) records Passed and never prints its
+            // message, so a machine where policy stopped permitting Power Query would turn this
+            // into a permanent silent no-op and the green suite would be the evidence used to ship
+            // an operation whose Excel-facing path never ran once.
+            if (!ExcelTestWorkbook.CreateModelPair(target, "Fact", "Lookup"))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("This Excel build did not produce two Data Model tables; the relationship path cannot be exercised here.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+
+            // Plan is the whole precondition for this operation - there is no expression to
+            // fingerprint - so it has to say what it would join and what already joins those tables.
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("r-plan", ExcelTaskPlans.Relationship(
+                target, QueryAction.Create, "Fact", "K", "Lookup", "K", ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+            Assert.Contains(planned.Checks ?? [], check => check.Name == "current-relationships" && check.Passed);
+            Assert.Contains("Lookup", planned.Summary, StringComparison.Ordinal);
+
+            var created = await runtime.ExecuteAsync(new ExcelTaskPlan("r-create", ExcelTaskPlans.Relationship(
+                target, QueryAction.Create, "Fact", "K", "Lookup", "K")), CancellationToken.None);
+            Assert.True(created.Status == ExcelTaskStatus.Completed,
+                $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
+
+            // Creating the same join twice is refused rather than quietly producing a second,
+            // inactive relationship between the same pair - the state that makes a model produce
+            // numbers nobody can account for.
+            var again = await runtime.ExecuteAsync(new ExcelTaskPlan("r-again", ExcelTaskPlans.Relationship(
+                target, QueryAction.Create, "Fact", "K", "Lookup", "K")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, again.Status);
+
+            var deleted = await runtime.ExecuteAsync(new ExcelTaskPlan("r-delete", ExcelTaskPlans.Relationship(
+                target, QueryAction.Delete, "Fact", "K", "Lookup", "K")), CancellationToken.None);
+            Assert.True(deleted.Status == ExcelTaskStatus.Completed,
+                $"{deleted.Summary} {string.Join("; ", deleted.Checks?.Select(check => check.Detail) ?? [])}");
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task ARelationshipNamingAColumnTheModelDoesNotHaveNamesTheColumnsItDoes()
+    {
+        // The column names are what the caller cannot guess: the audit lists model tables, not their
+        // columns. Failing without them sends the caller back with nothing to try next.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "model-pair.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            if (!ExcelTestWorkbook.CreateModelPair(target, "Fact", "Lookup"))
+            {
+                throw Xunit.Sdk.SkipException.ForSkip("This Excel build did not produce two Data Model tables.");
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("r-bad-column", ExcelTaskPlans.Relationship(
+                target, QueryAction.Create, "Fact", "NoSuchColumn", "Lookup", "K")), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+            var detail = string.Join(" ", outcome.Checks?.Select(check => check.Detail) ?? []);
+            Assert.Contains("NoSuchColumn", detail, StringComparison.Ordinal);
+            Assert.Contains("Amount", detail, StringComparison.Ordinal);
         }
         finally
         {

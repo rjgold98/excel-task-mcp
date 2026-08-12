@@ -44,7 +44,8 @@ public static class OperationCatalog
             ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure,
             ExcelOperationKind.ManageTable => operation.ManageTable,
             ExcelOperationKind.ManageQuery => operation.ManageQuery,
-            ExcelOperationKind.ManageModelMeasure => operation.ManageModelMeasure
+            ExcelOperationKind.ManageModelMeasure => operation.ManageModelMeasure,
+            ExcelOperationKind.ManageModelRelationship => operation.ManageModelRelationship
         };
 #pragma warning restore CS8524
     }

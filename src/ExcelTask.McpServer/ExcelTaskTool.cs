@@ -22,7 +22,12 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Destructive = true,
         UseStructuredContent = true,
         OutputSchemaType = typeof(ExcelTaskReceipt))]
-    [Description("Perform one bounded formula, exhibit, or macro-procedure operation in an existing .xlsx or .xlsm workbook. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen, except EditMacroProcedure, which requires Isolated binding and Copy save to an .xlsm output, and whose Plan must omit every Apply-only field.")]
+    // This sentence is the whole of what a routing model reads before it decides whether to open the
+    // schema at all. It named three operations while fifteen shipped, and a v0.18.0 field session
+    // routed ordinary formula work to another Excel tool rather than here. Two things earn their
+    // bytes: the operation list, and the refusal - a caller that learns only from a rejection that
+    // this tool will not author a formula has already spent a round trip to find out.
+    [Description("Perform one bounded Excel operation on an existing .xlsx or .xlsm workbook: scan or audit structure, read a range, write constants, find/replace, format, create, copy a worksheet, repair or extend formulas, manage tables, Power Query, or Data Model measures and relationships, or replace one VBA procedure. It never authors new formula text: it reads formulas, and repairs or extends ones already present from neighbouring evidence. Plan previews without mutation; Apply saves, reopens, and verifies. Start with AskIfOpen, except EditMacroProcedure, which requires Isolated binding and Copy save to an .xlsm output, and whose Plan must omit every Apply-only field.")]
     public async Task<CallToolResult> RunAsync(
         [Description("The complete Excel task request.")] ExcelTaskRequest request,
         CancellationToken cancellationToken = default)

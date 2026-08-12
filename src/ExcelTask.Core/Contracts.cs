@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure, ManageTable, ManageQuery, ManageModelMeasure }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure, ManageTable, ManageQuery, ManageModelMeasure, ManageModelRelationship }
 public enum CreateKind { Workbook, Worksheet }
 
 /// <summary>What a table request does. ConvertToRange keeps every cell and drops only the table.</summary>
@@ -64,7 +64,7 @@ public sealed record AuditWorkbookFlowsOperation();
 /// range, capped cell text, and blanks omitted.
 /// </summary>
 public sealed record ReadWorksheetRangeOperation(
-    [property: Description("Existing worksheet name to read. Run AuditWorkbookFlows first if unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to read. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.")] string Range,
     [property: Description("False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.")] bool Formulas = false);
 
@@ -83,7 +83,7 @@ public sealed record ReadWorksheetRangeOperation(
 /// formula as a label is the kind of quiet wrongness this whole design exists to avoid.
 /// </summary>
 public sealed record WriteWorksheetValuesOperation(
-    [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to write to. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("Cells to write, at most 200. Each address must fall inside one bounded A1 range no larger than 400 cells.")] IReadOnlyList<WorksheetCellValue> Cells);
 
 /// <summary>One constant to write. Text starting with = is rejected; this operation never writes formulas.</summary>
@@ -101,7 +101,7 @@ public sealed record WorksheetCellValue(
 /// server refuses everywhere else and a find/replace is no different.
 /// </summary>
 public sealed record FindReplaceOperation(
-    [property: Description("Existing worksheet name to search. Run AuditWorkbookFlows first if unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to search. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("Text to find, at most 200 characters. Matching is plain text on what the cell displays; * and ? are literal, not wildcards.")] string Find,
     [property: Description("Apply only, and must be omitted for Plan: replacement text, at most 200 characters. Cells holding formulas are reported but never rewritten, and a replacement that would leave a cell starting with = is refused before anything is written.")] string? ReplaceWith = null,
     [property: Description("One bounded A1 range to search, at most 10,000 cells; omit to search the worksheet's used range when it is within that bound.")] string? Range = null,
@@ -142,7 +142,7 @@ public sealed record CreateOperation(
 /// and styles by name.
 /// </summary>
 public sealed record SetRangeFormatOperation(
-    [property: Description("Existing worksheet name to format. Run AuditWorkbookFlows first if unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to format. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("One bounded A1 range to format, at most 10,000 cells. Formatting applies to every cell in it, including blank ones.")] string Range,
     [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string? NumberFormat = null,
     [property: Description("True bolds, false clears bold; omit to leave it as it is.")] bool? Bold = null,
@@ -242,6 +242,22 @@ public sealed record ManageModelMeasureOperation(
     [property: Description("Apply only, for Create and Replace: the DAX expression, with NO leading equals sign, at most 8,192 characters. For example SUM(Sales[Amount]).")] string? Formula = null,
     [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the measure being changed, taken from the Plan receipt.")] string? ExpectedFormulaSha256 = null);
 
+/// <summary>
+/// Creates or deletes one Data Model relationship.
+///
+/// A relationship decides how every pivot over the model aggregates, so a wrong one is wrong
+/// everywhere at once and produces numbers rather than errors. There is no expression to fingerprint
+/// here, so the precondition is the Plan itself: it confirms both tables and both columns exist and
+/// lists the relationships already joining them, so the join can be read before it is made. Replace
+/// is refused by name - a relationship is not edited in place, and delete-then-create says so.
+/// </summary>
+public sealed record ManageModelRelationshipOperation(
+    [property: Description("Data Model table on the MANY side - the fact table, whose column repeats.")] string FromTable,
+    [property: Description("Column on the many side, the foreign key.")] string FromColumn,
+    [property: Description("Data Model table on the ONE side - the lookup table, whose column is unique. Excel refuses the relationship if it is not.")] string ToTable,
+    [property: Description("Column on the one side, the primary key.")] string ToColumn,
+    [property: Description("Create or Delete. Replace is rejected: delete the relationship and create the new one.")] QueryAction Action);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -258,7 +274,8 @@ public sealed record ExcelOperation(
     [property: Description("Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel; absence here is not evidence, so use AuditWorkbookFlows when those matter.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null,
     [property: Description("Required when kind is ManageTable. Creates or changes one Excel table: create over a range, rename, restyle, resize, or convert back to plain cells. Plan reports it as it is now and changes nothing.")] ManageTableOperation? ManageTable = null,
     [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s fingerprint and never its expression, because an M expression usually names a server.")] ManageQueryOperation? ManageQuery = null,
-    [property: Description("Required when kind is ManageModelMeasure. Creates, replaces, or deletes one Data Model measure. Plan reports the DAX and its fingerprint; Apply must carry the fingerprint back.")] ManageModelMeasureOperation? ManageModelMeasure = null);
+    [property: Description("Required when kind is ManageModelMeasure. Creates, replaces, or deletes one Data Model measure. Plan reports the DAX and its fingerprint; Apply must carry the fingerprint back.")] ManageModelMeasureOperation? ManageModelMeasure = null,
+    [property: Description("Required when kind is ManageModelRelationship. Creates or deletes one Data Model relationship, from the many side to the one side. Plan names the join and lists what already joins those tables.")] ManageModelRelationshipOperation? ManageModelRelationship = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -357,6 +374,8 @@ public sealed record NormalizedManageQueryOperation(string QueryName, QueryActio
 
 public sealed record NormalizedManageModelMeasureOperation(string TableName, string MeasureName, QueryAction Action, string? Formula, string? ExpectedFormulaSha256);
 
+public sealed record NormalizedManageModelRelationshipOperation(string FromTable, string FromColumn, string ToTable, string ToColumn, QueryAction Action);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -373,7 +392,8 @@ public sealed record NormalizedExcelOperation(
     NormalizedScanWorkbookStructureOperation? ScanWorkbookStructure = null,
     NormalizedManageTableOperation? ManageTable = null,
     NormalizedManageQueryOperation? ManageQuery = null,
-    NormalizedManageModelMeasureOperation? ManageModelMeasure = null);
+    NormalizedManageModelMeasureOperation? ManageModelMeasure = null,
+    NormalizedManageModelRelationshipOperation? ManageModelRelationship = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,

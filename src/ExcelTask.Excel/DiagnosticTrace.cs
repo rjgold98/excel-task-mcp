@@ -16,7 +16,7 @@ namespace ExcelTask.Excel;
 /// the worker's stderr and discards it, receipts are deliberately bounded, and phases were reported
 /// to an observer that threw them away - which left "it did not work" as the whole bug report.
 ///
-/// WHAT IT RECORDS, and this is the contract that makes it safe to paste into a chat:
+/// WHAT IT RECORDS:
 ///   - phase names and how long each took
 ///   - operation kind, mode, binding, save mode
 ///   - worksheet names and A1 ranges (needed to reproduce anything)
@@ -30,6 +30,13 @@ namespace ExcelTask.Excel;
 ///   - full paths, user names, or machine names
 /// Every file it writes opens with that same statement, so the person sending it can see what they
 /// are sending before they send it.
+///
+/// What the header no longer says is "safe to share". It said that for eight versions while the
+/// first list plainly includes workbook and worksheet names - and a healthcare finance workbook is
+/// routinely called something like a payer, a facility, or a deal. The file cannot know whether
+/// naming those is acceptable where it is going, so it states its contents and leaves the
+/// conclusion to the person holding it. This is the same rule the receipts follow: report the
+/// evidence, never assert the verdict the evidence does not reach.
 /// </summary>
 public sealed class DiagnosticTrace
 {
@@ -37,11 +44,13 @@ public sealed class DiagnosticTrace
 
     private static readonly string[] Header =
     [
-        "ExcelTask diagnostic trace - DEVELOPMENT ONLY, safe to share.",
+        "ExcelTask diagnostic trace - DEVELOPMENT ONLY. Read both lists before sharing this file.",
         "Records: phases and durations, operation kind/mode/binding/save, worksheet names, A1 ranges,",
         "         workbook file names (never directories), owned Excel process ids, statuses and checks.",
         "Never records: cell values, formulas, workbook contents, VBA source, connection strings,",
         "         server names, full paths, user names, or machine names.",
+        "A workbook or worksheet name can name a client, a payer, a deal or a facility by itself.",
+        "Whether this file may leave your machine is your judgement, not this file's to assert.",
         "Turn it off by clearing the EXCELTASK_TRACE environment variable.",
         ""
     ];

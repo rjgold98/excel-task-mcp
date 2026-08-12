@@ -49,12 +49,22 @@ All four original phases landed and were field-validated on the work computer on
     synced folder reports a service URL as its `FullName`, so exact-path
     matching refused every `UseOpen` against the storage the owner actually
     uses. The caller's path is now resolved through the sync client's own
-    registry mapping and then compared exactly. **The registry lookup itself is
-    still unproven** - see the open gates below.
+    registry mapping and then compared exactly. **Half of this is now proven.**
+    The 2026-08-12 field run on the managed machine reported
+    `syncRootsRegistered 3` and `syncPathsResolving 3 of 3`: the sync client's
+    registry is there, ExcelTask reads it, and every root it names resolves to a
+    real local directory. What that does *not* prove is the other half - that a
+    workbook Excel reports by service URL matches the local path a caller typed -
+    because no `UseOpen` against a synced workbook has run yet. See the open
+    gates below.
 13. **A field check that states its own coverage** (v0.16.0, completed v0.17.0):
     it once validated five of eleven operations and printed PASS. It now names
     any operation it did not exercise - and on its first run named a real one,
-    `RepairExistingWorksheet`, which is now a step. All eleven are covered.
+    `RepairExistingWorksheet`, which is now a step. All fifteen are covered as of
+    2026-08-12, the last of them `ManageModelMeasure` and
+    `ManageModelRelationship`, which needed the check to build its own Data Model
+    fixture: two joinable tables, the many side repeating and the one side unique,
+    because Excel refuses a relationship whose one side is not.
 
 ### Current test counts
 
@@ -143,39 +153,61 @@ Worth doing before more features: capture the failing run's full output rather
 than a filtered view, and record which test, which assertion, and the machine
 load at the time. Three data points would probably name it.
 
-## From the 2026-08-11 field log, not yet addressed
+## From the 2026-08-11 field log
 
-A full day's real work produced four frictions. Two are fixed in 0.16.0 - the
+A full day's real work produced four frictions. Two were fixed in 0.16.0 - the
 SharePoint identity refusals and the audit truncating its worksheet list, the
-latter already answered by `ScanWorkbookStructure`. These two are not.
+latter already answered by `ScanWorkbookStructure`. The rest are closed below.
 
-- **`CopyExhibit` leaves the copied worksheet pointing at the source workbook.**
-  Copying a sheet from a reference workbook produced 305 formula cells on the
-  new tab carrying external references back to the source - and the follow-up
-  repair fixed none of them, because Excel normalized the proposed internal
-  references straight back into external ones. The workbook was left with an
-  external link the owner did not ask for and could not remove, and the session
-  ended with its state unknown. This is the flagship operation, and it is the
-  largest product gap the log exposed. Worth measuring first: whether writing
-  the formulas as R1C1 after the copy, or copying cell contents rather than the
-  sheet, avoids the normalization.
+- **`CopyExhibit` left the copied worksheet pointing at the source workbook.**
+  *Fixed 2026-08-12.* Copying a sheet from a reference workbook produced 305
+  formula cells on the new tab carrying external references back to the source -
+  and the follow-up repair fixed none of them, because Excel normalized the
+  proposed internal references straight back into external ones. The workbook
+  was left with an external link the owner did not ask for and could not remove.
 
-- **`UseOpen` bound to a stray `Book1` instead of the named workbook.** Live
-  verification reported an active workbook of `Book1` containing `iwe_getinst`
-  and `Sheet1` - an add-in artifact, not the target. `RotWorkbookLocator.Find`
-  and `HasExternalWorkbookAtPath` both bind the moniker and re-read `FullName`;
-  `ContainsPath` matches on the ROT display name alone and is what
-  `InspectCore` uses to set `TargetIsOpen`, which becomes "The exact target
-  workbook is open." The word *exact* is carrying weight that code path does not
-  supply. Fix is to bind and confirm, as its two siblings already do.
+  The mechanism was measured before anything was written. Excel rewrites
+  `=Data!A1` to `='[reference.xlsx]Data'!A1` during the copy because the sheet
+  it names is not yet in the destination; the copy still calculates, which is
+  what made it quiet. `UsedRange.Replace` over the copied sheet, run once per
+  external sheet name in both the quoted and bare forms, binds them home:
 
-- **`ManageModelMeasure` has no field-check step.** Exercising it needs a
-  workbook whose Data Model holds a table, which only exists once a query has
-  been loaded into the model - buildable, but it makes the check depend on
-  Power Query being permitted by policy on the machine under test. The coverage
-  line will name it as not exercised on every run, which is the honest state and
-  exactly what that reporter is for. Close it by building the model fixture in
-  the check, tolerating the case where policy forbids it.
+  ```
+  after copy:     A1: ='[p2-src.xlsx]Data'!A1*2  -> 20
+  after Replace:  A1: =Data!A1*2                 -> 200
+  external links remaining: 0
+  ```
+
+  A sheet the destination does not have is deliberately **not** rewritten -
+  that would turn a wrong number into `#REF` - so the `copy-rebind` check fails
+  and names it. Two real-Excel tests hold both halves: one asserts the copied
+  exhibit reads 200 rather than 20 with zero external links, the other asserts
+  the unbindable case reports the missing sheet by name instead of clean
+  success.
+
+- **`UseOpen` bound to a stray `Book1` instead of the named workbook.**
+  *Fixed 2026-08-12.* Live verification reported an active workbook of `Book1`
+  containing `iwe_getinst` and `Sheet1` - an add-in artifact, not the target.
+  `RotWorkbookLocator.Find` and `HasExternalWorkbookAtPath` both bind the
+  moniker and re-read `FullName`; `ContainsPath` matched on the ROT display name
+  alone and was what set `TargetIsOpen`, which becomes "The exact target
+  workbook is open." The word *exact* was carrying weight that code path did not
+  supply.
+
+  `ContainsPath` now delegates to `Find`, so the inspection's claim and the
+  binding are one answer rather than two that can disagree. This is fixed by
+  construction rather than by a test: the failing input was a moniker registered
+  under the target's path that resolved to a different workbook, which an
+  add-in produced and a fixture cannot. Deleting the second code path is the
+  guarantee; a test pinning an example would not have caught it.
+
+- **`ManageModelMeasure` had no field-check step.** *Fixed 2026-08-12.* The
+  check now builds its own Data Model fixture - a query loaded into the model
+  via `Connections.Add2` - and exercises Create then Delete against it, the
+  delete proving the fingerprint precondition round-trips. Where policy forbids
+  Power Query the fixture reports why and the two rows are skipped, so a policy
+  refusal is never counted against the product. Verified locally on 2026-08-12:
+  **all 14 operations exercised, `leaked=0`, `result=PASS`.**
 
 ## Open field gates (small, when convenient)
 
@@ -192,16 +224,33 @@ latter already answered by `ScanWorkbookStructure`. These two are not.
 - The repeated benchmark: one MCP catalog per client profile, three or more
   repetitions per workflow, median and spread, order alternated. Until then no
   percentage above is quoted as characteristic.
-- **The schema budget is nearly spent: 16,012 bytes of 16,384 at 0.15.1.** The
-  next description that states a rule will fail the pin test, and the strategy
-  this project chose - no new tools, richer descriptions on the one that exists
-  - spends exactly that budget. So the next addition has to buy its space from
-  text already there rather than append. Two candidates to reclaim it: the
-  eleven payload descriptions each re-state "all other payloads must be null"
-  (~400 bytes of pure repetition, and the enum plus the `required` list already
-  carry the rule), and several restate their kind name, which the property name
-  already gives. Do that reclamation *before* the next feature, not during one,
-  so a budget failure never arrives disguised as a feature bug.
+- **Schema budget: 22,214 bytes of 22,528, measured 2026-08-12 with the
+  fifteenth operation and the rewritten tool description in.** The
+  reclamation this entry used to ask for was done before the three operations
+  that followed it: the payload descriptions no longer each re-state "all other
+  payloads must be null", which the enum and the `required` list already carry.
+  That bought enough that `ManageTable` fitted with no rise at all, and the
+  query and measure operations then cost what a thirteenth and fourteenth
+  operation genuinely cost. The relationship operation took roughly half of what
+  was left, and a clause routing worksheet discovery to `ScanWorkbookStructure`
+  rather than the audit took some of the rest - the free operation had five
+  descriptions pointing away from it and none pointing at it.
+
+  The last rise was not an operation at all. The tool's own one-line description
+  still named three kinds of work while fifteen shipped, and a field session
+  routed ordinary formula work to a different Excel tool rather than here - so
+  369 bytes went on listing the operations and stating that this tool never
+  authors new formula text. That is the rule this bound exists to enforce
+  working as intended: prose may grow only for something a caller cannot act
+  without, and a caller that discovers the formula refusal from a rejection has
+  already paid a round trip to learn it.
+
+  **314 bytes remain.** A sixteenth operation cannot be appended; it has to buy
+  its space back first. Do that reclamation *before* the next feature, not during
+  one, so a budget failure never arrives disguised as a feature bug.
+
+  The measurement no longer needs the bound temporarily broken to read: the
+  assertion carries the byte count and the remaining headroom in its message.
 
 ## Candidates, ranked by measured demand
 

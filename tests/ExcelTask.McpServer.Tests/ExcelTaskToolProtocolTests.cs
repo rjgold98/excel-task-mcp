@@ -99,7 +99,12 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // each operation from here pays in full, and these last two did. That is the bound working
         // rather than failing - fourteen operations is where a one-tool server should start asking
         // whether the fifteenth earns its bytes, and this number is what forces the question.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 22 * 1024);
+        // The measured size travels in the message, so a failure says how far over it went and a
+        // deliberate measurement does not need the bound temporarily broken to read the number.
+        const int bound = 22 * 1024;
+        var toolBytes = JsonSerializer.SerializeToUtf8Bytes(tool).Length;
+        Assert.True(toolBytes is > 0 and <= bound,
+            $"tools/list is {toolBytes:N0} bytes against a bound of {bound:N0} - {bound - toolBytes:N0} remaining.");
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);

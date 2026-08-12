@@ -15,12 +15,13 @@ happened.
 The single tool accepts:
 
 - target workbook path;
-- one manual `operation` union of eleven kinds - `CopyExhibit`,
+- one manual `operation` union of fifteen kinds - `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `FindReplace`, `Create`, `SetNumberFormat`, `ScanWorkbookStructure`; exactly
-  one matching payload is required, and `docs/ARCHITECTURE.md` carries the full
-  table;
+  `FindReplace`, `Create`, `SetRangeFormat`, `ScanWorkbookStructure`,
+  `ManageTable`, `ManageQuery`, `ManageModelMeasure`,
+  `ManageModelRelationship`; exactly one matching
+  payload is required, and `docs/ARCHITECTURE.md` carries the full table;
 - A1 ranges only; repair/copy ranges are capped at 16 ranges and 10,000 scanned
   cells, while extension is capped at two evidence periods, 1–24 destination
   periods, and 2,000 planned mutations;

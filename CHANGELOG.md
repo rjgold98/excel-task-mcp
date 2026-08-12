@@ -16,6 +16,143 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.19.0 - 2026-08-12
+
+The fifteenth operation, and then an adversarial review of the day's own work that
+found thirteen defects in it — including two in the tests written to catch them.
+
+### Added - `ManageModelRelationship`
+
+- Create or delete one Data Model relationship, naming the many side and the one
+  side explicitly. `Replace` is refused rather than implemented: a relationship
+  has no editable middle, so the honest instruction is to delete it and create
+  the new one.
+- Excel answers a second relationship between the same pair of tables by adding
+  it **inactive** rather than refusing. That is silent, and an inactive
+  relationship joins nothing, so a `Completed` receipt for one would be a lie
+  about the model. It is detected and reported.
+- Excel refusing a relationship whose one side is not unique now reports
+  `Rejected`, not `Unknown`. `Add` is atomic and the model can be re-read to
+  prove nothing changed, and the check names the likely cause — the one side is
+  not unique — because that is the fix and swapping the sides is usually it.
+
+### Fixed - a copy that stayed external reported success
+
+- `CopyExhibit` saved and returned `Completed` when some formulas on the copied
+  worksheet still read the reference workbook. It now returns `Partial` and the
+  retry reason names the worksheets that are missing from the destination. This
+  is the worst defect class the product exists to prevent, and it shipped in the
+  same day's work that added the rebind.
+- A partly-bound copy emitted **two** `copy-rebind` checks with opposite
+  verdicts. One check, one verdict.
+- The passing check said the copy "reads nothing from the reference workbook",
+  which the scan cannot support: it reads cell formulas, not defined names,
+  chart series, conditional formats or validation lists. It now states what it
+  examined.
+- A worksheet named `2024` was written back into a formula unquoted, producing
+  `=2024!A1`, which Excel rejects **after** the copy has happened — leaving the
+  caller an `Unknown` on a workbook to reconcile by hand, for an ordinary
+  fiscal-year tab. Quoting now follows Excel's actual rule: leading digit,
+  cell-reference shapes, and punctuation.
+- A worksheet named `Payer's Data` was read back as `Payer''s Data`, matched no
+  worksheet, and so was left external while the receipt named a worksheet that
+  cannot exist. Apostrophes are un-doubled on read and re-doubled on write, and
+  a fifteen-case table test pins both halves.
+
+### Fixed - two tests that could not fail
+
+- The copy-failure test was named for the behaviour it was meant to assert and
+  never asserted the status, so the production path returned `Completed` through
+  exactly the defect the test existed to catch, and stayed green.
+- Both relationship tests used `Assert.True(true, "...")` when the Data Model
+  fixture could not be built, which xUnit records as **Passed** with the message
+  never printed. A Power Query policy change on a managed machine would have
+  turned them into permanent silent no-ops, with the green suite as the evidence
+  for shipping. They now throw `SkipException`, as five other tests in the same
+  file already did, so the run prints `Skipped` and the reason reaches the TRX.
+
+### Fixed - the tool description had gone stale enough to misroute work
+
+- `excel_task` described itself as performing "one bounded formula, exhibit, or
+  macro-procedure operation" while fifteen operations shipped. That sentence is
+  the whole of what a routing model reads before deciding whether to open the
+  schema at all, and a v0.18.0 field session sent ordinary formula work to a
+  different Excel tool rather than here. It now lists the operations, and says
+  plainly that it **never authors new formula text** — it reads formulas, and
+  repairs or extends ones already present. Learning that from a rejection costs
+  a round trip; learning it from the description costs nothing.
+- The rewrite cost 369 bytes, leaving **314 of the 22,528-byte budget**. The
+  budget assertion now carries the measured size and the headroom in its
+  message, so reading the number no longer means temporarily breaking the bound.
+
+### Changed - the trace no longer calls itself safe to share
+
+- Its header said "safe to share" while the same header's first list included
+  workbook file names and worksheet names. Where the workbooks are real those
+  names are real, and one can name a payer, a client, a facility or a deal by
+  itself. The file cannot know whether that is acceptable where it is going, so
+  it now states its contents and leaves the conclusion to the person holding it
+  — the same rule the receipts follow: report the evidence, never assert a
+  verdict the evidence does not reach.
+
+### Added - `PRIVACY.md`
+
+- Four channels with four different contracts, written down separately because
+  collapsing them into "sends no private data" made the strong parts
+  unbelievable along with the loose one. It records what the earlier summaries
+  missed: a `WriteWorksheetValues` receipt returns the values **and formula
+  text** it overwrote, which is deliberate and responsive, but is workbook
+  content crossing the boundary during an operation that is not a read.
+
+### Fixed - the field check reported three things wrongly
+
+- **Macro settings could come from an Office version that is not running.** The
+  registry read walked `16.0` then `15.0` and overwrote as it went, so the last
+  hive present won. A machine carrying a stale Office 15.0 key reported
+  `officeVersion 15.0` — and took `accessVBOM` and `vbaWarnings` from that dead
+  hive while Excel 16.0 answered every other probe. Those two values are the
+  entire reason the section exists: they decide whether macro editing can work
+  on a managed computer. The read is now keyed on the Excel that answered, and
+  says so when it has to fall back.
+- **"Leaked Excel: 2" against operations that leaked nothing.** Each operation
+  waits twenty seconds for its Excel processes to exit, which is ample on a
+  clean machine and not always enough on one that loads four connected COM
+  add-ins into every instance. The report stated `excelLeakedByProduct = 0` and
+  `Leaked Excel: 2` in the same file; both cannot be true, and the one the eye
+  lands on was the wrong one — a false accusation of the single defect this
+  product exists to rule out, raised only on the class of machine whose verdict
+  matters. Per-operation figures are now reconciled against the run's final
+  snapshot, which is taken after everything has stopped.
+- **`powerShellLockdownPolicy` was named for a conclusion it cannot reach.** It
+  reads one environment variable; AppLocker and WDAC enforce Constrained
+  Language Mode without setting it. Renamed `psLockdownPolicyVariable`, because
+  a security control reported absent while it is being enforced is the more
+  damaging of the two mistakes that line can make.
+
+### Added - the field report's two new rules are pinned by tests
+
+- Neither rule can be reached by a real run on a healthy machine. The leak
+  reconciliation only does anything when an Excel process outlives its
+  operation's wait and then exits before the run ends, and on the personal
+  machine every operation reported zero, so the correcting branch never
+  executed. A fix for a defect measured on the work computer would otherwise
+  have shipped with no evidence it works - the same shape as the two tests
+  above that could not fail. Nine tests drive both rules directly, including
+  the work computer's exact shape, a process that is still running at the end
+  and therefore still counts, and the case-insensitive path compare that fails
+  outright under `Ordinal` - which matters because `DOTNET_ROOT` and MCP client
+  commands are typed by people and installers that disagree about casing, so an
+  ordinal compare would pass every test written from `Environment`'s own output
+  and redact nothing in the field.
+
+### Changed - the field report no longer names the person
+
+- The Windows account name appeared in `serverPath` and `dotnetRoot`. Paired
+  with the computer name already in the report, that names a person as well as a
+  machine, and it bought nothing: what matters about either path is whether it
+  is set and where it sits, never whose profile it is. Both are rewritten as
+  `%USERPROFILE%`. Reports generated before this version still contain it.
+
 ## 0.18.0 - 2026-08-12
 
 Four capabilities the owner asked for by name. Eleven operations become

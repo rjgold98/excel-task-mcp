@@ -107,6 +107,25 @@ internal static class ExcelTaskPlans
             ManageModelMeasure: new NormalizedManageModelMeasureOperation(
                 tableName, measureName, action, formula, expectedSha256)));
 
+    public static NormalizedExcelTaskRequest Relationship(
+        string target,
+        QueryAction action,
+        string fromTable,
+        string fromColumn,
+        string toTable,
+        string toColumn,
+        ExcelTaskMode mode = ExcelTaskMode.Apply) => new(
+        target,
+        mode,
+        WorkbookBinding.Isolated,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ManageModelRelationship,
+            ManageModelRelationship: new NormalizedManageModelRelationshipOperation(
+                fromTable, fromColumn, toTable, toColumn, action)));
+
     public static NormalizedExcelTaskRequest Query(
         string target,
         QueryAction action,

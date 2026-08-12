@@ -48,6 +48,13 @@ did not exercise. The check once covered five of eleven and still printed PASS,
 so a subset is now stated rather than implied. On its first run the reporter
 found a real gap — `RepairExistingWorksheet` — which is now a step.
 
+The Data Model steps are the ones that can legitimately be missing: a measure
+and a relationship both need model tables, which only exist once a query has
+been loaded into the model, so they depend on Power Query being permitted on
+the machine under test. The check builds that fixture itself and, when it
+cannot, says why and skips those rows. A skip there is an answer about the
+machine, not a defect in the product.
+
 **Sync roots.** `syncRootsRegistered` and `syncPathsResolving` measure the one
 part of workbook identity that a developer machine cannot: resolving a path
 under a OneDrive or SharePoint sync root back to the URL Excel reports for it.
@@ -86,15 +93,31 @@ leaked=0 result=PASS
 ----- END DIGEST -----
 ```
 
-Send the digest first. The full Markdown and JSON reports stay on disk and are
-worth relaying only if something failed and the detail is needed.
+Send the digest first, and not only because it is short. The three artifacts are
+not equally shareable, and the digest is the one that describes the product
+rather than the computer: versions, per-operation status and timing, the leak
+count, the result. No machine name, no add-in list, no paths.
+
+The Markdown and JSON reports describe the machine, because that is their whole
+job. They name the computer, the Office and Excel builds, the macro-trust
+registry values, the OneDrive sync-root counts, how many Excel processes were
+already running, and **every connected COM add-in by ProgID** - which is a fair
+description of the finance stack a shop runs. Relay them when something failed
+and the detail is needed, having read them first. From 0.19.0 the Windows
+account name is rewritten as `%USERPROFILE%` in both paths; reports generated
+before that carry it next to the computer name, which together name a person.
+[PRIVACY.md](../PRIVACY.md) has the full accounting.
 
 What it records:
 
 - **Environment** - Excel version and build, connected COM add-ins, the .NET
-  runtime and `DOTNET_ROOT`, any PowerShell lockdown policy, whether "Trust
-  access to the VBA project object model" is permitted, and whether Group
-  Policy is setting macro security.
+  runtime and `DOTNET_ROOT`, whether the `__PSLockdownPolicy` variable is set -
+  which is not the same as asking whether PowerShell is locked down, since
+  AppLocker and WDAC enforce Constrained Language Mode without it - whether
+  "Trust access to the VBA project object model" is permitted, and whether Group
+  Policy is setting macro security. The macro values are read from the registry
+  hive belonging to the Excel that answered the probe, so a machine carrying a
+  stale older-Office key does not report that key's settings instead.
 - **Tool surface** - for each server, how many tools it advertises and the exact
   wire size of its `tools/list` response. That payload is carried in context
   every session before any work is requested, so it is the fairest like-for-like
