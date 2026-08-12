@@ -22,7 +22,7 @@ public sealed class ExcelTaskEngineTests
             typeof(WorksheetCellValue),
             typeof(FindReplaceOperation),
             typeof(CreateOperation),
-            typeof(SetNumberFormatOperation),
+            typeof(SetRangeFormatOperation),
             typeof(ScanWorkbookStructureOperation)
         };
 
@@ -761,7 +761,7 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.WriteWorksheetValues, WriteWorksheetValues: new("Sheet1", [new("A1", "1")])),
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
             new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
-            new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00")),
+            new(ExcelOperationKind.SetRangeFormat, SetRangeFormat: new("Sheet1", "A1:B2", "#,##0.00")),
             new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new())
         ];
 
@@ -1139,7 +1139,7 @@ public sealed class ExcelTaskEngineTests
         // A format code's leading and trailing spaces are meaningful - they are what makes a column
         // of parenthesised negatives line up - so trimming would apply a format nobody asked for.
         Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
-        Assert.Equal($" {padded} ", runtime.Plan!.Request.Operation.SetNumberFormat!.NumberFormat);
+        Assert.Equal($" {padded} ", runtime.Plan!.Request.Operation.SetRangeFormat!.NumberFormat);
     }
 
     [Fact]
@@ -1158,13 +1158,107 @@ public sealed class ExcelTaskEngineTests
         bool overwriteConfirmed = true) => new(
             TargetWorkbookPath: ".\\model.xlsx",
             Operation: new ExcelOperation(
-                ExcelOperationKind.SetNumberFormat,
-                SetNumberFormat: new SetNumberFormatOperation("Sheet1", range, code)),
+                ExcelOperationKind.SetRangeFormat,
+                SetRangeFormat: new SetRangeFormatOperation("Sheet1", range, code)),
             Mode: ExcelTaskMode.Apply,
             WorkbookBinding: WorkbookBinding.Isolated,
             Save: SaveMode.Same,
             OutputWorkbookPath: null,
             OverwriteConfirmed: overwriteConfirmed);
+
+    /// <summary>A valid range-format request with one field changed, so each test names only what it is about.</summary>
+    private static ExcelTaskRequest RangeFormatRequest(Func<SetRangeFormatOperation, SetRangeFormatOperation> change) => new(
+        TargetWorkbookPath: ".\\model.xlsx",
+        Operation: new ExcelOperation(
+            ExcelOperationKind.SetRangeFormat,
+            SetRangeFormat: change(new SetRangeFormatOperation("Sheet1", "A1:D50", "#,##0.00"))),
+        Mode: ExcelTaskMode.Apply,
+        WorkbookBinding: WorkbookBinding.Isolated,
+        Save: SaveMode.Same,
+        OutputWorkbookPath: null,
+        OverwriteConfirmed: true);
+
+    [Fact]
+    public async Task RangeFormatRefusesARequestThatWouldChangeNothing()
+    {
+        // A no-op would return Completed for work nobody asked for, and hide a caller who meant to
+        // supply a field and did not. Every field being optional makes this reachable by accident.
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { NumberFormat = null }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("at least one", receipt.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    // Excel reverses the byte order of a colour relative to how everyone writes one down, so this
+    // conversion is the whole difference between a caller asking for red and getting blue.
+    [InlineData("#FF0000", 0x0000FF)]
+    [InlineData("#0000FF", 0xFF0000)]
+    [InlineData("1F6B45", 0x456B1F)]
+    public async Task ColoursAreConvertedFromHexToTheOrderExcelStores(string hex, int stored)
+    {
+        var runtime = new FakeRuntime();
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = hex }), CancellationToken.None);
+
+        Assert.True(receipt.Status == ExcelTaskStatus.Completed, receipt.Summary);
+        Assert.Equal(stored, runtime.Plan!.Request.Operation.SetRangeFormat!.FontColor);
+    }
+
+    [Theory]
+    [InlineData("red")]
+    [InlineData("#FFF")]
+    [InlineData("#GGGGGG")]
+    public async Task AColourThatIsNotHexIsRefusedRatherThanGuessedAt(string value)
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = value }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("#RRGGBB", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ClearingAFillIsSpelledNoneAndOnlyFillAcceptsIt()
+    {
+        var runtime = new FakeRuntime();
+        var cleared = await new ExcelTaskEngine(runtime).RunAsync(
+            RangeFormatRequest(format => format with { FillColor = "None" }), CancellationToken.None);
+
+        Assert.True(cleared.Status == ExcelTaskStatus.Completed, cleared.Summary);
+        Assert.Equal(ExcelTaskEngine.NoFillColor, runtime.Plan!.Request.Operation.SetRangeFormat!.FillColor);
+
+        // Text has no "no colour", so None there is a mistake worth naming rather than silently
+        // painting the theme default over whatever the caller had.
+        var refused = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = "None" }), CancellationToken.None);
+        Assert.Equal(ExcelTaskStatus.Rejected, refused.Status);
+    }
+
+    [Fact]
+    public async Task ABorderWeightWithNoEdgesToDrawIsRefused()
+    {
+        // Otherwise the caller gets Completed and no border, having asked for a thick one.
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { BorderStyle = "Thick" }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("borders", receipt.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(0.5, null)]
+    [InlineData(500.0, null)]
+    [InlineData(null, 500.0)]
+    public async Task SizesOutsideExcelsOwnCeilingsAreRefusedBeforeExcelStarts(double? fontSize, double? rowHeight)
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontSize = fontSize, RowHeight = rowHeight }),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+    }
 
     private static ExcelTaskRequest FindReplaceRequest(
         string? replaceWith = "FY26",

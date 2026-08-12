@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 
 namespace ExcelTask.Core;
@@ -13,6 +14,17 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     /// <summary>Excel's own ceiling on a number format code, so the bound is its rule rather than one invented here.</summary>
     private const int MaxNumberFormatLength = 255;
+
+    // Excel's own ceilings, enforced here so an out-of-range value is a clean rejection rather than
+    // a COM error mid-operation. Font size and row height share 409; column width is in characters.
+    private const double MinFontSize = 1;
+    private const double MaxFontSize = 409;
+    private const double MaxRowHeight = 409;
+    private const double MaxColumnWidth = 255;
+    private const int MaxFontNameLength = 31;
+
+    /// <summary>Excel's xlNone, the value that clears a fill rather than painting one.</summary>
+    public const int NoFillColor = -4142;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
@@ -777,8 +789,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.Create when operation.Create is not null:
                 return TryNormalizeCreate(operation.Create, operation.Kind, out normalized, out error);
 
-            case ExcelOperationKind.SetNumberFormat when operation.SetNumberFormat is not null:
-                return TryNormalizeNumberFormat(operation.SetNumberFormat, operation.Kind, out normalized, out error);
+            case ExcelOperationKind.SetRangeFormat when operation.SetRangeFormat is not null:
+                return TryNormalizeRangeFormat(operation.SetRangeFormat, operation.Kind, out normalized, out error);
 
             case ExcelOperationKind.ScanWorkbookStructure when operation.ScanWorkbookStructure is not null:
                 normalized = new NormalizedExcelOperation(operation.Kind, ScanWorkbookStructure: new NormalizedScanWorkbookStructureOperation());
@@ -790,8 +802,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
     }
 
-    private static bool TryNormalizeNumberFormat(
-        SetNumberFormatOperation format,
+    private static bool TryNormalizeRangeFormat(
+        SetRangeFormatOperation format,
         ExcelOperationKind kind,
         out NormalizedExcelOperation? normalized,
         out string? error)
@@ -800,36 +812,171 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         if (!TryNormalizeWorksheetName(format.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
         if (!TryNormalizeA1Range(format.Range, out var range))
         {
-            error = "Number format range must be a rectangular A1 range such as A1:C10.";
+            error = "Range format range must be a rectangular A1 range such as A1:C10.";
             return false;
         }
 
         var cells = CellCount(range);
         if (cells > MaxFormulaRepairCells)
         {
-            error = $"Number format range covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}. Split it across calls.";
+            error = $"Range format covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}. Split it across calls.";
+            return false;
+        }
+
+        // A request that would change nothing is a mistake, not a no-op. Performing it would return
+        // Completed for work nobody asked for and hide a caller that meant to supply a field.
+        if (format is { NumberFormat: null, Bold: null, Italic: null, FontSize: null, FontName: null,
+                        FontColor: null, FillColor: null, Borders: null, BorderStyle: null,
+                        ColumnWidth: null, RowHeight: null })
+        {
+            error = "Supply at least one thing to change: numberFormat, bold, italic, fontSize, fontName, fontColor, fillColor, borders, columnWidth, or rowHeight.";
             return false;
         }
 
         // Not trimmed. Leading and trailing spaces are meaningful in a format code - "_)" and " " pad
         // a column so negatives in parentheses line up under positives - so trimming would silently
         // produce a different format from the one asked for.
-        if (string.IsNullOrEmpty(format.NumberFormat))
+        if (format.NumberFormat is not null)
         {
-            error = "A number format code is required; use General to clear formatting.";
-            return false;
+            if (format.NumberFormat.Length == 0)
+            {
+                error = "A number format code cannot be empty; use General to clear formatting, or omit it to leave the format alone.";
+                return false;
+            }
+
+            if (format.NumberFormat.Length > MaxNumberFormatLength)
+            {
+                error = $"A number format code must be at most {MaxNumberFormatLength} characters.";
+                return false;
+            }
         }
 
-        if (format.NumberFormat.Length > MaxNumberFormatLength)
-        {
-            error = $"A number format code must be at most {MaxNumberFormatLength} characters.";
-            return false;
-        }
+        if (!TryNormalizeFontSize(format.FontSize, out var fontSize, out error)) return false;
+        if (!TryNormalizeFontName(format.FontName, out var fontName, out error)) return false;
+        if (!TryNormalizeColor(format.FontColor, "fontColor", allowNone: false, out var fontColor, out error)) return false;
+        if (!TryNormalizeColor(format.FillColor, "fillColor", allowNone: true, out var fillColor, out error)) return false;
+        if (!TryNormalizeBorders(format.Borders, format.BorderStyle, out var borders, out var borderStyle, out error)) return false;
+        if (!TryNormalizeDimension(format.ColumnWidth, "Column width", MaxColumnWidth, out var columnWidth, out error)) return false;
+        if (!TryNormalizeDimension(format.RowHeight, "Row height", MaxRowHeight, out var rowHeight, out error)) return false;
 
         normalized = new NormalizedExcelOperation(
             kind,
-            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheetName!, ToFormulaRepairRange(range), format.NumberFormat));
+            SetRangeFormat: new NormalizedSetRangeFormatOperation(
+                worksheetName!, ToFormulaRepairRange(range), format.NumberFormat,
+                format.Bold, format.Italic, fontSize, fontName, fontColor, fillColor,
+                borders, borderStyle, columnWidth, rowHeight));
         error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeFontSize(double? size, out double? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (size is null) return true;
+        if (double.IsNaN(size.Value) || size.Value < MinFontSize || size.Value > MaxFontSize)
+        {
+            error = $"Font size must be between {MinFontSize} and {MaxFontSize} points.";
+            return false;
+        }
+
+        normalized = size;
+        return true;
+    }
+
+    private static bool TryNormalizeFontName(string? name, out string? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (name is null) return true;
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0 || trimmed.Length > MaxFontNameLength)
+        {
+            error = $"A font name must be 1 to {MaxFontNameLength} characters.";
+            return false;
+        }
+
+        normalized = trimmed;
+        return true;
+    }
+
+    /// <summary>
+    /// #RRGGBB to the BGR integer Excel actually stores. Excel reverses the byte order relative to
+    /// every other place a colour is written down, so accepting hex and converting here is what
+    /// stops a caller who asked for red getting blue.
+    /// </summary>
+    private static bool TryNormalizeColor(string? value, string field, bool allowNone, out int? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (value is null) return true;
+
+        var trimmed = value.Trim();
+        if (allowNone && string.Equals(trimmed, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = NoFillColor;
+            return true;
+        }
+
+        var hex = trimmed.StartsWith('#') ? trimmed[1..] : trimmed;
+        if (hex.Length != 6 || !int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
+        {
+            error = allowNone
+                ? $"{field} must be #RRGGBB, such as #1F6B45, or None to clear it."
+                : $"{field} must be #RRGGBB, such as #1F6B45.";
+            return false;
+        }
+
+        normalized = ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF);
+        return true;
+    }
+
+    private static bool TryNormalizeBorders(
+        string? edges,
+        string? style,
+        out RangeBorderEdges normalizedEdges,
+        out RangeBorderWeight normalizedStyle,
+        out string? error)
+    {
+        normalizedEdges = RangeBorderEdges.Unspecified;
+        normalizedStyle = RangeBorderWeight.Thin;
+        error = null;
+
+        if (edges is not null && !Enum.TryParse(edges.Trim(), ignoreCase: true, out normalizedEdges) ||
+            normalizedEdges == RangeBorderEdges.Unspecified && edges is not null)
+        {
+            error = "Borders must be All, Outline, Top, Bottom, Left, Right, or None.";
+            return false;
+        }
+
+        if (style is not null && !Enum.TryParse(style.Trim(), ignoreCase: true, out normalizedStyle))
+        {
+            error = "Border style must be Hairline, Thin, Medium, or Thick.";
+            return false;
+        }
+
+        // A weight with nothing to draw is a caller who expected an edge and will not get one.
+        if (style is not null && normalizedEdges is RangeBorderEdges.Unspecified or RangeBorderEdges.None)
+        {
+            error = "Border style applies only when borders names edges to draw.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryNormalizeDimension(double? value, string field, double max, out double? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (value is null) return true;
+        if (double.IsNaN(value.Value) || value.Value < 0 || value.Value > max)
+        {
+            error = $"{field} must be between 0 and {max}.";
+            return false;
+        }
+
+        normalized = value;
         return true;
     }
 

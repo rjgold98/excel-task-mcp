@@ -1027,6 +1027,86 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task SetRangeFormatAppliesEveryRequestedAppearanceAndLeavesTheRestAlone()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "appearance.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1000.5 }, { -250.25 } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            // Everything at once, because each property is a separate COM assignment and a partial
+            // application is the failure worth catching: the receipt must not say Completed for a
+            // fill that landed and a border that did not.
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("appearance", ExcelTaskPlans.RangeFormat(
+                target, "Sheet1", "A1:A2",
+                numberFormat: "#,##0.00",
+                bold: true,
+                italic: true,
+                fontSize: 14,
+                fontColor: 0x0000FF,          // Excel's BGR for #FF0000
+                fillColor: 0x00FFFF,          // Excel's BGR for #FFFF00
+                borders: RangeBorderEdges.Outline,
+                borderStyle: RangeBorderWeight.Medium,
+                rowHeight: 22)), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+
+            // Verification runs in a separate Excel against the saved file, so a passing
+            // reopen-verification check is the proof that every property survived the round trip.
+            // The values are asserted here as well, because appearance must never touch them.
+            Assert.Equal("#,##0.00", ExcelTestWorkbook.ReadNumberFormat(target, "A1:A2"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A1", 1000.5d));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", -250.25d));
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task AnUninstalledFontIsStoredVerbatimAndCannotBeDetectedByReadingItBack()
+    {
+        // This test exists because the opposite was assumed while building the operation, and was
+        // wrong. Excel does NOT reject or rewrite a font name it cannot render: it stores the string
+        // and substitutes only when drawing, so the read-back agrees with the request for a font
+        // that does not exist anywhere on the machine.
+        //
+        // That is worth pinning rather than deleting. It bounds what verification can promise, and
+        // the schema tells the caller to check the spelling precisely because this cannot.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "font.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A2", new object?[,] { { 1 }, { 2 } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("font", ExcelTaskPlans.RangeFormat(
+                target, "Sheet1", "A1:A2", fontName: "NoSuchFontInstalledAnywhere")), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task SetNumberFormatChangesHowTheNumberReadsAndNotTheNumber()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -1287,7 +1367,7 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
 
             Assert.True(outcome.Status == ExcelTaskStatus.Completed,
                 $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
-            AssertMutationChoreography(observer, "number-format", expectStaging: false);
+            AssertMutationChoreography(observer, "range-format", expectStaging: false);
         }
         finally
         {

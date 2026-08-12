@@ -112,7 +112,7 @@ public static class WorkbookWorkerHost
             ExcelOperationKind.ReadWorksheetRange => $"sheet={operation.ReadWorksheetRange!.WorksheetName} range={operation.ReadWorksheetRange.Range} formulas={operation.ReadWorksheetRange.Formulas}",
             ExcelOperationKind.WriteWorksheetValues => $"sheet={operation.WriteWorksheetValues!.WorksheetName} cells={operation.WriteWorksheetValues.Cells.Count}",
             ExcelOperationKind.FindReplace => $"sheet={operation.FindReplace!.WorksheetName} range={operation.FindReplace.Range?.ToString() ?? "(used range)"} wholeCell={operation.FindReplace.WholeCell} matchCase={operation.FindReplace.MatchCase}",
-            ExcelOperationKind.SetNumberFormat => $"sheet={operation.SetNumberFormat!.WorksheetName} range={operation.SetNumberFormat.Range}",
+            ExcelOperationKind.SetRangeFormat => $"sheet={operation.SetRangeFormat!.WorksheetName} range={operation.SetRangeFormat.Range}",
             ExcelOperationKind.Create => $"createKind={operation.Create!.Kind} sheet={operation.Create.WorksheetName ?? "(default)"}",
             ExcelOperationKind.RepairExistingWorksheet => $"sheet={operation.RepairExistingWorksheet!.WorksheetName} ranges={operation.RepairExistingWorksheet.Ranges.Count}",
             ExcelOperationKind.ExtendFormulaSeries => $"sheet={operation.ExtendFormulaSeries!.WorksheetName} direction={operation.ExtendFormulaSeries.Direction} evidence={operation.ExtendFormulaSeries.EvidenceRange} destination={operation.ExtendFormulaSeries.DestinationRange}",

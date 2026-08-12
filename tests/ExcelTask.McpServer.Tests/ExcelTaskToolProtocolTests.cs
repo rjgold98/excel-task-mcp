@@ -78,13 +78,19 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Equal("excel_task", tool.Name);
         // The budget forces every operation to earn its bytes: 8 KB for the first four, 9 KB when
         // the audit became the fifth, 11 KB for the range read, 13 KB for the value write, 15 KB
-        // for find/replace and create together, 16 KB when the structure scan became the eleventh.
+        // for find/replace and create together, 16 KB when the structure scan became the eleventh,
+        // 18 KB when the number-format operation grew into the full range format.
         // The two reads and writes of cells also carry an output schema, being the only operations
         // that return workbook contents. It must not grow to make room for wordier prose - only for
         // a new operation, or for a rule the caller cannot act without, which field measurement
         // showed cost two round trips when it was left out of the schema. The UX round proved the
         // bound works in the other direction too: three fixes landed only because it forced cuts.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 16 * 1024);
+        //
+        // The last rise was paid for before it was spent. Eleven payload descriptions each restated
+        // "all other payloads must be null", a rule the operation-level description already states
+        // once; deleting the repetition returned 422 bytes, and only then did ten formatting fields
+        // go in. Reclaim before raising, so the number always measures capability rather than prose.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 18 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -130,23 +136,32 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var operation = ResolveReference(properties.GetProperty("operation"), tool.InputSchema);
         var operationProperties = operation.GetProperty("properties");
         AssertDescription(operationProperties, "kind", "Selects which one operation payload is supplied.");
-        AssertDescription(operationProperties, "copyExhibit", "Required only when kind is CopyExhibit; all other payloads must be null.");
-        AssertDescription(operationProperties, "repairExistingWorksheet", "Required only when kind is RepairExistingWorksheet; all other payloads must be null.");
-        AssertDescription(operationProperties, "extendFormulaSeries", "Required only when kind is ExtendFormulaSeries; all other payloads must be null.");
-        AssertDescription(operationProperties, "editMacroProcedure", "Required only when kind is EditMacroProcedure; all other payloads must be null.");
-        AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
-        AssertDescription(operationProperties, "readWorksheetRange", "Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.");
-        AssertDescription(operationProperties, "writeWorksheetValues", "Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.");
-        AssertDescription(operationProperties, "findReplace", "Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.");
-        AssertDescription(operationProperties, "create", "Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.");
-        AssertDescription(operationProperties, "setNumberFormat", "Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.");
+        AssertDescription(operationProperties, "copyExhibit", "Required when kind is CopyExhibit.");
+        AssertDescription(operationProperties, "repairExistingWorksheet", "Required when kind is RepairExistingWorksheet.");
+        AssertDescription(operationProperties, "extendFormulaSeries", "Required when kind is ExtendFormulaSeries.");
+        AssertDescription(operationProperties, "editMacroProcedure", "Required when kind is EditMacroProcedure.");
+        AssertDescription(operationProperties, "auditWorkbookFlows", "Required when kind is AuditWorkbookFlows. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
+        AssertDescription(operationProperties, "readWorksheetRange", "Required when kind is ReadWorksheetRange. Reads one bounded range and returns its contents.");
+        AssertDescription(operationProperties, "writeWorksheetValues", "Required when kind is WriteWorksheetValues. Writes constants into named cells and reads them back. Never accepts formula text.");
+        AssertDescription(operationProperties, "findReplace", "Required when kind is FindReplace. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.");
+        AssertDescription(operationProperties, "create", "Required when kind is Create. Creates an empty workbook or adds an empty worksheet.");
+        AssertDescription(operationProperties, "setRangeFormat", "Required when kind is SetRangeFormat. Sets how a range looks: number format, bold, italic, font size/name/colour, fill, borders, column width, row height. Every field is optional and independent - omit one to leave it as it is - and at least one must be supplied. Plan reports what is there now and changes nothing. It never changes a cell value.");
 
-        // The name says number format and the description says what is absent, because a caller who
-        // reads "format" and sends a font spends a round trip finding out - the exact cost the
-        // interface study measures.
-        var numberFormat = ResolveReference(operationProperties.GetProperty("setNumberFormat"), tool.InputSchema);
-        AssertDescription(numberFormat.GetProperty("properties"), "range", "One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.");
-        AssertDescription(numberFormat.GetProperty("properties"), "numberFormat", "Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.");
+        // Two rules the engine rejects on, both of which a caller cannot guess: that every field is
+        // optional so a fill change need not restate a font, and that supplying none is refused
+        // rather than performed as a no-op. Both are stated above, where the caller reads them
+        // before composing a request rather than after being turned away.
+        var rangeFormat = ResolveReference(operationProperties.GetProperty("setRangeFormat"), tool.InputSchema);
+        var rangeFormatProperties = rangeFormat.GetProperty("properties");
+        AssertDescription(rangeFormatProperties, "range", "One bounded A1 range to format, at most 10,000 cells. Formatting applies to every cell in it, including blank ones.");
+        AssertDescription(rangeFormatProperties, "numberFormat", "Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.");
+        AssertDescription(rangeFormatProperties, "fillColor", "Cell background as #RRGGBB, or None to clear it.");
+        AssertDescription(rangeFormatProperties, "borders", "Which edges to draw: All, Outline, Top, Bottom, Left, Right, or None to clear them.");
+        // Measured, not assumed: Excel stores an uninstalled font name verbatim and substitutes only
+        // when rendering, so the read-back cannot catch a misspelling. The description says so.
+        AssertDescription(rangeFormatProperties, "fontName", "Font name. Excel stores whatever it is given and renders a substitute when the font is not installed, so a wrong name cannot be detected here - check the spelling.");
+        // Width and height are the two that reach outside the range they are given.
+        AssertDescription(rangeFormatProperties, "columnWidth", "Column width in characters, 0 to 255. Applies to every column the range touches, not only the cells in it.");
 
         // Every rule the engine rejects on has to be readable here, which the A/B study measured at
         // p = 0.0012. For these two that means the search cap, the two text caps, the Plan/Apply
@@ -160,7 +175,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // queries, connections or the model because they are unreadable without Excel - but a caller
         // who scans, sees no macro, and concludes there is none has been misled by an omission. The
         // description says so and routes to the operation that can answer.
-        AssertDescription(operationProperties, "scanWorkbookStructure", "Required only when kind is ScanWorkbookStructure; all other payloads must be null, and supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.");
+        AssertDescription(operationProperties, "scanWorkbookStructure", "Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.");
 
         var create = ResolveReference(operationProperties.GetProperty("create"), tool.InputSchema);
         AssertDescription(create.GetProperty("properties"), "kind", "Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.");

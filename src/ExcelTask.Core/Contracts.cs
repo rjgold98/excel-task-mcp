@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetNumberFormat, ScanWorkbookStructure }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure }
 public enum CreateKind { Workbook, Worksheet }
 public enum FormulaExtensionDirection { Right, Down }
 
@@ -121,16 +121,34 @@ public sealed record CreateOperation(
 /// and had no way to make it read as 1,000.50 or (1,000.50), so a correct number could still be
 /// presented wrongly - which for a financial exhibit is the difference between usable and not.
 ///
-/// It is deliberately only the number format. Fonts, fills, borders, widths and conditional formats
-/// are not here and are not coming without evidence: the measured demand names the tool, not which
-/// of its operations were used, and building all of it on a tool-level count is how a server ends
-/// up with 230 operations and no idea which matter. The name says exactly what it sets so a caller
-/// does not spend a round trip discovering the rest is missing.
+/// It shipped as number format alone, deliberately, because the measured demand named the tool and
+/// not which of its operations were used - and building all of a tool on a tool-level count is how a
+/// server ends up with 230 operations and no idea which matter. The owner has since asked for the
+/// rest by name, which is the evidence that entry was waiting for.
+///
+/// Every appearance field is optional and independent. Omitted means "leave it as it is", which
+/// matters more here than anywhere else in the product: formatting is the one mutation with no
+/// recoverable prior state on the sheet, so a caller changing a fill must not have to restate a
+/// font it never looked at. At least one field must be supplied, because a request that changes
+/// nothing is a mistake worth naming rather than a no-op worth performing.
+///
+/// Still absent, and still on the same evidence rule: conditional formats, merged cells, alignment,
+/// and styles by name.
 /// </summary>
-public sealed record SetNumberFormatOperation(
+public sealed record SetRangeFormatOperation(
     [property: Description("Existing worksheet name to format. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
-    [property: Description("One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.")] string Range,
-    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string NumberFormat);
+    [property: Description("One bounded A1 range to format, at most 10,000 cells. Formatting applies to every cell in it, including blank ones.")] string Range,
+    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string? NumberFormat = null,
+    [property: Description("True bolds, false clears bold; omit to leave it as it is.")] bool? Bold = null,
+    [property: Description("True italicises, false clears it; omit to leave it as it is.")] bool? Italic = null,
+    [property: Description("Font point size, 1 to 409.")] double? FontSize = null,
+    [property: Description("Font name. Excel stores whatever it is given and renders a substitute when the font is not installed, so a wrong name cannot be detected here - check the spelling.")] string? FontName = null,
+    [property: Description("Text colour as #RRGGBB.")] string? FontColor = null,
+    [property: Description("Cell background as #RRGGBB, or None to clear it.")] string? FillColor = null,
+    [property: Description("Which edges to draw: All, Outline, Top, Bottom, Left, Right, or None to clear them.")] string? Borders = null,
+    [property: Description("Border weight, used only with borders: Hairline, Thin, Medium, or Thick. Thin when omitted.")] string? BorderStyle = null,
+    [property: Description("Column width in characters, 0 to 255. Applies to every column the range touches, not only the cells in it.")] double? ColumnWidth = null,
+    [property: Description("Row height in points, 0 to 409. Applies to every row the range touches, not only the cells in it.")] double? RowHeight = null);
 
 /// <summary>
 /// Maps a workbook's structure by reading the file directly - no Excel process at all.
@@ -155,17 +173,17 @@ public sealed record ScanWorkbookStructureOperation();
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
-    [property: Description("Required only when kind is CopyExhibit; all other payloads must be null.")] CopyExhibitOperation? CopyExhibit = null,
-    [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
-    [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
-    [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
-    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
-    [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
-    [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
-    [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
-    [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
-    [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null,
-    [property: Description("Required only when kind is ScanWorkbookStructure; all other payloads must be null, and supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null);
+    [property: Description("Required when kind is CopyExhibit.")] CopyExhibitOperation? CopyExhibit = null,
+    [property: Description("Required when kind is RepairExistingWorksheet.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
+    [property: Description("Required when kind is ExtendFormulaSeries.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
+    [property: Description("Required when kind is EditMacroProcedure.")] EditMacroProcedureOperation? EditMacroProcedure = null,
+    [property: Description("Required when kind is AuditWorkbookFlows. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
+    [property: Description("Required when kind is ReadWorksheetRange. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
+    [property: Description("Required when kind is WriteWorksheetValues. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    [property: Description("Required when kind is FindReplace. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
+    [property: Description("Required when kind is Create. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
+    [property: Description("Required when kind is SetRangeFormat. Sets how a range looks: number format, bold, italic, font size/name/colour, fill, borders, column width, row height. Every field is optional and independent - omit one to leave it as it is - and at least one must be supplied. Plan reports what is there now and changes nothing. It never changes a cell value.")] SetRangeFormatOperation? SetRangeFormat = null,
+    [property: Description("Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -248,7 +266,13 @@ public sealed record NormalizedFindReplaceOperation(string WorksheetName, string
 
 public sealed record NormalizedCreateOperation(CreateKind Kind, string? WorksheetName);
 
-public sealed record NormalizedSetNumberFormatOperation(string WorksheetName, FormulaRepairRange Range, string NumberFormat);
+public sealed record NormalizedSetRangeFormatOperation(string WorksheetName, FormulaRepairRange Range, string? NumberFormat, bool? Bold, bool? Italic, double? FontSize, string? FontName, int? FontColor, int? FillColor, RangeBorderEdges Borders, RangeBorderWeight BorderStyle, double? ColumnWidth, double? RowHeight);
+
+/// <summary>Which edges a border request draws. None clears them.</summary>
+public enum RangeBorderEdges { Unspecified, None, All, Outline, Top, Bottom, Left, Right }
+
+/// <summary>Border weight, mapped to Excel's own weights rather than exposing its numbers.</summary>
+public enum RangeBorderWeight { Thin, Hairline, Medium, Thick }
 
 public sealed record NormalizedScanWorkbookStructureOperation();
 
@@ -264,7 +288,7 @@ public sealed record NormalizedExcelOperation(
     NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null,
     NormalizedFindReplaceOperation? FindReplace = null,
     NormalizedCreateOperation? Create = null,
-    NormalizedSetNumberFormatOperation? SetNumberFormat = null,
+    NormalizedSetRangeFormatOperation? SetRangeFormat = null,
     NormalizedScanWorkbookStructureOperation? ScanWorkbookStructure = null);
 
 public sealed record NormalizedExcelTaskRequest(

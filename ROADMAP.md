@@ -95,6 +95,31 @@ never contents. Both were in code shipped an hour earlier, and the test that
 should have caught them asserted a single benign example rather than the
 guarantee.
 
+## The real-Excel tier is intermittently flaky, and that is a problem
+
+**Observed 2026-08-12, unresolved.** The `RunType=OnDemand` suite fails
+occasionally when the full gate runs it immediately after the fast tier, and
+passes reliably when run on its own. Across five runs of the same commit: two
+gate runs failed, each naming a *different* pair of tests, while three
+standalone runs of the same 39 tests passed with nothing left behind.
+
+One of those failures was real and is fixed - a phase renamed from
+`number-format` to `range-format` that the choreography assertion still expected.
+The others are not explained. The candidates are Excel COM activation being
+slower right after a burst of COM work in another process, and the leak
+assertion's thirty-second settle being too short under that load.
+
+This matters more than an annoyance. The competitive argument is measured
+correctness, and a gate that fails differently on identical code is not a
+measurement - it teaches whoever runs it to re-run rather than read, which is
+how a real defect gets waved through as "probably the flaky one". It has already
+happened once today: a genuine leak was dismissed as environmental twice before
+being tracked to a retry the sentry had stopped performing.
+
+Worth doing before more features: capture the failing run's full output rather
+than a filtered view, and record which test, which assertion, and the machine
+load at the time. Three data points would probably name it.
+
 ## From the 2026-08-11 field log, not yet addressed
 
 A full day's real work produced four frictions. Two are fixed in 0.16.0 - the

@@ -152,7 +152,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         // Same reason as the write above: each carries its own save, verification and gates, and
         // none of them wants the formula plan the shared path below builds.
-        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetNumberFormat)
+        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -170,7 +170,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
             return plan.Request.Operation.Kind == ExcelOperationKind.FindReplace
                 ? ExecuteFindReplaceCore(plan, observer)
-                : ExecuteNumberFormatCore(plan, observer);
+                : ExecuteRangeFormatCore(plan, observer);
         }
 
         // A creation writes the target it names and is refused a copy destination during validation,

@@ -281,11 +281,14 @@ internal static class FieldCheck
                 FindReplace: new FindReplaceOperation("Model", "FieldCheck", "FieldChecked", "A1:D10")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
-        await RunAsync(client, fixtures, operations, "SetNumberFormat (Apply)", new ExcelTaskRequest(
+        await RunAsync(client, fixtures, operations, "SetRangeFormat (Apply)", new ExcelTaskRequest(
             writeTarget,
             new ExcelOperation(
-                ExcelOperationKind.SetNumberFormat,
-                SetNumberFormat: new SetNumberFormatOperation("Model", "A1:B2", "#,##0.00")),
+                ExcelOperationKind.SetRangeFormat,
+                // More than the number format, deliberately: the fonts, fills and borders half is
+                // the newest surface and the least exercised anywhere else.
+                SetRangeFormat: new SetRangeFormatOperation(
+                    "Model", "A1:B2", "#,##0.00", Bold: true, FillColor: "#EAF2ED", Borders: "Outline")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
         // Creation names a path that must not exist, so it is the one operation the check must be

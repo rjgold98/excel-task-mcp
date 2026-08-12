@@ -40,7 +40,7 @@ public static class OperationCatalog
             ExcelOperationKind.WriteWorksheetValues => operation.WriteWorksheetValues,
             ExcelOperationKind.FindReplace => operation.FindReplace,
             ExcelOperationKind.Create => operation.Create,
-            ExcelOperationKind.SetNumberFormat => operation.SetNumberFormat,
+            ExcelOperationKind.SetRangeFormat => operation.SetRangeFormat,
             ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure
         };
 #pragma warning restore CS8524

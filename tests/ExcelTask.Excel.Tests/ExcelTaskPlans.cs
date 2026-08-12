@@ -84,7 +84,26 @@ internal static class ExcelTaskPlans
         string range,
         string numberFormat,
         ExcelTaskMode mode = ExcelTaskMode.Apply,
-        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        WorkbookBinding binding = WorkbookBinding.Isolated) =>
+        RangeFormat(target, worksheet, range, mode, binding, numberFormat: numberFormat);
+
+    public static NormalizedExcelTaskRequest RangeFormat(
+        string target,
+        string worksheet,
+        string range,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated,
+        string? numberFormat = null,
+        bool? bold = null,
+        bool? italic = null,
+        double? fontSize = null,
+        string? fontName = null,
+        int? fontColor = null,
+        int? fillColor = null,
+        RangeBorderEdges borders = RangeBorderEdges.Unspecified,
+        RangeBorderWeight borderStyle = RangeBorderWeight.Thin,
+        double? columnWidth = null,
+        double? rowHeight = null) => new(
         target,
         mode,
         binding,
@@ -92,8 +111,10 @@ internal static class ExcelTaskPlans
         null,
         mode == ExcelTaskMode.Apply,
         new NormalizedExcelOperation(
-            ExcelOperationKind.SetNumberFormat,
-            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheet, ToRange(range), numberFormat)));
+            ExcelOperationKind.SetRangeFormat,
+            SetRangeFormat: new NormalizedSetRangeFormatOperation(
+                worksheet, ToRange(range), numberFormat, bold, italic, fontSize, fontName,
+                fontColor, fillColor, borders, borderStyle, columnWidth, rowHeight)));
 
     public static NormalizedExcelTaskRequest Scan(
         string target,

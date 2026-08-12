@@ -304,8 +304,8 @@ public sealed class ExcelTaskRealExcelOnDemandTests
                     ["request"] = new ExcelTaskRequest(
                         target,
                         new ExcelOperation(
-                            ExcelOperationKind.SetNumberFormat,
-                            SetNumberFormat: new SetNumberFormatOperation("Rollforward", "B1:B2", "#,##0.00_);(#,##0.00)")),
+                            ExcelOperationKind.SetRangeFormat,
+                            SetRangeFormat: new SetRangeFormatOperation("Rollforward", "B1:B2", "#,##0.00_);(#,##0.00)")),
                         ExcelTaskMode.Apply,
                         WorkbookBinding.Isolated,
                         SaveMode.Same,
