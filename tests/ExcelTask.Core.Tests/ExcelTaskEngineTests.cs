@@ -762,7 +762,8 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
             new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
             new(ExcelOperationKind.SetRangeFormat, SetRangeFormat: new("Sheet1", "A1:B2", "#,##0.00")),
-            new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new())
+            new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new()),
+            new(ExcelOperationKind.ManageTable, ManageTable: new("Sheet1", TableAction.Rename, "Payroll", NewName: "PayrollFY26"))
         ];
 
         // The list above is the checklist: a new operation that is not added here fails this line

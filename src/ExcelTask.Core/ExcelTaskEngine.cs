@@ -22,6 +22,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     private const double MaxRowHeight = 409;
     private const double MaxColumnWidth = 255;
     private const int MaxFontNameLength = 31;
+    private const int MaxTableNameLength = 255;
+    private const int MaxTableStyleLength = 64;
 
     /// <summary>Excel's xlNone, the value that clears a fill rather than painting one.</summary>
     public const int NoFillColor = -4142;
@@ -796,6 +798,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 normalized = new NormalizedExcelOperation(operation.Kind, ScanWorkbookStructure: new NormalizedScanWorkbookStructureOperation());
                 return true;
 
+            case ExcelOperationKind.ManageTable when operation.ManageTable is not null:
+                return TryNormalizeManageTable(operation.ManageTable, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
@@ -865,6 +870,119 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 worksheetName!, ToFormulaRepairRange(range), format.NumberFormat,
                 format.Bold, format.Italic, fontSize, fontName, fontColor, fillColor,
                 borders, borderStyle, columnWidth, rowHeight));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Each action needs a different subset, so the rejection names the field that is missing for
+    /// the action asked for rather than a generic shape complaint. A caller who sends a range with
+    /// a Rename is told the range is ignored, not left to wonder whether it was used.
+    /// </summary>
+    private static bool TryNormalizeManageTable(
+        ManageTableOperation table,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(table.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (!Enum.IsDefined(table.Action))
+        {
+            error = "Table action must be Create, Rename, Restyle, Resize, or ConvertToRange.";
+            return false;
+        }
+
+        if (!TryNormalizeTableName(table.TableName, "Table name", out var tableName, out error)) return false;
+
+        FormulaRepairRange? range = null;
+        if (table.Action is TableAction.Create or TableAction.Resize)
+        {
+            if (!TryNormalizeA1Range(table.Range, out var parsed))
+            {
+                error = $"{table.Action} needs a rectangular A1 range such as A1:D20, including the header row.";
+                return false;
+            }
+
+            var cells = CellCount(parsed);
+            if (cells > MaxFormulaRepairCells)
+            {
+                error = $"The table range covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}.";
+                return false;
+            }
+
+            range = ToFormulaRepairRange(parsed);
+        }
+
+        string? newName = null;
+        if (table.Action == TableAction.Rename)
+        {
+            if (!TryNormalizeTableName(table.NewName, "New table name", out newName, out error)) return false;
+            if (string.Equals(newName, tableName, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "The new table name is the one it already has.";
+                return false;
+            }
+        }
+
+        string? style = null;
+        if (table.Action is TableAction.Create or TableAction.Restyle)
+        {
+            style = table.TableStyle?.Trim();
+            if (table.Action == TableAction.Restyle && string.IsNullOrEmpty(style))
+            {
+                error = "Restyle needs a table style name, or None to remove the style.";
+                return false;
+            }
+
+            if (style is { Length: > MaxTableStyleLength })
+            {
+                error = $"A table style name must be at most {MaxTableStyleLength} characters.";
+                return false;
+            }
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageTable: new NormalizedManageTableOperation(worksheetName!, table.Action, tableName!, range, newName, style));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Excel's own rules for a table name, enforced here so a bad one is a clean rejection rather
+    /// than a COM error after Excel has started: no spaces, not a cell reference, and it must begin
+    /// with a letter, an underscore, or a backslash.
+    /// </summary>
+    private static bool TryNormalizeTableName(string? value, string field, out string? normalized, out string? error)
+    {
+        normalized = null;
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            error = $"{field} is required.";
+            return false;
+        }
+
+        if (trimmed.Length > MaxTableNameLength)
+        {
+            error = $"{field} must be at most {MaxTableNameLength} characters.";
+            return false;
+        }
+
+        if (trimmed.Contains(' ', StringComparison.Ordinal))
+        {
+            error = $"{field} cannot contain spaces; Excel table names use underscores.";
+            return false;
+        }
+
+        if (!char.IsLetter(trimmed[0]) && trimmed[0] is not ('_' or '\\'))
+        {
+            error = $"{field} must start with a letter, an underscore, or a backslash.";
+            return false;
+        }
+
+        normalized = trimmed;
         error = null;
         return true;
     }

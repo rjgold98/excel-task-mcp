@@ -1027,6 +1027,89 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task ATableCanBeCreatedRenamedResizedAndConvertedBackWithoutLosingACell()
+    {
+        // One Excel launch per step is the cost of proving each one round-trips, and the whole
+        // lifecycle is worth that: the last step deletes a table over live cells, and the thing that
+        // must never happen is those cells going with it.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "tables.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:B3", new object?[,] { { "Name", "Amount" }, { "a", 1d }, { "b", 2d } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var created = await runtime.ExecuteAsync(new ExcelTaskPlan("t-create", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Create, "Payroll", range: "A1:B3", tableStyle: "TableStyleMedium2")), CancellationToken.None);
+            Assert.True(created.Status == ExcelTaskStatus.Completed,
+                $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
+
+            // Creating over a name that is taken must refuse rather than replace, the same rule the
+            // workbook Create follows.
+            var again = await runtime.ExecuteAsync(new ExcelTaskPlan("t-again", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Create, "Payroll", range: "A1:B3")), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, again.Status);
+
+            var renamed = await runtime.ExecuteAsync(new ExcelTaskPlan("t-rename", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Rename, "Payroll", newName: "PayrollFY26")), CancellationToken.None);
+            Assert.True(renamed.Status == ExcelTaskStatus.Completed, renamed.Summary);
+
+            var resized = await runtime.ExecuteAsync(new ExcelTaskPlan("t-resize", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Resize, "PayrollFY26", range: "A1:B2")), CancellationToken.None);
+            Assert.True(resized.Status == ExcelTaskStatus.Completed, resized.Summary);
+
+            var converted = await runtime.ExecuteAsync(new ExcelTaskPlan("t-unlist", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.ConvertToRange, "PayrollFY26")), CancellationToken.None);
+            Assert.True(converted.Status == ExcelTaskStatus.Completed, converted.Summary);
+
+            // The point of the whole lifecycle: the table is gone and every cell it covered is not.
+            Assert.True(ExcelTestWorkbook.HasValue(target, "A2", "a"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "B2", 1d));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "B3", 2d));
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task RestylingWithAStyleTheWorkbookDoesNotHaveIsReportedRatherThanIgnored()
+    {
+        // Excel accepts a style name it does not have by keeping the one it had, which reads as
+        // success from the assignment. Only the read-back tells the caller nothing happened.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "style.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:B2", new object?[,] { { "Name", "Amount" }, { "a", 1d } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var created = await runtime.ExecuteAsync(new ExcelTaskPlan("t-create", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Create, "Payroll", range: "A1:B2")), CancellationToken.None);
+            Assert.True(created.Status == ExcelTaskStatus.Completed, created.Summary);
+
+            var restyled = await runtime.ExecuteAsync(new ExcelTaskPlan("t-style", ExcelTaskPlans.Table(
+                target, "Sheet1", TableAction.Restyle, "Payroll", tableStyle: "NoSuchTableStyleAnywhere")), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Unknown, restyled.Status);
+            Assert.Contains(restyled.Checks ?? [], check => check.Name == "table" && !check.Passed);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task SetRangeFormatAppliesEveryRequestedAppearanceAndLeavesTheRestAlone()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

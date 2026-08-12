@@ -119,6 +119,7 @@ public static class WorkbookWorkerHost
             ExcelOperationKind.CopyExhibit => $"referenceSheet={operation.CopyExhibit!.ReferenceWorksheet} newSheet={operation.CopyExhibit.NewWorksheetName} repairRanges={operation.CopyExhibit.RepairRanges.Count}",
             ExcelOperationKind.EditMacroProcedure => $"component={operation.EditMacroProcedure!.ComponentName} procedure={operation.EditMacroProcedure.ProcedureName} run={operation.EditMacroProcedure.RunAfterEdit}",
             ExcelOperationKind.ScanWorkbookStructure => "direct file scan, no Excel",
+            ExcelOperationKind.ManageTable => $"sheet={operation.ManageTable!.WorksheetName} action={operation.ManageTable.Action} table={operation.ManageTable.TableName}",
             // Listed rather than defaulted. A `_ =>` arm here meant a new operation silently traced
             // as "no options" - no compile error, no test failure, just a diagnostic that quietly
             // stopped describing the thing it exists to describe. Naming the option-less kinds

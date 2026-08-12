@@ -291,6 +291,24 @@ internal static class FieldCheck
                     "Model", "A1:B2", "#,##0.00", Bold: true, FillColor: "#EAF2ED", Borders: "Outline")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
+        // Its own copy, because a table over A1:B2 would fight the formatting the step above put
+        // there. Create then rename covers both the add and the rename paths in one Excel launch.
+        var tableTarget = System.IO.Path.Combine(work, "table-target.xlsx");
+        System.IO.File.Copy(target, tableTarget, overwrite: true);
+        await RunAsync(client, fixtures, operations, "ManageTable (Create)", new ExcelTaskRequest(
+            tableTarget,
+            new ExcelOperation(
+                ExcelOperationKind.ManageTable,
+                ManageTable: new ManageTableOperation("Model", TableAction.Create, "FieldTable", Range: "A1:D2", TableStyle: "TableStyleMedium2")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+        await RunAsync(client, fixtures, operations, "ManageTable (Rename)", new ExcelTaskRequest(
+            tableTarget,
+            new ExcelOperation(
+                ExcelOperationKind.ManageTable,
+                ManageTable: new ManageTableOperation("Model", TableAction.Rename, "FieldTable", NewName: "FieldTableRenamed")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
         // Creation names a path that must not exist, so it is the one operation the check must be
         // careful never to leave behind for a second run.
         var createdWorkbook = System.IO.Path.Combine(work, "created.xlsx");

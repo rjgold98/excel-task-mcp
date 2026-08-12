@@ -152,7 +152,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         // Same reason as the write above: each carries its own save, verification and gates, and
         // none of them wants the formula plan the shared path below builds.
-        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat)
+        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat or ExcelOperationKind.ManageTable)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -168,9 +168,12 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
             }
 
-            return plan.Request.Operation.Kind == ExcelOperationKind.FindReplace
-                ? ExecuteFindReplaceCore(plan, observer)
-                : ExecuteRangeFormatCore(plan, observer);
+            return plan.Request.Operation.Kind switch
+            {
+                ExcelOperationKind.FindReplace => ExecuteFindReplaceCore(plan, observer),
+                ExcelOperationKind.SetRangeFormat => ExecuteRangeFormatCore(plan, observer),
+                _ => ExecuteManageTableCore(plan, observer)
+            };
         }
 
         // A creation writes the target it names and is refused a copy destination during validation,

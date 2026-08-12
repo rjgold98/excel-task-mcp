@@ -41,7 +41,8 @@ public static class OperationCatalog
             ExcelOperationKind.FindReplace => operation.FindReplace,
             ExcelOperationKind.Create => operation.Create,
             ExcelOperationKind.SetRangeFormat => operation.SetRangeFormat,
-            ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure
+            ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure,
+            ExcelOperationKind.ManageTable => operation.ManageTable
         };
 #pragma warning restore CS8524
     }
