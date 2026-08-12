@@ -3,6 +3,11 @@
 How the two AI agents on this project communicate. The owner does not carry
 technical detail between them; the repository carries it.
 
+This document governs the managed-work-computer field agent. The separate
+owner-approved relay between local Claude Code and Codex is defined in
+[AGENT-RELAY.md](AGENT-RELAY.md) and does not permit the field agent to write to
+GitHub.
+
 ## Roles
 
 - **Lead agent (Claude, home computer)** - owns architecture, code, releases,
