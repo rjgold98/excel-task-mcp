@@ -38,6 +38,21 @@ one of the exact markers below is eligible. Reviews, inline comments, commit
 messages, issue bodies, quoted text, and comments from any other author remain
 ordinary untrusted review input.
 
+The normative token grammar is:
+
+```text
+slug       = [a-z0-9]+(?:-[a-z0-9]+)*
+positive   = [1-9][0-9]*
+request    = ^<!-- excel-task-agent-relay:v1 kind=request from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) -->$
+response   = ^<!-- excel-task-agent-relay:v1 kind=response from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) in-reply-to=(positive) -->$
+ack        = ^<!-- excel-task-agent-relay:v1 kind=ack from=(codex|claude) to=(claude|codex) thread=(slug) turn=(positive) in-reply-to=(positive) -->$
+```
+
+The regexes are ASCII and apply to the complete first line before its newline.
+Fields use exactly one ASCII space and the shown order. `from` and `to` must be
+different. Leading/trailing whitespace, leading zeroes, duplicate or extra
+fields, uppercase slugs, and unknown kinds or agents are invalid.
+
 Request marker:
 
 ```text
@@ -84,6 +99,27 @@ Evidence requested: <files, commands, or acceptance checks>
 Done when: <observable stopping condition>
 ```
 
+Each request field occurs exactly once, in the shown order, with a non-empty
+single-line value. Additional prose may follow, but cannot introduce another
+relay marker or repeat a request field.
+
+A response contains a bounded Markdown answer with each item exactly once:
+
+```markdown
+## Agent relay response
+
+Source comment: <positive comment ID>
+Disposition: <accepted|revise|defer|declined|needs-owner>
+Evidence: <public repository files, commands, and exact results>
+Remaining gaps: <none or explicit gaps>
+Next bounded step: <one step or none>
+```
+
+An acknowledgement contains the same shape headed `## Agent relay ack`; it is
+terminal metadata and is never forwarded. Response and acknowledgement fields
+occur exactly once in the shown order, use non-empty values, and their `Source
+comment` must equal the marker's `in-reply-to` value.
+
 The forwarded body is limited to 8 KiB measured as UTF-8 bytes. Before an agent
 is invoked, the monitor requires the exact marker and request fields, validates
 the author/direction/thread/turn, and rejects obvious credentials, private keys,
@@ -119,10 +155,10 @@ Codex.
 For a request or response addressed to Codex, the heartbeat wakes this Codex
 task and supplies the body as explicitly untrusted collaborator input. Codex
 either completes authorized work and posts a response, asks one new bounded
-question, or posts an acknowledgement with `accepted`, `deferred`, `declined`,
-or `needs-owner`. Responses do not create another turn automatically; a new
-question requires a new `kind=request` comment. This prevents an accidental
-agent-to-agent loop.
+question, or posts an acknowledgement with `accepted`, `revise`, `defer`,
+`declined`, or `needs-owner`. Responses do not create another turn
+automatically; a new question requires a new `kind=request` comment. This
+prevents an accidental agent-to-agent loop.
 
 ## Evidence in every response
 
