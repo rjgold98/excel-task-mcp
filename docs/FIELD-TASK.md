@@ -256,6 +256,12 @@ durations, operation kinds, worksheet names, A1 ranges, workbook **file names
 only**, process ids, statuses. It never records cell values, formulas, VBA
 source, connection strings, or full paths.
 
+What its header no longer says — through v0.18.0 it did — is that the result is
+**safe to share**. Read that first list again: worksheet names and workbook file
+names are in it. Where this run touched a real workbook, those names are real.
+The file states its contents; whether it can leave this machine is your call.
+See the reporting section at the end before relaying it.
+
 ```powershell
 $env:EXCELTASK_TRACE = "$env:USERPROFILE\exceltask-trace.log"
 & "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check
@@ -394,10 +400,27 @@ requested.
 
 Files on the work computer, paths to Ross, **no git operations**.
 
-1. The three generated field-check files, unedited.
-2. The trace log, if step 4 ran.
-3. `ANALYTICS.md` from step 6.
-4. One `SUMMARY.md` containing:
+**Read anything before you relay it.** These artifacts are not equally
+shareable, and two of them describe the machine and its real work rather than
+the product. That judgement is yours to make with the facts, and nothing here
+makes it for you — see [PRIVACY.md](../PRIVACY.md).
+
+1. The **digest** first. It carries versions, per-operation status and timing,
+   the leak count and the result. No machine name, no add-in list, no paths.
+2. The Markdown and JSON reports, which name the computer, the Office and Excel
+   builds, the macro-trust values, and **every connected COM add-in by ProgID** —
+   a fair description of the finance stack this shop runs. From 0.19.0 the
+   Windows account name is written as `%USERPROFILE%`; a report from an earlier
+   build has the account name in it, beside the computer name.
+3. The trace log, if step 4 ran — and **only after reading it**. It carries no
+   workbook contents, but it does carry workbook file names, worksheet names and
+   A1 ranges, by design, because a trace that cannot be matched to its run is
+   useless. If this run touched a real workbook, those are real names, and a
+   workbook here is routinely named for a payer, a client, a facility or a deal.
+   If that is a problem, say so and send the digest alone; the phase timings are
+   what the trace is wanted for and they can be quoted without the file.
+4. `ANALYTICS.md` from step 6.
+5. One `SUMMARY.md` containing:
    - the version removed and the version installed, with the file count;
    - each command exactly as executed;
    - the digest verbatim and every exit code;
