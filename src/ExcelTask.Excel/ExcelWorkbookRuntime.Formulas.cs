@@ -272,10 +272,7 @@ public sealed partial class ExcelWorkbookRuntime
             // each cell across the COM boundary. Measured on this machine: 3,000 individual cell
             // reads cost about 4.9 seconds; the same cells as one range read cost 13 ms. The
             // per-call cost of COM, not the work, was the entire verification budget.
-            if (!ReadFormulaBox(references, sheet, expectedRepairs, out var box, out var origin))
-            {
-                return (false, new TaskCheck("reopen-verification", false, "The saved workbook could not be read back for verification."));
-            }
+            ReadFormulaBox(references, sheet, expectedRepairs, out var box, out var origin);
 
             foreach (var expected in expectedRepairs)
             {
@@ -294,8 +291,16 @@ public sealed partial class ExcelWorkbookRuntime
     /// COM call, into a zero-based array indexed off <paramref name="origin"/>. A single bulk read
     /// is hundreds of times cheaper than one call per cell. The rectangle is bounded by the same
     /// caps the repairs are, so it cannot marshal an unbounded array.
+    ///
+    /// Void, not bool. It returned bool and the caller reported "could not be read back" on false -
+    /// but both exits returned true, so that branch had never executed. The only thing that can go
+    /// wrong here is a COM throw from the two reads below, which the outer handler already turns
+    /// into a failure check carrying the phase and the exception; converting it to a bool would be
+    /// a worse diagnostic for the same event. Void keeps it honest: a genuine failure condition
+    /// added later cannot be introduced without changing the signature and forcing the caller to
+    /// decide what to do about it.
     /// </summary>
-    private static bool ReadFormulaBox(
+    private static void ReadFormulaBox(
         ComReferenceScope references,
         object sheet,
         IReadOnlyList<ExpectedFormula> expectedRepairs,
@@ -304,7 +309,7 @@ public sealed partial class ExcelWorkbookRuntime
     {
         box = new string?[0, 0];
         origin = (1, 1);
-        if (expectedRepairs.Count == 0) return true;
+        if (expectedRepairs.Count == 0) return;
 
         var minRow = expectedRepairs.Min(repair => repair.Row);
         var maxRow = expectedRepairs.Max(repair => repair.Row);
@@ -334,8 +339,6 @@ public sealed partial class ExcelWorkbookRuntime
             // A single-cell range returns the scalar rather than a one-element array.
             box[0, 0] = value as string;
         }
-
-        return true;
     }
 
     internal sealed record ExpectedFormula(int Row, int Column, string FormulaR1C1);

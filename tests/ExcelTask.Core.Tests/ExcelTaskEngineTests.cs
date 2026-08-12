@@ -657,6 +657,39 @@ public sealed class ExcelTaskEngineTests
     }
 
     [Fact]
+    public async Task ReadReceiptCarriesWhichCellsAreFormulasThroughTheBoundingSeam()
+    {
+        // Bounding rewrites the address and the text. It used to rebuild each cell with the
+        // two-argument constructor, so IsFormula silently reset to its default of false on every
+        // cell at every seam - the model was told nothing in the range was a formula, always.
+        //
+        // The test that existed asserted caps, and built its cells the same two-argument way, so
+        // the field it needed to observe was never set going in. This one sets it and follows it
+        // out, and it also keeps a long text so the truncation path is the one under test rather
+        // than a quiet pass-through.
+        var cells = new[]
+        {
+            new WorksheetCell("A1", "1200", IsFormula: false),
+            new WorksheetCell("A2", "=SUM(A1:A1)", IsFormula: true),
+            new WorksheetCell("A3", new string('x', 400), IsFormula: true)
+        };
+        var runtime = new FakeRuntime
+        {
+            Outcome = new(ExcelTaskStatus.Completed, "Read",
+                Range: new WorksheetRangeReceipt("Sheet1", "A1:A3", true, 3, 3, cells, Truncated: false))
+        };
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(ReadRequest(), CancellationToken.None);
+
+        Assert.True(receipt.Status == ExcelTaskStatus.Completed, receipt.Summary);
+        Assert.Equal([false, true, true], receipt.Range!.Cells.Select(cell => cell.IsFormula));
+
+        // And the bounding it is supposed to do still happens on the same cell.
+        Assert.True(receipt.Range.Cells[2].Text.Length <= 64);
+        Assert.Equal("A2", receipt.Range.Cells[1].Address);
+    }
+
+    [Fact]
     public async Task WriteRefusesFormulaTextAndSaysWhatToUseInstead()
     {
         var runtime = new FakeRuntime();

@@ -123,11 +123,11 @@ public sealed partial class ExcelWorkbookRuntime
                                 reference = openReference.Detach();
                             }
 
-                            if (!sameApplication) ComReferences.Release(openReferenceApplication);
+                            if (!sameApplication) ComAccess.Release(openReferenceApplication);
                         }
                         catch
                         {
-                            ComReferences.Release(openReferenceApplication);
+                            ComAccess.Release(openReferenceApplication);
                             throw;
                         }
                     }
@@ -156,7 +156,7 @@ public sealed partial class ExcelWorkbookRuntime
                         }
                         finally
                         {
-                            ComReferences.Release(workbooks);
+                            ComAccess.Release(workbooks);
                         }
                     }
 
@@ -164,9 +164,9 @@ public sealed partial class ExcelWorkbookRuntime
                 }
                 catch
                 {
-                    ComReferences.Release(reference);
-                    ComReferences.Release(target);
-                    ComReferences.Release(application);
+                    ComAccess.Release(reference);
+                    ComAccess.Release(target);
+                    ComAccess.Release(application);
                     throw;
                 }
             }
@@ -192,20 +192,20 @@ public sealed partial class ExcelWorkbookRuntime
                     }
                     catch
                     {
-                        if (!ReferenceEquals(reference, target)) ComReferences.Release(reference);
-                        ComReferences.Release(target);
+                        if (!ReferenceEquals(reference, target)) ComAccess.Release(reference);
+                        ComAccess.Release(target);
                         throw;
                     }
                 }
                 finally
                 {
-                    ComReferences.Release(workbooks);
+                    ComAccess.Release(workbooks);
                 }
             }
             catch
             {
                 if (OwnedExcelProcess.IsNewlyOwned(app, beforeStart)) TryQuit(app);
-                ComReferences.Release(app);
+                ComAccess.Release(app);
                 throw;
             }
         }
@@ -232,13 +232,13 @@ public sealed partial class ExcelWorkbookRuntime
                 }
                 finally
                 {
-                    ComReferences.Release(workbooks);
+                    ComAccess.Release(workbooks);
                 }
             }
             catch
             {
                 if (OwnedExcelProcess.IsNewlyOwned(app, beforeStart)) TryQuit(app);
-                ComReferences.Release(app);
+                ComAccess.Release(app);
                 throw;
             }
         }
@@ -265,7 +265,7 @@ public sealed partial class ExcelWorkbookRuntime
             catch
             {
                 if (OwnedExcelProcess.IsNewlyOwned(app, beforeStart)) TryQuit(app);
-                ComReferences.Release(app);
+                ComAccess.Release(app);
                 throw;
             }
         }
@@ -281,7 +281,7 @@ public sealed partial class ExcelWorkbookRuntime
             }
             finally
             {
-                ComReferences.Release(workbooks);
+                ComAccess.Release(workbooks);
             }
         }
 

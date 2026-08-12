@@ -49,17 +49,17 @@ internal sealed class RotWorkbookLocator : IDisposable
                             if (!MatchesDisplayName(displayName, targetPath)) continue;
                             moniker.BindToObject(bindContext, null, ref WorkbookInterfaceId, out var candidate);
                             if (candidate is not null && HasMatchingFullName(candidate, targetPath)) return new RotWorkbookLocator(candidate);
-                            ComReferences.Release(candidate);
+                            ComAccess.Release(candidate);
                         }
                         catch (Exception exception) when (IsExpectedBindingNonmatch(exception)) { }
-                        finally { ComReferences.Release(bindContext); }
+                        finally { ComAccess.Release(bindContext); }
                     }
-                    finally { ComReferences.Release(moniker); }
+                    finally { ComAccess.Release(moniker); }
                 }
             }
-            finally { ComReferences.Release(enumerator); }
+            finally { ComAccess.Release(enumerator); }
         }
-        finally { ComReferences.Release(runningTable); }
+        finally { ComAccess.Release(runningTable); }
 
         return null;
     }
@@ -88,14 +88,14 @@ internal sealed class RotWorkbookLocator : IDisposable
                             if (MatchesDisplayName(displayName, targetPath)) return true;
                         }
                         catch (Exception exception) when (IsExpectedBindingNonmatch(exception)) { }
-                        finally { ComReferences.Release(bindContext); }
+                        finally { ComAccess.Release(bindContext); }
                     }
-                    finally { ComReferences.Release(moniker); }
+                    finally { ComAccess.Release(moniker); }
                 }
             }
-            finally { ComReferences.Release(enumerator); }
+            finally { ComAccess.Release(enumerator); }
         }
-        finally { ComReferences.Release(runningTable); }
+        finally { ComAccess.Release(runningTable); }
 
         return false;
     }
@@ -146,24 +146,24 @@ internal sealed class RotWorkbookLocator : IDisposable
                             {
                                 if (unrelatedCandidate)
                                 {
-                                    ComReferences.Release(candidateApplication);
-                                    ComReferences.Release(candidate);
+                                    ComAccess.Release(candidateApplication);
+                                    ComAccess.Release(candidate);
                                 }
                             }
                         }
-                        finally { ComReferences.Release(bindContext); }
+                        finally { ComAccess.Release(bindContext); }
                     }
-                    finally { ComReferences.Release(moniker); }
+                    finally { ComAccess.Release(moniker); }
                 }
             }
-            finally { ComReferences.Release(enumerator); }
+            finally { ComAccess.Release(enumerator); }
         }
-        finally { ComReferences.Release(runningTable); }
+        finally { ComAccess.Release(runningTable); }
 
         return false;
     }
 
-    public void Dispose() => ComReferences.Release(_workbook);
+    public void Dispose() => ComAccess.Release(_workbook);
 
     internal static bool IsExpectedBindingNonmatch(Exception exception) => exception is COMException or ArgumentException;
 

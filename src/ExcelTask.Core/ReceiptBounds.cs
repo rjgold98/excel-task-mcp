@@ -68,6 +68,12 @@ public static class ReceiptBounds
     /// for - trimming them to twenty would not be a bound, it would be a wrong result. Cell text is
     /// capped far shorter than the range is deep: a long cell is usually a pasted paragraph, and one
     /// of them must not crowd out the four hundred cells around it.
+    ///
+    /// Bounding rewrites two fields and must carry the rest through untouched. Constructing a fresh
+    /// <see cref="WorksheetCell"/> here silently reset <c>IsFormula</c> to its default of false on
+    /// every cell, at all three seams - so every read told the caller that nothing in the range was
+    /// a formula. `with` is used rather than a constructor precisely so that a field added later
+    /// survives by default instead of being dropped by omission.
     /// </summary>
     public static WorksheetRangeReceipt? Range(WorksheetRangeReceipt? range, int maxText)
     {
@@ -75,9 +81,13 @@ public static class ReceiptBounds
 
         var cells = range.Cells
             .Take(ExcelTaskEngine.MaxReadCells)
-            .Select(cell => new WorksheetCell(
-                RequiredText(cell.Address, maxText),
-                cell.Text.Length <= ExcelTaskEngine.MaxReadCellTextLength ? cell.Text : cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]))
+            .Select(cell => cell with
+            {
+                Address = RequiredText(cell.Address, maxText),
+                Text = cell.Text.Length <= ExcelTaskEngine.MaxReadCellTextLength
+                    ? cell.Text
+                    : cell.Text[..ExcelTaskEngine.MaxReadCellTextLength]
+            })
             .ToArray();
 
         return range with

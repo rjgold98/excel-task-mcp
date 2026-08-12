@@ -11,7 +11,6 @@ public sealed partial class ExcelWorkbookRuntime
     /// <summary>Items carried in the receipt. The real total is always reported alongside.</summary>
     private const int MaxAuditReceiptItems = 20;
     private const int XlExcelLinks = 1;
-    private const int DispIdMemberNotFound = unchecked((int)0x80020003);
 
     /// <summary>
     /// Reads how one workbook's data flows fit together and reports names and shapes only. The

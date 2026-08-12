@@ -71,11 +71,18 @@ public sealed partial class ExcelWorkbookRuntime
             session = ExcelSession.OpenNewWorkbook(observer);
 
             observer.OnPhase("save");
-            mutationAttempted = true;
             // Named before the save, so the file has never existed under the default name. The
             // receipt reports whichever name it ended up with, because a caller who did not choose
             // one still has to write to it.
             var startingSheet = NameStartingWorksheet(session, worksheetName);
+
+            // Set here rather than before the rename, because until SaveAs runs nothing has touched
+            // the disk. Excel reserves a few worksheet names - History is the usual one - and they
+            // pass the engine's name validation, so the rename above can fail with the target path
+            // still free and untouched. Marking the mutation attempted first reported that as
+            // Unknown and not retryable, telling the caller to go reconcile a file that was never
+            // created. It is a clean rejection, and a retry with another name is safe.
+            mutationAttempted = true;
             Invoke(session.TargetWorkbook, "SaveAs", targetPath,
                 string.Equals(Path.GetExtension(targetPath), ".xlsm", StringComparison.OrdinalIgnoreCase)
                     ? XlOpenXmlWorkbookMacroEnabled

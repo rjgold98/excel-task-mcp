@@ -41,15 +41,7 @@ internal sealed class ComReferenceScope : IDisposable
     public void Dispose()
     {
         if (_abandoned) return;
-        foreach (var reference in _references) ComReferences.Release(reference);
+        foreach (var reference in _references) ComAccess.Release(reference);
         _references.Clear();
-    }
-}
-
-internal static class ComReferences
-{
-    public static void Release(object? value)
-    {
-        if (value is not null && Marshal.IsComObject(value)) Marshal.FinalReleaseComObject(value);
     }
 }

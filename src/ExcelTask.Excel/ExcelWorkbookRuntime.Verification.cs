@@ -31,7 +31,7 @@ public sealed partial class ExcelWorkbookRuntime
         {
             try { ExcelSession.TryQuit(Application); }
             catch (Exception exception) when (ComAccess.IsComFailure(exception)) { }
-            ComReferences.Release(Application);
+            ComAccess.Release(Application);
             return OwnedProcess.WaitForExitOrTerminate();
         }
     }
@@ -52,7 +52,11 @@ public sealed partial class ExcelWorkbookRuntime
     /// </summary>
     private sealed class PendingVerification : IDisposable
     {
-        private readonly StaComDispatcher _dispatcher = new();
+        // Assigned only by the constructor, from the dispatcher Begin already created. An initializer
+        // here ran first and was then overwritten, so every Apply started two STA threads and
+        // orphaned one: never disposed, never sent CompleteAdding, parked forever in
+        // GetConsumingEnumerable. In the module whose whole job is proving nothing is left running.
+        private readonly StaComDispatcher _dispatcher;
         private readonly Task<PreparedVerificationExcel> _prepared;
         private bool _consumed;
         private bool _disposed;

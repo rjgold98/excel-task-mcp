@@ -16,6 +16,72 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.17.1 - 2026-08-11
+
+Six low-risk findings, two of them live defects. Nothing here changes behaviour
+for a correct input except where the old behaviour was wrong.
+
+### Fixed - every read said no cell was a formula
+
+- **`ReadWorksheetRange` reported `isFormula: false` for every cell, always.**
+  Receipt bounding rewrites a cell's address and text, and it did so by building
+  a fresh `WorksheetCell` from two arguments - so the third, `IsFormula`, reset
+  to its default at all three seams: the worker protocol, the engine, and the
+  tool. The flag survived the Excel adapter perfectly and was erased on the way
+  out, so the feature was silently dead for every caller.
+  It now bounds with `with`, which carries every field it does not name through
+  by default rather than dropping it by omission.
+- **The test that should have caught it built its cells the same way.** It
+  asserted the caps and never set the field it needed to observe, so the value
+  going in was already `false`. The replacement sets the flag, follows it out
+  through the engine, and still exercises the truncation path — and it was
+  verified to fail against the old construction before being kept.
+
+### Fixed - an STA thread leaked on every mutating apply
+
+- **`PendingVerification` started two dispatchers and orphaned one.** A field
+  initializer ran before the constructor, which then overwrote it with the
+  dispatcher `Begin` had already created. The orphan's STA thread parked forever
+  in `GetConsumingEnumerable`, never sent `CompleteAdding`, and its
+  `BlockingCollection` was never disposed — one per Apply, in the module whose
+  entire job is proving nothing is left running. The initializer is gone.
+
+### Fixed - a create that wrote nothing reported `Unknown`
+
+- **`Create` marked the mutation attempted before the step that can fail without
+  touching disk.** Excel reserves a few worksheet names — `History` is the usual
+  one — and they pass the engine's name validation, so the rename could fail
+  with the target path still free and untouched. That was reported as `Unknown`,
+  not retryable, sending the caller to reconcile a file that was never created.
+  It is now a clean `Rejected`, and a retry under another name is safe.
+
+### Changed - three pieces of dead or duplicated code
+
+- **A verification check that could never fire.** `ReadFormulaBox` returned
+  `true` on both of its exits, so the caller's "the saved workbook could not be
+  read back" branch had never executed in any run of the program — while
+  advertising to a reader that read-back failures were handled there. They are
+  not; a COM fault surfaces through the outer handler with a better diagnostic.
+  The branch is deleted and the method is now `void`, so a genuine failure
+  condition cannot be added later without forcing the caller to handle it.
+- **Two byte-identical `Release` implementations.** `ComAccess` and
+  `ComReferences` each carried one, in the same assembly and namespace, with 31
+  call sites split between them. Folded into `ComAccess`, which the codebase
+  already documents as the single home for the late-bound COM rules.
+- **A duplicate `DispIdMemberNotFound` constant** in the audit partial, unused
+  and free to drift from the live one in `ComAccess`. Deleted.
+
+### Considered and rejected
+
+- **Consolidating the three running-object-table traversals.** They are the same
+  30-line enumeration three times over, which reads like an obvious win and is
+  not: `HasExternalWorkbookAtPath` deliberately does not release candidate
+  application references, because the table can hand back the very reference the
+  live session is using and releasing it would kill that session mid-task. The
+  duplication is load-bearing. Left alone.
+- **A `Process` handle leak in `TryOpenMatching`.** Refuted by measurement — the
+  exact failure path was run 20,000 times with a handle delta of zero.
+
 ## 0.17.0 - 2026-08-11
 
 A build for the work computer. Everything here exists so that one command
