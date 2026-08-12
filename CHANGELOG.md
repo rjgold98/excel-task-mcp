@@ -16,6 +16,71 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.17.2 - 2026-08-12
+
+A code review of 0.17.1, and a leak the gate caught that the review did not.
+
+### Fixed - the dialog sentry stopped retrying, and leaked Excel
+
+- **A dialog that survives its first click is clicked again.** v0.16.0 added
+  per-window deduplication so that one message box could not be counted three
+  times in a receipt, and suppressed the *click* along with the duplicate: once
+  a window was seen, the sentry never pressed its button again while it stood.
+  That is exactly backwards for the case the retry loop existed for. A dialog
+  whose `BM_CLICK` is processed but which does not close stayed up, Excel could
+  not quit, and the run leaked the process. Deduplicating the receipt is the
+  job; deduplicating the click is not, and the two are now separate.
+- **Found by the gate rather than by review.** It failed twice in the full gate
+  on `MacroRunErrorIsTrappedAndReportedInsteadOfBlockingOnADialog` - the test's
+  own assertions passing, the leak assertion firing after its full thirty-second
+  settle - and passed three times when that tier ran alone. Running it in the
+  exact failing sequence is what made it reproducible; the first instinct, that
+  a stranded process from earlier work was to blame, was wrong.
+
+A code review of 0.17.1 found that one of its fixes had been applied to one of
+six places that needed it. The rest of this release is that review's output.
+
+### Fixed - the drop-by-omission guarantee now covers the whole module
+
+- **All six bounding methods carry unnamed fields through.** 0.17.1 fixed
+  `Range` and left `Changes`, `Checks`, `Requirements`, `Audit` and
+  `MacroProcedure` rebuilding their records positionally - while its own
+  docstring claimed `with` was used "precisely so that a field added later
+  survives by default". `WorkbookFlowItem` carries the same
+  optional-parameter shape that made `IsFormula` vanish, so adding a field to
+  any of those five would have reproduced the defect silently at all three
+  seams.
+- **Cell text is bounded through `RequiredText` rather than an inline length
+  test.** Simpler, and safer: this seam bounds a receipt deserialized from the
+  worker pipe, where a non-nullable annotation is not enforced, so a frame
+  carrying a null text would have thrown inside the layer whose job is making an
+  untrusted receipt safe.
+
+### Fixed - a retryable rejection that said nothing to retry
+
+- **`Create` now names the likely cause when it refuses before writing.** 0.17.1
+  correctly made a reserved-worksheet-name failure `Rejected` and retryable, but
+  left `RetryReason` null - so the caller was told to retry with nothing to
+  correct except a raw HRESULT in a check detail, and would resubmit unchanged.
+
+### Added - tests for the two 0.17.1 fixes that had none
+
+- **`StaComDispatcher` counts its live instances**, and three tests assert the
+  count returns to where it started. Instrumentation rather than bookkeeping -
+  nothing reads it in production - but the STA thread leak survived its entire
+  life precisely because nothing counted, and was found by reading, lost, and
+  re-found hours later.
+- **An integration test for the create rejection**: `Rejected`, retryable, a
+  non-empty reason, and no file on disk, with an early exit if the local Excel
+  build happens to accept the name.
+
+### Changed
+
+- **`ComReferences.cs` is now `ComReferenceScope.cs`**, matching the only type
+  it still contains, and the `System.Runtime.InteropServices` using that 0.17.1
+  orphaned is removed. The other nine usings in that file are older than this
+  change and are left alone.
+
 ## 0.17.1 - 2026-08-11
 
 Six low-risk findings, two of them live defects. Nothing here changes behaviour

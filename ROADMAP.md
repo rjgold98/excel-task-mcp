@@ -62,13 +62,13 @@ Updated every release; `docs/FIELD-TASK.md` step 4 checks against these.
 
 | Suite | Count |
 |---|---|
-| Core | 133 |
-| Excel (fast) | 85 |
+| Core | 134 |
+| Excel (fast) | 88 |
 | McpServer (fast) | 18 |
-| **Fast total** | **236** |
-| Excel (OnDemand, real Excel) | 36 |
+| **Fast total** | **240** |
+| Excel (OnDemand, real Excel) | 37 |
 | McpServer (OnDemand) | 4 |
-| **Full gate total** | **276** |
+| **Full gate total** | **281** |
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,

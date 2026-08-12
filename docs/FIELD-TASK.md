@@ -307,7 +307,7 @@ git -C <your local clone> pull
 dotnet test ExcelTask.slnx --filter "RunType!=OnDemand" -p:NuGetAudit=false
 ```
 
-**Expected: 236 fast tests, zero failures** — Core 133, Excel 85, McpServer 18.
+**Expected: 240 fast tests, zero failures** — Core 134, Excel 88, McpServer 18.
 The current counts are also in `ROADMAP.md` under Delivered, updated each
 release; if these disagree with the roadmap, trust the roadmap and report the
 difference.
@@ -318,7 +318,7 @@ Then the full gate, which drives real Excel and takes about ten minutes:
 .\scripts\Test-Mvp.ps1 -IncludeExcel
 ```
 
-**Expected: 276 total, zero failures, and no Excel process left behind.**
+**Expected: 281 total, zero failures, and no Excel process left behind.**
 
 **Report the pass/fail/skip counts per assembly, verbatim.** "Tests passed"
 without counts will be sent back.

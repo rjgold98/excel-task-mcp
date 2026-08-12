@@ -62,11 +62,12 @@ internal sealed class ModalDialogSentry : IDisposable
     private readonly List<DismissedDialog> _dismissed = [];
 
     /// <summary>
-    /// Dialog windows already acted on, so a dialog that takes a moment to close is not counted
-    /// again on the next pass. Touched only from the watch loop, so it needs no gate;
+    /// Dialog windows already recorded, so one that takes a moment to close is not counted again on
+    /// the next pass. It gates the receipt entry only - never the click, which repeats while the
+    /// window stands. Touched only from the watch loop, so it needs no gate;
     /// <see cref="_dismissed"/> does, because the macro path reads it from another thread.
     /// </summary>
-    private readonly HashSet<IntPtr> _acted = [];
+    private readonly HashSet<IntPtr> _answered = [];
 
     private ModalDialogSentry(ProcessIdentity identity)
     {
@@ -141,25 +142,16 @@ internal sealed class ModalDialogSentry : IDisposable
         }
 
         // Handles whose windows are gone are dropped, so a recycled handle belonging to a genuinely
-        // new dialog is answered rather than mistaken for one already handled.
-        _acted.RemoveWhere(handle => !IsWindow(handle));
+        // new dialog is recorded rather than mistaken for one already answered.
+        _answered.RemoveWhere(handle => !IsWindow(handle));
 
         foreach (var dialog in EnumerateDialogs((uint)_identity.ProcessId))
         {
-            // Already acted on. Without this the same window was re-counted every 500 ms, so one
-            // MsgBox that took 1.6 s to close arrived in the receipt as three dialogs answered.
-            if (!_acted.Add(dialog)) continue;
-            if (!TryClassify(dialog, out var kind, out var message, out var buttonToClick))
-            {
-                // Not ours to answer - a Cancel-bearing dialog, say. Do not hold the handle, or a
-                // dialog that later becomes answerable would be skipped.
-                _acted.Remove(dialog);
-                continue;
-            }
+            if (!TryClassify(dialog, out var kind, out var message, out var buttonToClick)) continue;
 
             if (kind == ModalDialogKind.VbaCompileError)
             {
-                lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
+                if (_answered.Add(dialog)) lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
                 // Measured behaviour: answering a compile error does not hand control back. VBA
                 // drops into break mode with the module open in the editor, and the automation call
                 // that is already blocked inside COM never returns. Ending this instance is the only
@@ -181,8 +173,14 @@ internal sealed class ModalDialogSentry : IDisposable
             // a poll later arrives after the receipt is built and the dialog goes unreported.
             var delivered = SendMessageTimeout(
                 buttonToClick, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out _) != IntPtr.Zero;
-            if (delivered) lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
-            else _acted.Remove(dialog);
+
+            // Clicked on every pass while the window is still standing, and recorded only once.
+            // Suppressing the retry as well as the duplicate was a regression: a dialog whose first
+            // BM_CLICK is processed but which does not close - the very case the retry loop existed
+            // for - was then never clicked again, so it stayed up, Excel could not quit, and the run
+            // leaked the process. Deduplicating the receipt is the job here; deduplicating the click
+            // is not.
+            if (delivered && _answered.Add(dialog)) lock (_gate) _dismissed.Add(new DismissedDialog(kind, message));
         }
     }
 
