@@ -309,6 +309,18 @@ internal static class FieldCheck
                 ManageTable: new ManageTableOperation("Model", TableAction.Rename, "FieldTable", NewName: "FieldTableRenamed")),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
+        // Its own copy again, and self-contained: it creates the query it then deletes, so the step
+        // does not depend on whether this Excel build let the fixture add one.
+        var queryTarget = System.IO.Path.Combine(work, "query-target.xlsx");
+        System.IO.File.Copy(target, queryTarget, overwrite: true);
+        await RunAsync(client, fixtures, operations, "ManageQuery (Create)", new ExcelTaskRequest(
+            queryTarget,
+            new ExcelOperation(
+                ExcelOperationKind.ManageQuery,
+                ManageQuery: new ManageQueryOperation("FieldCheckQuery", QueryAction.Create,
+                    Formula: "let Source = #table({\"A\"}, {{1}}) in Source")),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
         // Creation names a path that must not exist, so it is the one operation the check must be
         // careful never to leave behind for a second run.
         var createdWorkbook = System.IO.Path.Combine(work, "created.xlsx");

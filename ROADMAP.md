@@ -95,6 +95,29 @@ never contents. Both were in code shipped an hour earlier, and the test that
 should have caught them asserted a single benign example rather than the
 guarantee.
 
+## Data Model mutation is reachable, and the first answer was wrong
+
+**Measured 2026-08-12.** A first probe found `ModelTables`, `ModelRelationships`
+and `ModelMeasures` reachable but empty on a fresh workbook, and concluded that
+Data Model mutation was blocked behind needing a real model to develop against.
+That conclusion was wrong twice over.
+
+A model table is created by loading a query into the model, which works:
+`Connections.Add2(name, description, connectionString, commandText, 6,
+CreateModelConnection: true, false)` against
+`OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location=<query>`
+produces one. So the fixture the entry said was missing can be built by the
+product's own Power Query operation.
+
+And `ModelMeasures.Add` works. Its first failure - "Value does not fall within
+the expected range" - was two mistakes in the call, not a limitation: the
+`FormatInformation` argument is required and must be a real format object such as
+`Model.ModelFormatGeneral`, and the DAX expression must carry **no** leading
+equals sign. With both corrected the measure is created and deleted cleanly.
+
+The lesson is the one this project keeps relearning: a COM call that fails is
+not evidence the capability is absent until the call itself has been checked.
+
 ## The real-Excel tier is intermittently flaky, and that is a problem
 
 **Observed 2026-08-12, unresolved.** The `RunType=OnDemand` suite fails

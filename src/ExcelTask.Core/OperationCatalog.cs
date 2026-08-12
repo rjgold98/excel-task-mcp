@@ -42,7 +42,8 @@ public static class OperationCatalog
             ExcelOperationKind.Create => operation.Create,
             ExcelOperationKind.SetRangeFormat => operation.SetRangeFormat,
             ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure,
-            ExcelOperationKind.ManageTable => operation.ManageTable
+            ExcelOperationKind.ManageTable => operation.ManageTable,
+            ExcelOperationKind.ManageQuery => operation.ManageQuery
         };
 #pragma warning restore CS8524
     }

@@ -1027,6 +1027,64 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task APowerQueryIsCreatedReplacedUnderItsFingerprintAndDeleted()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "queries.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+        const string first = "let Source = #table({\"A\"}, {{1}}) in Source";
+        const string second = "let Source = #table({\"B\"}, {{2}}) in Source";
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A1", new object?[,] { { 1d } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var created = await runtime.ExecuteAsync(new ExcelTaskPlan("q-create", ExcelTaskPlans.Query(
+                target, QueryAction.Create, "ProbeQuery", formula: first)), CancellationToken.None);
+            Assert.True(created.Status == ExcelTaskStatus.Completed,
+                $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
+
+            // Plan reports the fingerprint and never the expression. That is the whole privacy
+            // trade: an M expression usually names a server, and the audit already refuses to
+            // return one, so this operation must not become the hole in that rule.
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("q-plan", ExcelTaskPlans.Query(
+                target, QueryAction.Replace, "ProbeQuery", mode: ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+            var reported = string.Join(" ", planned.Checks?.Select(check => check.Detail) ?? []) + planned.Summary;
+            Assert.DoesNotContain("#table", reported, StringComparison.Ordinal);
+            Assert.DoesNotContain("let Source", reported, StringComparison.Ordinal);
+
+            var fingerprint = MacroProcedureText.ComputeSha256(MacroProcedureText.NormalizeLineEndings(first));
+            Assert.Contains(fingerprint, reported, StringComparison.OrdinalIgnoreCase);
+
+            // A stale fingerprint must stop before anything is written - the precondition is the
+            // reason this operation is allowed to replace a query at all.
+            var stale = await runtime.ExecuteAsync(new ExcelTaskPlan("q-stale", ExcelTaskPlans.Query(
+                target, QueryAction.Replace, "ProbeQuery", formula: second,
+                expectedSha256: new string('a', 64))), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, stale.Status);
+            Assert.Contains(stale.Checks ?? [], check => check.Name == "query-fingerprint" && !check.Passed);
+
+            var replaced = await runtime.ExecuteAsync(new ExcelTaskPlan("q-replace", ExcelTaskPlans.Query(
+                target, QueryAction.Replace, "ProbeQuery", formula: second, expectedSha256: fingerprint)), CancellationToken.None);
+            Assert.True(replaced.Status == ExcelTaskStatus.Completed,
+                $"{replaced.Summary} {string.Join("; ", replaced.Checks?.Select(check => check.Detail) ?? [])}");
+
+            var deleted = await runtime.ExecuteAsync(new ExcelTaskPlan("q-delete", ExcelTaskPlans.Query(
+                target, QueryAction.Delete, "ProbeQuery",
+                expectedSha256: MacroProcedureText.ComputeSha256(MacroProcedureText.NormalizeLineEndings(second)))), CancellationToken.None);
+            Assert.True(deleted.Status == ExcelTaskStatus.Completed, deleted.Summary);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task ATableCanBeCreatedRenamedResizedAndConvertedBackWithoutLosingACell()
     {
         // One Excel launch per step is the cost of proving each one round-trips, and the whole

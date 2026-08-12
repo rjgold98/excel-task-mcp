@@ -79,18 +79,24 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // The budget forces every operation to earn its bytes: 8 KB for the first four, 9 KB when
         // the audit became the fifth, 11 KB for the range read, 13 KB for the value write, 15 KB
         // for find/replace and create together, 16 KB when the structure scan became the eleventh,
-        // 18 KB when the number-format operation grew into the full range format.
+        // 18 KB when the number-format operation grew into the full range format, and 20 KB for the
+        // Power Query operation - the table operation before it fitted with no rise at all.
         // The two reads and writes of cells also carry an output schema, being the only operations
         // that return workbook contents. It must not grow to make room for wordier prose - only for
         // a new operation, or for a rule the caller cannot act without, which field measurement
         // showed cost two round trips when it was left out of the schema. The UX round proved the
         // bound works in the other direction too: three fixes landed only because it forced cuts.
         //
-        // The last rise was paid for before it was spent. Eleven payload descriptions each restated
-        // "all other payloads must be null", a rule the operation-level description already states
-        // once; deleting the repetition returned 422 bytes, and only then did ten formatting fields
-        // go in. Reclaim before raising, so the number always measures capability rather than prose.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 18 * 1024);
+        // Reclaim before raising, so the number always measures capability rather than prose. That
+        // rule has now paid twice: 422 bytes came back from eleven payloads each restating "all
+        // other payloads must be null", which the operation-level description states once, and
+        // more from a routing sentence repeated four times - enough that the whole table operation
+        // fitted inside the existing bound with no rise at all. The Power Query rise is what a
+        // thirteenth operation genuinely costs after that, not slack.
+        //
+        // What is left to reclaim is now small: the remaining repetition is load-bearing prose, so
+        // the next operation should expect to pay in full.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 20 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);

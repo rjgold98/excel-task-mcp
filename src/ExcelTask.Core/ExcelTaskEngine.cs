@@ -24,6 +24,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     private const int MaxFontNameLength = 31;
     private const int MaxTableNameLength = 255;
     private const int MaxTableStyleLength = 64;
+    private const int MaxQueryNameLength = 80;
 
     /// <summary>Excel's xlNone, the value that clears a fill rather than painting one.</summary>
     public const int NoFillColor = -4142;
@@ -801,6 +802,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.ManageTable when operation.ManageTable is not null:
                 return TryNormalizeManageTable(operation.ManageTable, operation.Kind, out normalized, out error);
 
+            case ExcelOperationKind.ManageQuery when operation.ManageQuery is not null:
+                return TryNormalizeManageQuery(operation.ManageQuery, mode, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
@@ -945,6 +949,109 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         normalized = new NormalizedExcelOperation(
             kind,
             ManageTable: new NormalizedManageTableOperation(worksheetName!, table.Action, tableName!, range, newName, style));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Plan is inspect-only and carries none of the Apply fields, exactly as the macro operation
+    /// works - and for the same reason. A caller who sends a replacement on a Plan believes it has
+    /// been staged, and finding out otherwise costs a round trip the interface study priced.
+    /// </summary>
+    private static bool TryNormalizeManageQuery(
+        ManageQueryOperation query,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(query.QueryName, out var queryName, out error)) return false;
+        if (!Enum.IsDefined(query.Action))
+        {
+            error = "Query action must be Create, Replace, or Delete.";
+            return false;
+        }
+
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (query.Formula is not null || query.ExpectedFormulaSha256 is not null)
+            {
+                error = "Query Plan is inspect-only and must omit the expression and the expected fingerprint.";
+                return false;
+            }
+
+            normalized = new NormalizedExcelOperation(kind, ManageQuery: new NormalizedManageQueryOperation(queryName!, query.Action, null, null));
+            error = null;
+            return true;
+        }
+
+        var needsFormula = query.Action is QueryAction.Create or QueryAction.Replace;
+        if (needsFormula)
+        {
+            if (string.IsNullOrWhiteSpace(query.Formula))
+            {
+                error = $"Query {query.Action} requires the complete M expression.";
+                return false;
+            }
+
+            if (query.Formula.Length > MacroProcedureText.MaxSourceCharacters)
+            {
+                error = $"An M expression must be at most {MacroProcedureText.MaxSourceCharacters} characters.";
+                return false;
+            }
+        }
+        else if (query.Formula is not null)
+        {
+            error = "Query Delete takes no expression.";
+            return false;
+        }
+
+        // Create has nothing to fingerprint - the query does not exist yet - so demanding one would
+        // be asking the caller to prove the state of something that is not there.
+        var needsFingerprint = query.Action is QueryAction.Replace or QueryAction.Delete;
+        if (needsFingerprint)
+        {
+            if (query.ExpectedFormulaSha256?.Trim() is not { } supplied || !Sha256Regex().IsMatch(supplied))
+            {
+                error = $"Query {query.Action} requires a 64-character hexadecimal expected fingerprint from the Plan receipt.";
+                return false;
+            }
+        }
+        else if (query.ExpectedFormulaSha256 is not null)
+        {
+            error = "Query Create takes no expected fingerprint; nothing exists to fingerprint yet.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageQuery: new NormalizedManageQueryOperation(
+                queryName!,
+                query.Action,
+                needsFormula ? MacroProcedureText.NormalizeLineEndings(query.Formula!) : null,
+                needsFingerprint ? query.ExpectedFormulaSha256!.ToLowerInvariant() : null));
+        error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeQueryName(string? value, out string? normalized, out string? error)
+    {
+        normalized = null;
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            error = "Query name is required.";
+            return false;
+        }
+
+        if (trimmed.Length > MaxQueryNameLength)
+        {
+            error = $"A query name must be at most {MaxQueryNameLength} characters.";
+            return false;
+        }
+
+        normalized = trimmed;
         error = null;
         return true;
     }

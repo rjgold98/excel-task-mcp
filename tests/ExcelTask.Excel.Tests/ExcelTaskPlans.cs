@@ -87,6 +87,24 @@ internal static class ExcelTaskPlans
         WorkbookBinding binding = WorkbookBinding.Isolated) =>
         RangeFormat(target, worksheet, range, mode, binding, numberFormat: numberFormat);
 
+    public static NormalizedExcelTaskRequest Query(
+        string target,
+        QueryAction action,
+        string queryName,
+        string? formula = null,
+        string? expectedSha256 = null,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ManageQuery,
+            ManageQuery: new NormalizedManageQueryOperation(queryName, action, formula, expectedSha256)));
+
     public static NormalizedExcelTaskRequest Table(
         string target,
         string worksheet,

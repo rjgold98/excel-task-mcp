@@ -152,7 +152,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         // Same reason as the write above: each carries its own save, verification and gates, and
         // none of them wants the formula plan the shared path below builds.
-        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat or ExcelOperationKind.ManageTable)
+        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat or ExcelOperationKind.ManageTable or ExcelOperationKind.ManageQuery)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -172,7 +172,8 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             {
                 ExcelOperationKind.FindReplace => ExecuteFindReplaceCore(plan, observer),
                 ExcelOperationKind.SetRangeFormat => ExecuteRangeFormatCore(plan, observer),
-                _ => ExecuteManageTableCore(plan, observer)
+                ExcelOperationKind.ManageTable => ExecuteManageTableCore(plan, observer),
+                _ => ExecuteManageQueryCore(plan, observer)
             };
         }
 
