@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure, ManageTable, ManageQuery }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure, ManageTable, ManageQuery, ManageModelMeasure }
 public enum CreateKind { Workbook, Worksheet }
 
 /// <summary>What a table request does. ConvertToRange keeps every cell and drops only the table.</summary>
@@ -220,6 +220,28 @@ public sealed record ManageQueryOperation(
     [property: Description("Apply only, for Create and Replace: the complete M expression, at most 8,192 characters, as the Power Query editor shows it.")] string? Formula = null,
     [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the query being changed, taken from the Plan receipt. Plan never returns the expression itself, because an M expression usually names a server.")] string? ExpectedFormulaSha256 = null);
 
+/// <summary>
+/// Creates, replaces, or deletes one Data Model measure, guarded by the same fingerprint the query
+/// and macro operations use.
+///
+/// A measure is a DAX expression every pivot over the model reads through, so a wrong one is wrong
+/// everywhere at once and silently - which is why this carries a precondition rather than trusting
+/// the name alone. Unlike an M expression, DAX names columns in the model rather than servers, so
+/// the Plan receipt reports the expression as well as its fingerprint; there is nothing here that
+/// the audit would refuse to return.
+///
+/// Only measures. Model tables come from loading a query into the model - use ManageQuery - and
+/// relationships are not here yet, because a wrong relationship silently changes every number the
+/// model produces and the operation that adds one should be able to show what it would join before
+/// it does it.
+/// </summary>
+public sealed record ManageModelMeasureOperation(
+    [property: Description("Data Model table the measure belongs to, as AuditWorkbookFlows lists it. Load a query into the model with ManageQuery first if there is none.")] string TableName,
+    [property: Description("The measure to create, replace, or delete.")] string MeasureName,
+    [property: Description("Create, Replace, or Delete.")] QueryAction Action,
+    [property: Description("Apply only, for Create and Replace: the DAX expression, with NO leading equals sign, at most 8,192 characters. For example SUM(Sales[Amount]).")] string? Formula = null,
+    [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the measure being changed, taken from the Plan receipt.")] string? ExpectedFormulaSha256 = null);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
@@ -235,7 +257,8 @@ public sealed record ExcelOperation(
     [property: Description("Required when kind is SetRangeFormat. Sets how a range looks: number format, bold, italic, font size/name/colour, fill, borders, column width, row height. Every field is optional and independent - omit one to leave it as it is - and at least one must be supplied. Plan reports what is there now and changes nothing. It never changes a cell value.")] SetRangeFormatOperation? SetRangeFormat = null,
     [property: Description("Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel; absence here is not evidence, so use AuditWorkbookFlows when those matter.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null,
     [property: Description("Required when kind is ManageTable. Creates or changes one Excel table: create over a range, rename, restyle, resize, or convert back to plain cells. Plan reports it as it is now and changes nothing.")] ManageTableOperation? ManageTable = null,
-    [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s fingerprint and never its expression, because an M expression usually names a server.")] ManageQueryOperation? ManageQuery = null);
+    [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s fingerprint and never its expression, because an M expression usually names a server.")] ManageQueryOperation? ManageQuery = null,
+    [property: Description("Required when kind is ManageModelMeasure. Creates, replaces, or deletes one Data Model measure. Plan reports the DAX and its fingerprint; Apply must carry the fingerprint back.")] ManageModelMeasureOperation? ManageModelMeasure = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -332,6 +355,8 @@ public sealed record NormalizedManageTableOperation(string WorksheetName, TableA
 
 public sealed record NormalizedManageQueryOperation(string QueryName, QueryAction Action, string? Formula, string? ExpectedFormulaSha256);
 
+public sealed record NormalizedManageModelMeasureOperation(string TableName, string MeasureName, QueryAction Action, string? Formula, string? ExpectedFormulaSha256);
+
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
     ExcelOperationKind Kind,
@@ -347,7 +372,8 @@ public sealed record NormalizedExcelOperation(
     NormalizedSetRangeFormatOperation? SetRangeFormat = null,
     NormalizedScanWorkbookStructureOperation? ScanWorkbookStructure = null,
     NormalizedManageTableOperation? ManageTable = null,
-    NormalizedManageQueryOperation? ManageQuery = null);
+    NormalizedManageQueryOperation? ManageQuery = null,
+    NormalizedManageModelMeasureOperation? ManageModelMeasure = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,

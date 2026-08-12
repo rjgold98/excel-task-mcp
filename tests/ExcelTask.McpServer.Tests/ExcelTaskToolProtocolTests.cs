@@ -80,7 +80,8 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // the audit became the fifth, 11 KB for the range read, 13 KB for the value write, 15 KB
         // for find/replace and create together, 16 KB when the structure scan became the eleventh,
         // 18 KB when the number-format operation grew into the full range format, and 20 KB for the
-        // Power Query operation - the table operation before it fitted with no rise at all.
+        // Power Query operation, 22 KB for the Data Model measure - the table operation before them
+        // fitted with no rise at all.
         // The two reads and writes of cells also carry an output schema, being the only operations
         // that return workbook contents. It must not grow to make room for wordier prose - only for
         // a new operation, or for a rule the caller cannot act without, which field measurement
@@ -95,8 +96,10 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // thirteenth operation genuinely costs after that, not slack.
         //
         // What is left to reclaim is now small: the remaining repetition is load-bearing prose, so
-        // the next operation should expect to pay in full.
-        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 20 * 1024);
+        // each operation from here pays in full, and these last two did. That is the bound working
+        // rather than failing - fourteen operations is where a one-tool server should start asking
+        // whether the fifteenth earns its bytes, and this number is what forces the question.
+        Assert.InRange(JsonSerializer.SerializeToUtf8Bytes(tool).Length, 1, 22 * 1024);
 
         var schema = tool.InputSchema.GetRawText();
         Assert.Contains("request", schema, StringComparison.Ordinal);
@@ -113,12 +116,24 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.DoesNotContain("formulaText", schema, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("sourceText", schema, StringComparison.OrdinalIgnoreCase);
 
-        // The guard against a model-selection input bans property NAMES, not prose: Excel's Data
-        // Model now legitimately appears in the audit's description, and the thing this protects
-        // against is a field, not a word.
+        // The guard against a model-SELECTION input. It bans property names rather than prose, and
+        // it has now been narrowed once: Excel's own Data Model became part of the surface, so
+        // `manageModelMeasure` and its fields are legitimate and the bare word "model" no longer
+        // discriminates between "which LLM" and "which Excel object".
+        //
+        // Narrowing a safety check deserves saying why it is still safe. The product decision is
+        // that this server never selects a model (docs/DECISIONS.md), and what would break it is a
+        // field a caller could set to choose one. Those have names, and they are listed here. An
+        // Excel measure has none of them, and the enforcement that actually matters - the server
+        // holding no model SDK and no such parameter anywhere - is unchanged.
         Assert.DoesNotContain(
             EnumeratePropertyNames(tool.InputSchema),
-            name => name.Contains("model", StringComparison.OrdinalIgnoreCase));
+            name => name.Equals("model", StringComparison.OrdinalIgnoreCase)
+                 || name.Contains("modelName", StringComparison.OrdinalIgnoreCase)
+                 || name.Contains("modelId", StringComparison.OrdinalIgnoreCase)
+                 || name.Contains("llm", StringComparison.OrdinalIgnoreCase)
+                 || name.Contains("gpt", StringComparison.OrdinalIgnoreCase)
+                 || name.Contains("temperature", StringComparison.OrdinalIgnoreCase));
 
         var request = ResolveReference(tool.InputSchema.GetProperty("properties").GetProperty("request"), tool.InputSchema);
         var properties = request.GetProperty("properties");

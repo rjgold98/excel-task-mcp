@@ -45,7 +45,7 @@ public sealed class FieldCheckCoverageTests
         var uncovered = FieldCheckCoverage.UncoveredKinds(shipped);
 
         Assert.Equal(
-            ["RepairExistingWorksheet", "ReadWorksheetRange", "WriteWorksheetValues", "FindReplace", "Create", "SetRangeFormat", "ScanWorkbookStructure", "ManageTable", "ManageQuery"],
+            ["RepairExistingWorksheet", "ReadWorksheetRange", "WriteWorksheetValues", "FindReplace", "Create", "SetRangeFormat", "ScanWorkbookStructure", "ManageTable", "ManageQuery", "ManageModelMeasure"],
             uncovered);
     }
 

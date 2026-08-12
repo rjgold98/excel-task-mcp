@@ -805,6 +805,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.ManageQuery when operation.ManageQuery is not null:
                 return TryNormalizeManageQuery(operation.ManageQuery, mode, operation.Kind, out normalized, out error);
 
+            case ExcelOperationKind.ManageModelMeasure when operation.ManageModelMeasure is not null:
+                return TryNormalizeModelMeasure(operation.ManageModelMeasure, mode, operation.Kind, out normalized, out error);
+
             default:
                 error = "Operation payload does not match its kind.";
                 return false;
@@ -1031,6 +1034,96 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 query.Action,
                 needsFormula ? MacroProcedureText.NormalizeLineEndings(query.Formula!) : null,
                 needsFingerprint ? query.ExpectedFormulaSha256!.ToLowerInvariant() : null));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Same Plan/Apply split as the query and macro operations. The one rule unique to DAX is the
+    /// leading equals sign: Excel's own measure editor shows one, the object model rejects it, and
+    /// a caller copying an expression out of the editor will paste it in. Refusing it by name is
+    /// worth more than a COM error that says only "value does not fall within the expected range" -
+    /// which is exactly the message that made this operation look impossible while it was being
+    /// probed.
+    /// </summary>
+    private static bool TryNormalizeModelMeasure(
+        ManageModelMeasureOperation measure,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(measure.TableName, out var tableName, out error)) return false;
+        if (!TryNormalizeQueryName(measure.MeasureName, out var measureName, out error)) return false;
+        if (!Enum.IsDefined(measure.Action))
+        {
+            error = "Measure action must be Create, Replace, or Delete.";
+            return false;
+        }
+
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (measure.Formula is not null || measure.ExpectedFormulaSha256 is not null)
+            {
+                error = "Measure Plan is inspect-only and must omit the expression and the expected fingerprint.";
+                return false;
+            }
+
+            normalized = new NormalizedExcelOperation(kind, ManageModelMeasure: new NormalizedManageModelMeasureOperation(tableName!, measureName!, measure.Action, null, null));
+            error = null;
+            return true;
+        }
+
+        var needsFormula = measure.Action is QueryAction.Create or QueryAction.Replace;
+        string? formula = null;
+        if (needsFormula)
+        {
+            formula = measure.Formula?.Trim();
+            if (string.IsNullOrEmpty(formula))
+            {
+                error = $"Measure {measure.Action} requires the DAX expression.";
+                return false;
+            }
+
+            if (formula.StartsWith('='))
+            {
+                error = "A DAX measure expression must not start with an equals sign; send SUM(Sales[Amount]), not =SUM(Sales[Amount]).";
+                return false;
+            }
+
+            if (formula.Length > MacroProcedureText.MaxSourceCharacters)
+            {
+                error = $"A DAX expression must be at most {MacroProcedureText.MaxSourceCharacters} characters.";
+                return false;
+            }
+        }
+        else if (measure.Formula is not null)
+        {
+            error = "Measure Delete takes no expression.";
+            return false;
+        }
+
+        var needsFingerprint = measure.Action is QueryAction.Replace or QueryAction.Delete;
+        if (needsFingerprint)
+        {
+            if (measure.ExpectedFormulaSha256?.Trim() is not { } supplied || !Sha256Regex().IsMatch(supplied))
+            {
+                error = $"Measure {measure.Action} requires a 64-character hexadecimal expected fingerprint from the Plan receipt.";
+                return false;
+            }
+        }
+        else if (measure.ExpectedFormulaSha256 is not null)
+        {
+            error = "Measure Create takes no expected fingerprint; nothing exists to fingerprint yet.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageModelMeasure: new NormalizedManageModelMeasureOperation(
+                tableName!, measureName!, measure.Action, formula,
+                needsFingerprint ? measure.ExpectedFormulaSha256!.ToLowerInvariant() : null));
         error = null;
         return true;
     }

@@ -1027,6 +1027,94 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task ADataModelMeasureIsCreatedReplacedUnderItsFingerprintAndDeleted()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "model.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            // A model table only exists once a query has been loaded into the model. If this build
+            // will not do that, the operation has nothing to act on and the test says so rather
+            // than reporting a failure that belongs to the machine.
+            if (!ExcelTestWorkbook.CreateModelTarget(target, "ModelProbe"))
+            {
+                Assert.True(true, "This Excel build did not produce a Data Model table; the measure path cannot be exercised here.");
+                return;
+            }
+
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var created = await runtime.ExecuteAsync(new ExcelTaskPlan("m-create", ExcelTaskPlans.Measure(
+                target, QueryAction.Create, "ModelProbe", "TotalK", formula: "SUM(ModelProbe[K])")), CancellationToken.None);
+            Assert.True(created.Status == ExcelTaskStatus.Completed,
+                $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
+
+            // DAX names columns inside the model rather than servers, so unlike a query the Plan
+            // does return the expression - the caller needs it to write a replacement.
+            var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("m-plan", ExcelTaskPlans.Measure(
+                target, QueryAction.Replace, "ModelProbe", "TotalK", mode: ExcelTaskMode.Plan)), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
+            var reported = string.Join(" ", planned.Checks?.Select(check => check.Detail) ?? []) + planned.Summary;
+            Assert.Contains("SUM(ModelProbe[K])", reported, StringComparison.Ordinal);
+
+            var fingerprint = MacroProcedureText.ComputeSha256("SUM(ModelProbe[K])");
+            var stale = await runtime.ExecuteAsync(new ExcelTaskPlan("m-stale", ExcelTaskPlans.Measure(
+                target, QueryAction.Replace, "ModelProbe", "TotalK",
+                formula: "COUNTROWS(ModelProbe)", expectedSha256: new string('b', 64))), CancellationToken.None);
+            Assert.Equal(ExcelTaskStatus.Rejected, stale.Status);
+            Assert.Contains(stale.Checks ?? [], check => check.Name == "measure-fingerprint" && !check.Passed);
+
+            var replaced = await runtime.ExecuteAsync(new ExcelTaskPlan("m-replace", ExcelTaskPlans.Measure(
+                target, QueryAction.Replace, "ModelProbe", "TotalK",
+                formula: "COUNTROWS(ModelProbe)", expectedSha256: fingerprint)), CancellationToken.None);
+            Assert.True(replaced.Status == ExcelTaskStatus.Completed,
+                $"{replaced.Summary} {string.Join("; ", replaced.Checks?.Select(check => check.Detail) ?? [])}");
+
+            var deleted = await runtime.ExecuteAsync(new ExcelTaskPlan("m-delete", ExcelTaskPlans.Measure(
+                target, QueryAction.Delete, "ModelProbe", "TotalK",
+                expectedSha256: MacroProcedureText.ComputeSha256("COUNTROWS(ModelProbe)"))), CancellationToken.None);
+            Assert.True(deleted.Status == ExcelTaskStatus.Completed, deleted.Summary);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task AMeasureOnAModelTableThatDoesNotExistIsRejectedWithSomewhereToGo()
+    {
+        // The common first mistake: asking for a measure on a workbook with no Data Model at all.
+        // It must name the way forward rather than failing inside COM.
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "nomodel.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateFormulaTarget(target, "A1:A1", new object?[,] { { 1d } });
+            using var runtime = new ExcelWorkbookRuntime();
+
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("m-none", ExcelTaskPlans.Measure(
+                target, QueryAction.Create, "Missing", "Total", formula: "SUM(Missing[K])")), CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Rejected, outcome.Status);
+            Assert.True(outcome.CanRetry);
+            Assert.Contains("ManageQuery", outcome.RetryReason ?? string.Empty, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
     public async Task APowerQueryIsCreatedReplacedUnderItsFingerprintAndDeleted()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));

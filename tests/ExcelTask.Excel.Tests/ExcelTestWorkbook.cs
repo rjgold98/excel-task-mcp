@@ -68,6 +68,46 @@ internal static class ExcelTestWorkbook
         return hasQuery;
     }
 
+    /// <summary>
+    /// A workbook whose Data Model holds one table, which is the only way to get a model table to
+    /// exist: a model table is not created directly, it appears when a query is loaded into the
+    /// model. Returns false when this Excel build or policy will not do it, so the test can say so
+    /// rather than fail for the wrong reason.
+    /// </summary>
+    public static bool CreateModelTarget(string path, string queryName)
+    {
+        var hasModel = false;
+        Create(path, workbook =>
+        {
+            try
+            {
+                var queries = Get(workbook, "Queries");
+                Invoke(queries, "Add", queryName, "let Source = #table({\"K\",\"V\"}, {{1,\"a\"},{2,\"b\"}}) in Source");
+                Release(queries);
+
+                // CreateModelConnection is the argument that makes this land in the model rather
+                // than on a sheet; 6 is xlCmdExcel, and the Mashup provider is how a query is
+                // addressed as a data source.
+                var connections = Get(workbook, "Connections");
+                Invoke(connections, "Add2", queryName + "Conn", "test model connection",
+                    $"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location={queryName}",
+                    queryName, 6, true, false);
+                Release(connections);
+
+                var model = Get(workbook, "Model");
+                var tables = Get(model, "ModelTables");
+                hasModel = Convert.ToInt32(Get(tables, "Count"), System.Globalization.CultureInfo.InvariantCulture) > 0;
+                Release(tables);
+                Release(model);
+            }
+            catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or System.Reflection.TargetInvocationException)
+            {
+                // No Power Query, no Data Model, or policy forbids the connection.
+            }
+        });
+        return hasModel;
+    }
+
     public static void CreateMacroTarget(string path, string componentName, string source)
     {
         using var application = TestExcelApplication.Start();
