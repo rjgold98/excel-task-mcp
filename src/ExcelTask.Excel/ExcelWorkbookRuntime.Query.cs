@@ -15,10 +15,16 @@ public sealed partial class ExcelWorkbookRuntime
     /// what makes "replace this query" mean the query the caller looked at rather than whatever is
     /// there now.
     ///
-    /// The expression never enters a receipt. An M expression usually names a server and a database,
-    /// which is precisely what AuditWorkbookFlows refuses to return, and a fingerprint carries the
-    /// proof without carrying the secret. That does mean a caller replacing a query must read it in
-    /// Excel first; that is the trade, and it is the same one the audit already makes.
+    /// Plan returns the expression in its receipt, bounded the way macro source is. Until 0.20.0 it
+    /// returned only the fingerprint, because an M expression usually names a server and a database:
+    /// the fingerprint proved the caller was replacing what they looked at without carrying what the
+    /// query connects to. What that cost was the caller's ability to look at all - a replacement was
+    /// authored blind against a hash, or the caller left the tool to read the query in Excel. The
+    /// expression is workbook content the caller explicitly named, and it is returned as such.
+    ///
+    /// AuditWorkbookFlows still returns names and shapes only. That is not the old rule surviving in
+    /// one corner: an audit reads every query in the workbook, and the operation that exists to look
+    /// at one query is this one.
     /// </summary>
     private static WorkbookExecutionOutcome ExecuteManageQueryCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
     {
@@ -51,8 +57,9 @@ public sealed partial class ExcelWorkbookRuntime
                     "query lookup");
             }
 
-            // Length and fingerprint, never the expression. Both are facts about the query that a
-            // caller needs and neither carries what the query connects to.
+            // Length and fingerprint. The expression travels in the receipt rather than here: a
+            // check detail is cut to 128 characters crossing the worker pipe, which would leave a
+            // real M expression looking whole and being a fragment.
             context.Checks.Add(new TaskCheck("current-query", true, existing is null
                 ? $"No query named {operation.QueryName} exists yet."
                 : $"{operation.QueryName} is {existing.Length:N0} characters, fingerprint {existing.Sha256}."));
@@ -71,7 +78,10 @@ public sealed partial class ExcelWorkbookRuntime
                         existing is null
                             ? $"Applying would {planned}. Nothing was changed."
                             : $"Applying would {planned}. Send fingerprint {existing.Sha256} with the Apply. Nothing was changed.",
-                        context.Changes, context.Checks),
+                        context.Changes, context.Checks,
+                        Query: existing is null
+                            ? null
+                            : new QueryReceipt(existing.Name, existing.Sha256, existing.Length, existing.Formula)),
                     "query planning");
             }
 
@@ -131,11 +141,12 @@ public sealed partial class ExcelWorkbookRuntime
     }
 
     /// <summary>
-    /// One query's shape - never its expression. The fingerprint is taken over the normalized text
-    /// so a line-ending difference between what Excel stores and what a caller sends cannot read as
-    /// a changed query.
+    /// One query as Excel holds it. The fingerprint is taken over the normalized text so a
+    /// line-ending difference between what Excel stores and what a caller sends cannot read as a
+    /// changed query, and <paramref name="Formula"/> is that same normalized text - fingerprinting
+    /// one string and returning a different one would let the two disagree.
     /// </summary>
-    private sealed record QuerySnapshot(string Name, int Length, string Sha256);
+    private sealed record QuerySnapshot(string Name, int Length, string Sha256, string Formula);
 
     private static QuerySnapshot? ReadQuery(ExcelSession session, string queryName)
     {
@@ -153,7 +164,7 @@ public sealed partial class ExcelWorkbookRuntime
 
             var formula = GetOrNull(query, "Formula") as string ?? string.Empty;
             var normalized = MacroProcedureText.NormalizeLineEndings(formula);
-            return new QuerySnapshot(name!, normalized.Length, MacroProcedureText.ComputeSha256(normalized));
+            return new QuerySnapshot(name!, normalized.Length, MacroProcedureText.ComputeSha256(normalized), normalized);
         }
 
         return null;

@@ -43,11 +43,10 @@ One request can perform exactly one operation:
 12. create, rename, restyle, resize, or convert back to plain cells one Excel
     table, keeping every cell when the table goes; or
 13. create, replace, or delete one Power Query, guarded by the fingerprint a Plan
-    reports. Plan never returns the expression, because an M expression usually
-    names a server; or
-14. create, replace, or delete one Data Model measure, guarded the same way -
-    and here Plan does return the DAX, because it names model tables and columns
-    rather than servers; or
+    reports. Plan returns the M expression too - and an M expression usually names
+    a server, so PRIVACY.md section 4 states what that puts on the wire; or
+14. create, replace, or delete one Data Model measure, guarded the same way, with
+    Plan returning the DAX; or
 15. create or delete one Data Model relationship, naming the many side and the
     one side. Replace is refused: a relationship has no editable middle, so the
     honest instruction is to delete it and create the new one; then

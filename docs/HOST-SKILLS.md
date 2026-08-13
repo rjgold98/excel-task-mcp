@@ -665,8 +665,10 @@ written.**
 | Committed 0.18.0, the repo's own figure (`ROADMAP.md:219`) | 20,694 | 1,834 (8.1%) |
 | Committed 0.18.0, measured here over raw JSON-RPC | 20,603 | 1,925 (8.5%) |
 | Working tree, with the fifteenth operation | 21,618 | 910 (4.0%) |
-| **Shipped 0.19.0, the pin's own measure** | **22,214** | **314 (1.4%)** |
+| Shipped 0.19.0, the pin's own measure | 22,214 | 314 (1.4%) |
 | Shipped 0.19.0, raw JSON-RPC (field check) | 22,171 | 357 (1.6%) |
+| **Shipped 0.20.0, the pin's own measure** | **22,355** | **173 (0.8%)** |
+| Shipped 0.20.0, raw JSON-RPC (field check) | 22,312 | 216 (1.0%) |
 
 The 91-byte gap between the two 0.18.0 figures is method, not disagreement: the pin
 measures `JsonSerializer.SerializeToUtf8Bytes(tool)` in C#, this measured the wire JSON

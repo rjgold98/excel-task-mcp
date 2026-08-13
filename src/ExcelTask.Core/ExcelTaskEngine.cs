@@ -200,7 +200,11 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 normalizedRequest.Operation.EditMacroProcedure is not null &&
                 outcome.Status == ExcelTaskStatus.Planned,
                 outcome.Audit,
-                outcome.Range);
+                outcome.Range,
+                outcome.Query,
+                normalizedRequest.Mode == ExcelTaskMode.Plan &&
+                normalizedRequest.Operation.ManageQuery is not null &&
+                outcome.Status == ExcelTaskStatus.Planned);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -330,7 +334,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         MacroProcedureReceipt? macroProcedure = null,
         bool includeMacroSource = false,
         WorkbookAuditReceipt? audit = null,
-        WorksheetRangeReceipt? range = null)
+        WorksheetRangeReceipt? range = null,
+        QueryReceipt? query = null,
+        bool includeQueryFormula = false)
     {
         if (status == ExcelTaskStatus.Rejected)
         {
@@ -363,7 +369,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             new PhaseTimings(validation, inspection, execution, total),
             ReceiptBounds.MacroProcedure(macroProcedure, includeMacroSource, ReceiptBounds.MaxModelTextLength),
             ReceiptBounds.Audit(audit, ReceiptBounds.MaxModelTextLength),
-            ReceiptBounds.Range(range, ReceiptBounds.MaxModelTextLength));
+            ReceiptBounds.Range(range, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Query(query, includeQueryFormula, ReceiptBounds.MaxModelTextLength));
     }
 
 

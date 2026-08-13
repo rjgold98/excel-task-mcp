@@ -37,8 +37,8 @@ without generic action language:
 | `SetRangeFormat` | writes | Appearance only: number format, font, fill, borders, width, height |
 | `ScanWorkbookStructure` | reads | **Starts no Excel** — reads the package directly |
 | `ManageTable` | writes | Create over a range, rename, restyle, resize, or convert back to cells |
-| `ManageQuery` | writes | One Power Query, under a fingerprint; Plan never returns the M expression |
-| `ManageModelMeasure` | writes | One Data Model measure, under a fingerprint; Plan does return the DAX |
+| `ManageQuery` | writes | One Power Query, under a fingerprint; Plan returns the M expression |
+| `ManageModelMeasure` | writes | One Data Model measure, under a fingerprint; Plan returns the DAX |
 | `ManageModelRelationship` | writes | One Data Model relationship, many side to one side; Create or Delete, never Replace |
 
 The engine hides normalization, overwrite and live-workbook confirmation, plan

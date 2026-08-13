@@ -206,19 +206,23 @@ public sealed record ManageTableOperation(
 /// borrows the macro operation's precondition exactly. Plan reports the current query's fingerprint,
 /// and Apply must carry that fingerprint back, which fails if anything changed in between.
 ///
-/// It departs from the macro operation in one place, deliberately. Plan does NOT return the M
-/// expression. Macro Plan returns bounded VBA source because VBA rarely carries credentials, while
-/// an M expression very often names a server and a database and sometimes a key - Sql.Database(...)
-/// and Web.Contents(...) are the ordinary way to write one. AuditWorkbookFlows already refuses to
-/// return query text for exactly that reason, and an operation that returned it would be a hole in
-/// a rule the rest of the product keeps. The fingerprint proves the caller is replacing what they
-/// believe they are; the expression itself is read in Excel, where it never crosses a wire.
+/// Plan returns the current expression alongside the fingerprint, the way macro Plan returns
+/// bounded VBA source. It did not until 0.20.0. An M expression very often names a server and a
+/// database and sometimes a key - Sql.Database(...) and Web.Contents(...) are the ordinary way to
+/// write one - so the expression was withheld and the caller was told to go read it in Excel. That
+/// withheld it from the one reader that has to understand a query in order to replace it correctly,
+/// and it made every replacement a blind edit guarded only by a hash. The owner asked for the text;
+/// PRIVACY.md section 4 states plainly what now crosses the boundary.
+///
+/// It is bounded the way macro source is: at most 8,192 characters, and OMITTED rather than
+/// truncated past that. Half an M expression reads exactly like a whole one, and a caller that sent
+/// one back as a replacement would destroy the query it meant to edit.
 /// </summary>
 public sealed record ManageQueryOperation(
     [property: Description("The query to act on, as AuditWorkbookFlows lists it. For Create, the name the new query takes.")] string QueryName,
     [property: Description("Create, Replace, or Delete. Delete removes the definition and leaves any worksheet it already loaded to.")] QueryAction Action,
     [property: Description("Apply only, for Create and Replace: the complete M expression, at most 8,192 characters, as the Power Query editor shows it.")] string? Formula = null,
-    [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the query being changed, taken from the Plan receipt. Plan never returns the expression itself, because an M expression usually names a server.")] string? ExpectedFormulaSha256 = null);
+    [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the query being changed, taken from the Plan receipt.")] string? ExpectedFormulaSha256 = null);
 
 /// <summary>
 /// Creates, replaces, or deletes one Data Model measure, guarded by the same fingerprint the query
@@ -273,7 +277,7 @@ public sealed record ExcelOperation(
     [property: Description("Required when kind is SetRangeFormat. Sets how a range looks: number format, bold, italic, font size/name/colour, fill, borders, column width, row height. Every field is optional and independent - omit one to leave it as it is - and at least one must be supplied. Plan reports what is there now and changes nothing. It never changes a cell value.")] SetRangeFormatOperation? SetRangeFormat = null,
     [property: Description("Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel; absence here is not evidence, so use AuditWorkbookFlows when those matter.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null,
     [property: Description("Required when kind is ManageTable. Creates or changes one Excel table: create over a range, rename, restyle, resize, or convert back to plain cells. Plan reports it as it is now and changes nothing.")] ManageTableOperation? ManageTable = null,
-    [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s fingerprint and never its expression, because an M expression usually names a server.")] ManageQueryOperation? ManageQuery = null,
+    [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s current M expression and fingerprint; Apply must carry the fingerprint back.")] ManageQueryOperation? ManageQuery = null,
     [property: Description("Required when kind is ManageModelMeasure. Creates, replaces, or deletes one Data Model measure. Plan reports the DAX and its fingerprint; Apply must carry the fingerprint back.")] ManageModelMeasureOperation? ManageModelMeasure = null,
     [property: Description("Required when kind is ManageModelRelationship. Creates or deletes one Data Model relationship, from the many side to the one side. Plan names the join and lists what already joins those tables.")] ManageModelRelationshipOperation? ManageModelRelationship = null);
 
@@ -410,6 +414,16 @@ public sealed record TaskCheck(string Name, bool Passed, string Detail);
 public sealed record MacroProcedureReceipt(string ComponentName, string ProcedureName, string Sha256, string? Source, bool RunRequested, bool RunCompleted);
 
 /// <summary>
+/// One Power Query as Plan found it. <paramref name="Formula"/> is the stored M expression, present
+/// on Plan and null on Apply - the same split macro source uses, because Apply's answer is what
+/// changed, not what was there.
+///
+/// Null also means "too long to send whole": past 8,192 characters the expression is omitted rather
+/// than cut, so <paramref name="Length"/> is the field that always tells the truth about size.
+/// </summary>
+public sealed record QueryReceipt(string QueryName, string Sha256, int Length, string? Formula);
+
+/// <summary>
 /// One element of a workbook's data flow. <paramref name="Kind"/> says what it is - a query, a
 /// connection, a model table, a relationship, a measure, a pivot, or an external link.
 /// <paramref name="DependsOn"/> names what it reads from, which is what turns a list into a map.
@@ -460,10 +474,10 @@ public sealed record WorksheetRangeReceipt(
 /// what a runtime supplies is advisory and, today, decorative for every status a mutation path
 /// actually produces.
 /// </summary>
-public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
+public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null, QueryReceipt? Query = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
 public sealed record ConfirmationRequirement(string Code, string Prompt);
 public sealed record ConfirmationReceipt(bool Required, IReadOnlyList<ConfirmationRequirement> Requirements);
 public sealed record PhaseTimings(TimeSpan Validation, TimeSpan Inspection, TimeSpan Execution, TimeSpan Total);
-public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
+public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null, QueryReceipt? Query = null);

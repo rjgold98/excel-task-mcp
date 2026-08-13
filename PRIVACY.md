@@ -73,22 +73,39 @@ than left to be discovered.
 
 **Audits return names, not contents.** `AuditWorkbookFlows` reports worksheets, tables,
 defined names, queries, connections, macro procedure names, data model objects, pivots, and
-external links — as names, counts, and addresses. It omits connection strings. It does not
-return stored M.
+external links — as names, counts, and addresses. It omits connection strings, and it does not
+read stored M.
+
+That last one is a size decision, not a secrecy one, and 0.20.0 is where the difference started
+to matter. An audit walks every query in the workbook; `ManageQuery` in Plan walks the one you
+named, and returns its full expression. If you want to see a query, ask for that query.
 
 ## 4. Content you explicitly asked for
 
-Three operations return workbook content because the content **is** the request:
+Four operations return workbook content because the content **is** the request:
 
 - **`ReadWorksheetRange`** returns cell values, or R1C1 formulas if you asked for formulas.
   At most 400 cells, blanks omitted, each cell's text capped.
 - **`EditMacroProcedure` in Plan** returns the bounded source and hash of the one procedure
   you named. Apply never returns source.
-- **`ManageModelMeasure` in Plan** returns the measure's DAX, because DAX names model tables
-  and columns rather than servers.
+- **`ManageModelMeasure` in Plan** returns the measure's DAX.
+- **`ManageQuery` in Plan returns the stored M expression**, with its fingerprint and length.
+  Apply never returns it. At most 8,192 characters, and **omitted rather than truncated** past
+  that — half an M expression reads exactly like a whole one, and sending it back as a
+  replacement would destroy the query.
 
-**`ManageQuery` in Plan deliberately does not** return the stored M expression — only a
-fingerprint — because an M expression usually names a server and sometimes a credential.
+**Read this one before you decide it is fine.** An M expression is where a workbook says what
+it connects to: `Sql.Database("server", "db")`, `Web.Contents("https://…")`, and — if whoever
+wrote the query hardcoded one instead of using Excel's credential store — an API key or token
+in plain text. All of that now goes to your MCP client and to the model behind it.
+
+Until 0.20.0 it did not. The expression was withheld and Plan returned only a fingerprint, on
+the reasoning that a hash proves you are replacing what you looked at without carrying what the
+query connects to. What that cost was the ability to look at all: a caller either edited blind
+against a hash or left the tool to read the query in Excel. The owner of this project asked for
+the text, on the basis that the model reading it is enterprise Copilot, which does not train on
+or access their data. **That is a property of one deployment, not of this software.** If you
+run ExcelTask against a model with different terms, this section is the paragraph to weigh.
 
 ## 5. What *you* send is not covered by any of the above
 
@@ -96,9 +113,9 @@ The request travels the same MCP channel in the other direction. If you supply M
 `ManageQuery`, DAX to `ManageModelMeasure`, or VBA source to `EditMacroProcedure`, that text
 crosses the MCP boundary and reaches the model, whatever the read side promises.
 
-The `ManageQuery` asymmetry is the one worth stating plainly: **Plan will not show you a
-stored M expression, but Apply requires you to send one.** The protection is against
-disclosing what is already in the workbook, not against what you paste in.
+Before 0.20.0 there was an asymmetry worth stating here — Plan would not show you a stored M
+expression, but Apply required you to send one. There is no asymmetry now: M crosses the
+boundary in both directions.
 
 ## 6. The field-check report
 
@@ -130,6 +147,8 @@ written. That is normally what you want. It is not nothing, so it is written dow
 - ~~"The AI never sees your workbook."~~ It sees exactly what section 3 and section 4 describe.
 - ~~"The trace file is safe to share."~~ It contains workbook and worksheet names; whether
   that is safe depends on what yours are called.
+- ~~"Your server names never reach the model."~~ True until 0.20.0, false now: a `ManageQuery`
+  Plan returns the M expression, and M is where a query names its source. Section 4.
 
 What is accurate: **ExcelTask emits no incidental workbook contents, and sends nothing
 anywhere on its own. Explicit reads, selected Plans, and the record of what a write

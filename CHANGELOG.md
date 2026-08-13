@@ -16,6 +16,61 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.20.0 - 2026-08-12
+
+One policy reversed, at the owner's instruction, and the documents that argued for
+it rewritten rather than quietly edited.
+
+### Changed - `ManageQuery` in Plan returns the M expression
+
+- **The expression is in the Plan receipt, with its fingerprint and length.** Until
+  now Plan returned the fingerprint alone, so a caller replacing a query either
+  authored the replacement blind against a hash or left the tool to read the query
+  in Excel. Both were the cost of a rule this release removes.
+- **The rule it removes was a real one, and worth restating before it goes.** An M
+  expression is where a workbook says what it connects to: `Sql.Database(...)`,
+  `Web.Contents(...)`, and — where whoever wrote the query hardcoded one instead of
+  using Excel's credential store — a key in plain text. All of that now goes to the
+  MCP client and the model behind it. The instruction was explicit, and the reason
+  given was that the model reading it is enterprise Copilot, which does not train on
+  or access the owner's data. `PRIVACY.md` section 4 says that in the document
+  rather than only in this entry, and marks it as a property of one deployment
+  rather than of this software.
+- **It is a receipt field, not a check detail — which is what makes it usable.**
+  `ManageModelMeasure` puts its DAX in a check detail, and worker-authored details
+  are cut to 128 characters crossing the pipe. Any M expression worth reading is
+  longer than that, and would have arrived a fragment that reads as whole. The new
+  `QueryReceipt` takes the macro operation's bound instead: at most 8,192
+  characters, **omitted rather than truncated** past it, with `Length` always
+  reporting the real size. Apply returns no expression, the same split macro source
+  has always used.
+- **The schema rose 141 bytes, and the 22 KB bound held without being raised.** Two
+  descriptions existed to explain a restriction that no longer exists, and deleting
+  them paid for most of what `QueryReceipt` costs the output schema — but not all of
+  it. The pin measures **22,355 bytes of 22,528, leaving 173**, up from 22,214 at
+  0.19.0. Reclaim before raising held; it did not end in a net saving this time, and
+  the first draft of this entry claimed that it had.
+
+### Changed - the documents that made the old argument
+
+- `PRIVACY.md` moves `ManageQuery` from the exception in section 3 to the list in
+  section 4, retires the Plan/Apply asymmetry that section 5 called out, and adds
+  "your server names never reach the model" to the wording this project does not
+  use — it was true until this release.
+- `README.md`, `docs/ARCHITECTURE.md` and the operation's own contract prose no
+  longer state the withholding rule as a feature.
+
+### Unchanged, deliberately
+
+- **`AuditWorkbookFlows` still does not read stored M.** An audit walks every query
+  in a workbook; the operation that exists to look at one query is `ManageQuery`.
+  That is now a size decision rather than a secrecy one, and it is written down as
+  one.
+- **The diagnostic trace file and the field-check report still redact.** Those are
+  files that get sent to other people — field reports land in pull requests on a
+  public repository. "The model may read this" and "this is safe to publish" are
+  different questions, and only the first one changed.
+
 ## 0.19.0 - 2026-08-12
 
 The fifteenth operation, and then an adversarial review of the day's own work that

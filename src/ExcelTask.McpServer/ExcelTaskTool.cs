@@ -88,7 +88,12 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         // The cells are already gone by the time this runs, but the range's shape is kept and
         // marked truncated: that is what tells the caller to ask again for a narrower range
         // instead of concluding the sheet was empty.
-        Range = receipt.Range is null ? null : receipt.Range with { Cells = [], Truncated = true }
+        Range = receipt.Range is null ? null : receipt.Range with { Cells = [], Truncated = true },
+        // An M expression runs to 8,192 characters, so it goes the way the range's cells do rather
+        // than the way the audit does: the shape stays and the bulk leaves. Name, fingerprint and
+        // length are what an Apply needs, and a length with no expression beside it is already how
+        // "too long to send" reads, so this needs no truncation flag of its own.
+        Query = receipt.Query is null ? null : receipt.Query with { Formula = null }
     };
 
     /// <summary>Last resort: status and identity only, for a receipt oversized without any detail.</summary>
@@ -98,13 +103,14 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         Save = receipt.Save with { OutputWorkbookPath = null },
         Retry = receipt.Retry with { Reason = null },
         MacroProcedure = null,
-        Range = null
+        Range = null,
+        Query = null
     };
 
     // The model-facing seam bounds again rather than trusting the layers behind it - defence in
     // depth is deliberate. What it no longer has is its own opinion of what bounding means: caps,
     // truncation flags and the macro-source omit rule all come from ReceiptBounds.
-    private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool includeMacroSource) => receipt with
+    private static ExcelTaskReceipt BoundReceipt(ExcelTaskReceipt receipt, bool isPlan) => receipt with
     {
         TaskId = BoundRequired(receipt.TaskId),
         Summary = BoundRequired(receipt.Summary),
@@ -116,9 +122,10 @@ public sealed class ExcelTaskTool(IExcelTaskEngine engine)
         {
             Requirements = ReceiptBounds.Requirements(receipt.Confirmation.Requirements, ReceiptBounds.MaxModelTextLength)
         },
-        MacroProcedure = ReceiptBounds.MacroProcedure(receipt.MacroProcedure, includeMacroSource, ReceiptBounds.MaxModelTextLength),
+        MacroProcedure = ReceiptBounds.MacroProcedure(receipt.MacroProcedure, isPlan, ReceiptBounds.MaxModelTextLength),
         Audit = ReceiptBounds.Audit(receipt.Audit, ReceiptBounds.MaxModelTextLength),
-        Range = ReceiptBounds.Range(receipt.Range, ReceiptBounds.MaxModelTextLength)
+        Range = ReceiptBounds.Range(receipt.Range, ReceiptBounds.MaxModelTextLength),
+        Query = ReceiptBounds.Query(receipt.Query, isPlan, ReceiptBounds.MaxModelTextLength)
     };
 
     private static string? Bound(string? value) => ReceiptBounds.Text(value, ReceiptBounds.MaxModelTextLength);

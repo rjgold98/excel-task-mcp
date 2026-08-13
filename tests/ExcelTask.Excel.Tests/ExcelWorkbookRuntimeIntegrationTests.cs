@@ -1304,17 +1304,22 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             Assert.True(created.Status == ExcelTaskStatus.Completed,
                 $"{created.Summary} {string.Join("; ", created.Checks?.Select(check => check.Detail) ?? [])}");
 
-            // Plan reports the fingerprint and never the expression. That is the whole privacy
-            // trade: an M expression usually names a server, and the audit already refuses to
-            // return one, so this operation must not become the hole in that rule.
+            // Plan reports the expression and the fingerprint. The expression travels in the
+            // receipt, never in a check detail: worker-authored details are cut to 128 characters
+            // crossing the pipe, so a real M expression delivered that way would arrive a fragment
+            // that reads as whole - and a caller sending it back would destroy the query.
             var planned = await runtime.ExecuteAsync(new ExcelTaskPlan("q-plan", ExcelTaskPlans.Query(
                 target, QueryAction.Replace, "ProbeQuery", mode: ExcelTaskMode.Plan)), CancellationToken.None);
             Assert.Equal(ExcelTaskStatus.Planned, planned.Status);
-            var reported = string.Join(" ", planned.Checks?.Select(check => check.Detail) ?? []) + planned.Summary;
-            Assert.DoesNotContain("#table", reported, StringComparison.Ordinal);
-            Assert.DoesNotContain("let Source", reported, StringComparison.Ordinal);
 
             var fingerprint = MacroProcedureText.ComputeSha256(MacroProcedureText.NormalizeLineEndings(first));
+            Assert.NotNull(planned.Query);
+            Assert.Equal("ProbeQuery", planned.Query!.QueryName);
+            Assert.Equal(first, planned.Query.Formula);
+            Assert.Equal(first.Length, planned.Query.Length);
+            Assert.Equal(fingerprint, planned.Query.Sha256, ignoreCase: true);
+
+            var reported = string.Join(" ", planned.Checks?.Select(check => check.Detail) ?? []) + planned.Summary;
             Assert.Contains(fingerprint, reported, StringComparison.OrdinalIgnoreCase);
 
             // A stale fingerprint must stop before anything is written - the precondition is the

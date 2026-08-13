@@ -224,8 +224,9 @@ latter already answered by `ScanWorkbookStructure`. The rest are closed below.
 - The repeated benchmark: one MCP catalog per client profile, three or more
   repetitions per workflow, median and spread, order alternated. Until then no
   percentage above is quoted as characteristic.
-- **Schema budget: 22,214 bytes of 22,528, measured 2026-08-12 with the
-  fifteenth operation and the rewritten tool description in.** The
+- **Schema budget: 22,355 bytes of 22,528, measured 2026-08-12 with the
+  fifteenth operation, the rewritten tool description and the returned M
+  expression in.** The
   reclamation this entry used to ask for was done before the three operations
   that followed it: the payload descriptions no longer each re-state "all other
   payloads must be null", which the enum and the `required` list already carry.
@@ -245,7 +246,11 @@ latter already answered by `ScanWorkbookStructure`. The rest are closed below.
   without, and a caller that discovers the formula refusal from a rejection has
   already paid a round trip to learn it.
 
-  **314 bytes remain.** A sixteenth operation cannot be appended; it has to buy
+  0.20.0 then spent 141 of what was left returning a query's M expression in the
+  Plan receipt: two descriptions that explained the withholding rule came out,
+  which paid for most of the `QueryReceipt` but not all of it.
+
+  **173 bytes remain.** A sixteenth operation cannot be appended; it has to buy
   its space back first. Do that reclamation *before* the next feature, not during
   one, so a budget failure never arrives disguised as a feature bug.
 

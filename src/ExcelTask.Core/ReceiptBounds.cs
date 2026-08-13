@@ -170,4 +170,28 @@ public static class ReceiptBounds
             Source = source
         };
     }
+
+    /// <summary>
+    /// The same omit-not-truncate rule macro source gets, for the same reason: a caller sends the
+    /// expression back to replace the query, so a clipped one is not a smaller answer but a wrong
+    /// one. <c>Length</c> is never capped, so an omitted expression still reports its real size.
+    /// </summary>
+    public static QueryReceipt? Query(QueryReceipt? receipt, bool includeFormula, int maxText)
+    {
+        if (receipt is null) return null;
+
+        string? formula = null;
+        if (includeFormula && receipt.Formula is not null)
+        {
+            var normalized = MacroProcedureText.NormalizeLineEndings(receipt.Formula);
+            if (normalized.Length <= MacroProcedureText.MaxSourceCharacters) formula = normalized;
+        }
+
+        return receipt with
+        {
+            QueryName = RequiredText(receipt.QueryName, maxText),
+            Sha256 = RequiredText(receipt.Sha256, maxText),
+            Formula = formula
+        };
+    }
 }
