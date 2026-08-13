@@ -38,6 +38,7 @@ public static class OperationCatalog
             ExcelOperationKind.AuditWorkbookFlows => operation.AuditWorkbookFlows,
             ExcelOperationKind.ReadWorksheetRange => operation.ReadWorksheetRange,
             ExcelOperationKind.WriteWorksheetValues => operation.WriteWorksheetValues,
+            ExcelOperationKind.WriteWorksheetFormulas => operation.WriteWorksheetFormulas,
             ExcelOperationKind.FindReplace => operation.FindReplace,
             ExcelOperationKind.Create => operation.Create,
             ExcelOperationKind.SetNumberFormat => operation.SetNumberFormat,

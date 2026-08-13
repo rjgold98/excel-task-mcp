@@ -52,9 +52,15 @@ All four original phases landed and were field-validated on the work computer on
     registry mapping and then compared exactly. **The registry lookup itself is
     still unproven** - see the open gates below.
 13. **A field check that states its own coverage** (v0.16.0, completed v0.17.0):
-    it once validated five of eleven operations and printed PASS. It now names
+    it once validated five of twelve operations and printed PASS. It now names
     any operation it did not exercise - and on its first run named a real one,
-    `RepairExistingWorksheet`, which is now a step. All eleven are covered.
+    `RepairExistingWorksheet`, which is now a step. All twelve are covered.
+14. **Direct formula writes** (v0.18.0): a separate
+    `WriteWorksheetFormulas` operation accepts bounded caller-supplied A1
+    formulas (8,192 characters per formula and 768 KiB of UTF-8 formula text per
+    request), reads them back before save, and verifies them after reopen.
+    `WriteWorksheetValues` remains constants-only, and receipts never echo
+    formula text.
 
 ### Current test counts
 
@@ -62,13 +68,13 @@ Updated every release; `docs/FIELD-TASK.md` step 4 checks against these.
 
 | Suite | Count |
 |---|---|
-| Core | 133 |
-| Excel (fast) | 85 |
-| McpServer (fast) | 18 |
-| **Fast total** | **236** |
-| Excel (OnDemand, real Excel) | 36 |
+| Core | 138 |
+| Excel (fast) | 88 |
+| McpServer (fast) | 19 |
+| **Fast total** | **245** |
+| Excel (OnDemand, real Excel) | 39 |
 | McpServer (OnDemand) | 4 |
-| **Full gate total** | **276** |
+| **Full gate total** | **288** |
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -164,18 +170,16 @@ contents are never carried *incidentally* - and in a read they are the entire
 request. So it returns them, under a hard bound rather than a refusal.
 
 **3. Writing values and formulas.** `set-values` 19 sessions, `set-formulas` 15.
-Now the top open item, and the two halves should be separated rather than decided
-together:
+Values shipped in v0.10.0, and direct formulas are now covered by v0.18.0
+operation described above:
 
 - **Values shipped in v0.10.0**, within the existing stance rather than against
   it: a constant is exactly what the caller named, and a read-back proves it.
-- **Formula text remains a genuine collision, and remains refused.** Inference
-  plus verification is what makes an ExcelTask edit safe, and accepting composed
-  formula text discards exactly that. `ExtendFormulaSeries` and
-  `RepairExistingWorksheet` already serve the cases where the intended formula is
-  derivable from evidence. What is still unknown is how much of the 15 sessions
-  those two already cover - measurable rather than arguable, and not yet
-  measured.
+- **Formula text is explicit, bounded, and verified.** `WriteWorksheetFormulas`
+  is the escape hatch for cases inference cannot cover: it accepts up to 200
+  single-cell A1 formulas, reads them back before saving, and verifies them after
+  reopening. `ExtendFormulaSeries` and `RepairExistingWorksheet` remain safer
+  when sheet evidence can prove the intended pattern.
 
 **4. Find and replace shipped in v0.11.0** (`range_edit`, 13 sessions). What
 remains in demand order is below.
@@ -311,20 +315,12 @@ implementation, on the closed-workbook path.
   exists and carries no risk of disagreeing with the audit, because it would stop
   short of every category the audit alone can answer.
 
-**2. The formula refusal has a middle, and the field has mapped it.** Every
-surveyed competitor accepts model-written formula text; ExcelTask refuses and
-infers instead. The survey found the design space is not binary: SheetMind
-constrains generation to a closed BNF grammar of seven operations, and
-Microsoft's SheetBrain accepts model-written Python but runs it sandboxed. The
-grammar option is the one compatible with this project's stance - a caller could
-name a *shape* (sum this contiguous range into that cell) which the engine
-composes and verifies, without any model-authored text ever reaching a cell.
-
-  This remains the largest open product question, and the gate has not moved:
-  `set-formulas` was 15 of 46 sessions, and how much of it `ExtendFormulaSeries`
-  and `RepairExistingWorksheet` already cover is still unmeasured. **Gate:** that
-  measurement first. A grammar built before it would be guessing at which shapes
-  matter, which is the same error as building all of `range_format`.
+**2. Direct formula writes are now implemented with a narrow safety seam.** The
+  field's 15 `set-formulas` sessions justified a separate bounded operation rather
+  than changing constant writes. Its verification proves persistence and formula
+  identity, not semantic intent, so inferred formula operations remain preferred
+  when neighbouring evidence can establish the pattern. The remaining gate is
+  managed-work-computer execution of the new field-check step.
 
 **3. Verification now has outside grounding, and should be cited.** Nothing in
 the survey has a counterpart to reopen-and-verify or proof-of-exit. Independently,
@@ -352,6 +348,7 @@ Receipts stay bounded and truthful: a truncated report says so, and an uncertain
 outcome is `Unknown`. Workbook contents appear in a receipt only when they are
 the explicit request - the range a read asked for, the one procedure a macro
 Plan named - and never incidentally. No receipt ever carries connection
-strings, machine paths, or content nobody asked for. Model-written formula text
-is never accepted; formulas are inferred from evidence in the sheet and
-verified after reopening.
+strings, machine paths, or content nobody asked for. Formula text is accepted
+only by `WriteWorksheetFormulas`, is bounded and verified after reopening, and is
+never returned in receipts; inferred formulas remain preferred when evidence is
+available.

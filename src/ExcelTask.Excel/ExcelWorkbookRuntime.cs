@@ -131,7 +131,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         // Dispatched before the shared gates too: it writes, but it carries its own save and verify
         // rather than the formula plan the code below assumes.
-        if (plan.Request.Operation.Kind == ExcelOperationKind.WriteWorksheetValues)
+        if (plan.Request.Operation.Kind is ExcelOperationKind.WriteWorksheetValues or ExcelOperationKind.WriteWorksheetFormulas)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -147,7 +147,9 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
             }
 
-            return ExecuteWriteCore(plan, observer);
+            return plan.Request.Operation.Kind == ExcelOperationKind.WriteWorksheetValues
+                ? ExecuteWriteCore(plan, observer)
+                : ExecuteFormulaWriteCore(plan, observer);
         }
 
         // Same reason as the write above: each carries its own save, verification and gates, and
@@ -215,238 +217,118 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                 Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
         }
 
-        ExcelSession? session = null;
-        PendingVerification? pendingVerification = null;
-        var mutationAttempted = false;
-        var verified = false;
-        var changes = new List<TaskChange>();
-        var checks = new List<TaskCheck>();
-        FormulaExecutionPlan? formulaPlan = null;
-        var phase = "input-validation";
-        void SetPhase(string value)
+        observer.OnPhase("input-validation");
+        return ExecuteMutation(plan, observer, "formula-save", "Formula workbook execution", context =>
         {
-            phase = value;
-            observer.OnPhase(value);
-        }
-        SetPhase(phase);
-        var savedPath = WorkbookRuntimeHelpers.NormalizePath(plan.Request.Save == SaveMode.Copy
-            ? plan.Request.OutputWorkbookPath ?? throw new InvalidOperationException("Copy output path is required.")
-            : plan.Request.TargetWorkbookPath);
-        string? stagingPath = null;
-
-        try
-        {
-            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.Save == SaveMode.Copy && File.Exists(savedPath) && !plan.Request.OverwriteConfirmed)
-            {
-                return new WorkbookExecutionOutcome(
-                    ExcelTaskStatus.Rejected,
-                    "The copy output already exists and was not authorized for overwrite.",
-                    Checks: [new TaskCheck("copy-output", false, "Existing output requires overwrite confirmation.")]);
-            }
-
-            if (plan.Request.Mode == ExcelTaskMode.Apply && plan.Request.WorkbookBinding == WorkbookBinding.Isolated && plan.Request.Save == SaveMode.Same)
-            {
-                using var openTarget = RotWorkbookLocator.Find(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath));
-                if (openTarget is not null)
-                {
-                    return new WorkbookExecutionOutcome(
-                        ExcelTaskStatus.Rejected,
-                        "The target workbook is already open and cannot be safely overwritten in isolated mode.",
-                        Checks: [new TaskCheck("isolated-target", false, "Use the exact open-workbook binding or save a copy.")]);
-                }
-            }
-
-            // Started here rather than after the save, so its launch runs alongside the analysis,
-            // the writes, and the save instead of after them. Only a mutating run ever verifies,
-            // so only a mutating run pays for one. Disposed unconditionally in the outer finally.
-            if (plan.Request.Mode == ExcelTaskMode.Apply) pendingVerification = PendingVerification.Begin(observer);
-
-            SetPhase("session-open");
-            session = ExcelSession.Open(plan.Request, observer, readOnlyTarget: plan.Request.Mode == ExcelTaskMode.Plan);
-            SetPhase("preflight");
-            var preflight = Preflight(session, plan.Request.Operation);
-            checks.AddRange(preflight.Checks);
+            context.OnPhase("preflight");
+            var preflight = Preflight(context.Session, plan.Request.Operation);
+            context.Checks.AddRange(preflight.Checks);
             if (!preflight.IsFeasible)
             {
-                return ExcelSession.CloseAndProve(ref session, "preflight", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook preflight did not permit the requested formula operation.", Checks: checks);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                        "Workbook preflight did not permit the requested formula operation.", Checks: context.Checks),
+                    "preflight");
             }
 
-            SetPhase("formula-analysis");
-            formulaPlan = AnalyzeFormulaPlan(session, plan.Request.Operation);
-            checks.Add(new TaskCheck("formula-plan", true,
+            context.OnPhase("formula-analysis");
+            var formulaPlan = AnalyzeFormulaPlan(context.Session, plan.Request.Operation);
+            context.Checks.Add(new TaskCheck("formula-plan", true,
                 $"Planned {formulaPlan.Repairs.Count} formula changes across {formulaPlan.RangeResults.Count} requested range targets; fingerprint {formulaPlan.Fingerprint}."));
 
-            if (plan.Request.Mode == ExcelTaskMode.Plan)
+            if (!context.Apply)
             {
-                return ExcelSession.CloseAndProve(ref session, "planning", checks)
-                    ?? new WorkbookExecutionOutcome(
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(
                         ExcelTaskStatus.Planned,
                         "Workbook plan is feasible; no Excel changes were made.",
                         CreateFormulaChanges(formulaPlan, planning: true),
-                        checks);
+                        context.Checks),
+                    "planning");
             }
 
-            SetPhase("formula-revalidation");
+            context.OnPhase("formula-revalidation");
             // The same preflight, deliberately repeated: it is evidence gathered immediately before
             // mutation, not a cached result from before the plan was built.
-            var revalidatedPreflight = Preflight(session, plan.Request.Operation);
-            if (!revalidatedPreflight.IsFeasible || !FormulaPlansEqual(formulaPlan, AnalyzeFormulaPlan(session, plan.Request.Operation)))
+            var revalidatedPreflight = Preflight(context.Session, plan.Request.Operation);
+            if (!revalidatedPreflight.IsFeasible || !FormulaPlansEqual(formulaPlan, AnalyzeFormulaPlan(context.Session, plan.Request.Operation)))
             {
-                checks.Add(new TaskCheck("formula-revalidation", false, "Workbook formula evidence changed before mutation; no changes were made."));
-                return ExcelSession.CloseAndProve(ref session, "revalidation", checks)
-                    ?? new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "Workbook evidence changed before mutation; no changes were made.", Checks: checks);
+                context.Checks.Add(new TaskCheck("formula-revalidation", false, "Workbook formula evidence changed before mutation; no changes were made."));
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected,
+                        "Workbook evidence changed before mutation; no changes were made.", Checks: context.Checks),
+                    "revalidation");
             }
 
             if (RotWorkbookLocator.RequiresPreMutationIsolatedSameApplyRevalidation(
                     plan.Request.Mode,
                     plan.Request.WorkbookBinding,
                     plan.Request.Save) &&
-                session.HasExternalTargetOpen(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath)))
+                context.Session.HasExternalTargetOpen(WorkbookRuntimeHelpers.NormalizePath(plan.Request.TargetWorkbookPath)))
             {
-                checks.Add(new TaskCheck("isolated-target-revalidation", false,
+                context.Checks.Add(new TaskCheck("isolated-target-revalidation", false,
                     "The exact target workbook was opened in another Excel application before mutation; no changes were made."));
-                return ExcelSession.CloseAndProve(ref session, "isolated target revalidation", checks)
-                    ?? new WorkbookExecutionOutcome(
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(
                         ExcelTaskStatus.Rejected,
                         "The target workbook was opened before isolated same-file apply could begin; no changes were made.",
-                        Checks: checks);
+                        Checks: context.Checks),
+                    "isolated target revalidation");
             }
 
             var operation = plan.Request.Operation;
-            var worksheetName = formulaPlan.WorksheetName;
             if (operation.Kind == ExcelOperationKind.CopyExhibit)
             {
-                SetPhase("worksheet-copy");
-                mutationAttempted = true;
-                CopyReferenceWorksheet(session, operation.CopyExhibit!.ReferenceWorksheet, operation.CopyExhibit.NewWorksheetName, SetPhase);
-                changes.Add(new TaskChange("worksheet-copy", worksheetName, "Copied the requested reference worksheet."));
+                context.OnPhase("worksheet-copy");
+                context.MarkMutationAttempted();
+                CopyReferenceWorksheet(context.Session,
+                    operation.CopyExhibit!.ReferenceWorksheet,
+                    operation.CopyExhibit.NewWorksheetName,
+                    context.OnPhase);
+                context.Changes.Add(new TaskChange("worksheet-copy", formulaPlan.WorksheetName,
+                    "Copied the requested reference worksheet."));
             }
 
-            SetPhase(operation.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair");
-            ApplyFormulaWrites(session, formulaPlan, () => mutationAttempted = true);
-            changes.AddRange(CreateFormulaChanges(formulaPlan, planning: false));
-            checks.Add(new TaskCheck("formula-change-count", true,
+            context.OnPhase(operation.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair");
+            ApplyFormulaWrites(context.Session, formulaPlan, context.MarkMutationAttempted);
+            context.Changes.AddRange(CreateFormulaChanges(formulaPlan, planning: false));
+            context.Checks.Add(new TaskCheck("formula-change-count", true,
                 $"Applied {formulaPlan.Repairs.Count} planned formula changes; fingerprint {formulaPlan.Fingerprint}."));
 
             var noFormulaChanges = operation.Kind != ExcelOperationKind.CopyExhibit && formulaPlan.Repairs.Count == 0;
             if (noFormulaChanges && plan.Request.Save == SaveMode.Same)
             {
-                SetPhase("no-change-cleanup");
-                var noChangeFailure = ExcelSession.CloseAndProve(ref session, "finding no changes", checks, changes);
-                if (noChangeFailure is not null) return noChangeFailure;
-
-                checks.Add(new TaskCheck("no-formula-changes", true, "No formula changes were required; Excel was not recalculated or saved."));
-                return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook analysis found no formula changes; no Excel changes were made.", changes, checks);
+                context.OnPhase("no-change-cleanup");
+                context.Checks.Add(new TaskCheck("no-formula-changes", true,
+                    "No formula changes were required; Excel was not recalculated or saved."));
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Completed,
+                        "Workbook analysis found no formula changes; no Excel changes were made.",
+                        context.Changes,
+                        context.Checks),
+                    "finding no changes");
             }
 
             if (!noFormulaChanges)
             {
-                SetPhase("recalculate");
-                Invoke(session.Application, "CalculateFull");
-            }
-            SetPhase("save");
-            mutationAttempted = true;
-            if (plan.Request.Save == SaveMode.Copy)
-            {
-                stagingPath = WorkbookRuntimeHelpers.CreateStagingPath(savedPath, plan.TaskId);
-                observer.OnStagingPathCreated(stagingPath);
-                Invoke(session.TargetWorkbook, "SaveAs", stagingPath);
-            }
-            else
-            {
-                Invoke(session.TargetWorkbook, "Save");
+                context.OnPhase("recalculate");
+                Invoke(context.Session.Application, "CalculateFull");
             }
 
-            checks.Add(new TaskCheck("save", true, "Excel completed the requested save operation."));
-            SetPhase("primary-cleanup");
-            var saveCleanupFailure = ExcelSession.CloseAndProve(ref session, "the primary save", checks, changes);
-            if (saveCleanupFailure is not null)
-            {
-                AddStagingCleanupCheck(stagingPath, checks);
-                return saveCleanupFailure with { RetryReason = "Inspect workbook state before retrying." };
-            }
-
-            if (plan.Request.WorkbookBinding != WorkbookBinding.UseOpen && !WorkbookRuntimeHelpers.CanOpenExclusively(stagingPath ?? savedPath))
-            {
-                checks.Add(new TaskCheck("file-lock", false, "The saved workbook remained locked after owned Excel cleanup."));
-                AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(
-                    ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but the owned Excel session did not release its file lock for verification.",
-                    changes,
-                    checks,
-                    CanRetry: false,
-                    RetryReason: "Inspect the Excel process and file lock before retrying.");
-            }
-
-            var verificationPath = stagingPath ?? savedPath;
-            SetPhase("reopen-verification");
-            if (!VerifySavedWorkbook(verificationPath, worksheetName, formulaPlan.Repairs, pendingVerification!, observer, out var verificationCheck))
-            {
-                checks.Add(verificationCheck);
-                AddStagingCleanupCheck(stagingPath, checks);
-                return new WorkbookExecutionOutcome(
-                    ExcelTaskStatus.Unknown,
-                    "Excel saved the workbook, but reopen verification did not confirm all requested changes.",
-                    changes,
-                    checks,
-                    CanRetry: false,
-                    RetryReason: "Inspect the saved workbook before attempting another apply operation.");
-            }
-
-            checks.Add(verificationCheck);
             if (noFormulaChanges)
             {
-                checks.Add(new TaskCheck("no-formula-changes", true, "No formula changes were required; Excel was not recalculated."));
+                context.Checks.Add(new TaskCheck("no-formula-changes", true,
+                    "No formula changes were required; Excel was not recalculated."));
             }
-            verified = true;
-            if (stagingPath is not null)
-            {
-                SetPhase("copy-promotion");
-                WorkbookRuntimeHelpers.PromoteStaging(stagingPath, savedPath, plan.Request.OverwriteConfirmed);
-                stagingPath = null;
-                changes.Add(new TaskChange("copy-promotion", "workbook", "Promoted the verified staging workbook to the requested output path."));
-            }
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, "Workbook changes were saved and verified after reopening.", changes, checks);
-        }
-        catch (Exception exception)
-        {
-            var ownedCleanupFailed = false;
-            if (session is not null)
-            {
-                try { ownedCleanupFailed = !session.Close(); }
-                catch (Exception cleanupException) when (ComAccess.IsComFailure(cleanupException)) { ownedCleanupFailed = true; }
-                session = null;
-            }
-            var stagingCleanupFailed = stagingPath is not null && !WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-            if (!stagingCleanupFailed) stagingPath = null;
-            var status = ownedCleanupFailed || stagingCleanupFailed ? ExcelTaskStatus.Unknown : verified ? ExcelTaskStatus.Partial : mutationAttempted ? ExcelTaskStatus.Unknown : ExcelTaskStatus.Rejected;
-            checks.Add(new TaskCheck("execution", false, mutationAttempted
-                ? "Excel execution did not complete during the current phase; the change was not fully verified."
-                : "Excel did not complete the requested read-only preflight."));
-            checks.Add(new TaskCheck("failure-detail", false, DescribeFailure(phase, exception)));
-            if (ownedCleanupFailed) checks.Add(new TaskCheck("owned-process-exit", false, "The owned Excel process did not exit during cleanup."));
-            if (stagingCleanupFailed) checks.Add(new TaskCheck("staging-cleanup", false, "A staging workbook could not be deleted; inspect the output directory before retrying."));
-            return new WorkbookExecutionOutcome(
-                status,
-                verified
-                    ? "Workbook changes were verified, but final delivery did not complete."
-                    : mutationAttempted ? "Excel attempted workbook changes, but their final state is unknown." : "Workbook execution was rejected before changes were attempted.",
-                changes,
-                checks,
-                CanRetry: false,
-                RetryReason: mutationAttempted ? "Inspect workbook state before retrying." : "Correct the workbook preflight issue before retrying.");
-        }
-        finally
-        {
-            session?.Close();
-            // Unconditional: every early return above - rejection, preflight failure, exception,
-            // a plan that turned out to need no changes - leaves a started Excel that nothing else
-            // will close. This one line is the whole containment for the pre-launch.
-            pendingVerification?.Dispose();
-            if (stagingPath is not null) _ = WorkbookRuntimeHelpers.TryDeleteStaging(stagingPath);
-        }
+            // Saving a copy is still a mutation even when the formula plan is empty; mark it before
+            // handing control to the shared tail so a SaveAs or promotion failure is Unknown.
+            context.MarkMutationAttempted();
+            return new MutationStep.SaveAndVerify(
+                verification => VerifySavedWorkbook(verification, formulaPlan.WorksheetName, formulaPlan.Repairs),
+                "Workbook changes were saved and verified after reopening.",
+                "Excel saved the workbook, but reopen verification did not confirm all requested changes.");
+        });
     }
 
     /// <summary>

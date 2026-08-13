@@ -43,6 +43,42 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
     }
 
     [Fact]
+    public async Task FormulaCopyPromotionFailureIsReportedAsUnknown()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "target.xlsx");
+        var reference = Path.Combine(directory, "reference.xlsx");
+        var output = Path.Combine(directory, "output.xlsx");
+        LockingRuntimeObserver? observer = null;
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            ExcelTestWorkbook.CreateReference(reference);
+            // Promotion replaces an existing destination. Keeping that destination open with an
+            // exclusive handle is the real filesystem failure the transaction must classify.
+            ExcelTestWorkbook.CreateTarget(output);
+            observer = new LockingRuntimeObserver(output);
+            using var runtime = new ExcelWorkbookRuntime(observer);
+            var plan = new ExcelTaskPlan("promotion-failure", ExcelTaskPlans.Copy(
+                target, reference, "Reference", "Imported", [new FormulaRepairRange("A1", "A3")],
+                ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Copy, output, overwrite: true));
+
+            var outcome = await runtime.ExecuteAsync(plan, CancellationToken.None);
+
+            Assert.Equal(ExcelTaskStatus.Unknown, outcome.Status);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "formula-save" && !check.Passed);
+            Assert.True(File.Exists(output));
+        }
+        finally
+        {
+            observer?.Dispose();
+            TempDirectory.Remove(directory);
+        }
+    }
+
+    [Fact]
     public async Task AskDetectsExactOpenWorkbookAndUseOpenLeavesUserExcelRunning()
     {
         var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
@@ -486,6 +522,35 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
             Assert.True(ExcelTestWorkbook.HasValue(target, "B1", 1000.5d));
             Assert.True(ExcelTestWorkbook.HasValue(target, "A1", "Revenue"));
             Assert.True(ExcelTestWorkbook.HasValue(target, "C1", true));
+        }
+        finally
+        {
+            TempDirectory.Remove(directory);
+            ExcelTestWorkbook.AssertNoLeakedExcel(existingExcel);
+        }
+    }
+
+    [Fact]
+    public async Task FormulaWriteStoresCallerSuppliedA1FormulaAndProvesItAfterReopening()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "ExcelTask", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var target = Path.Combine(directory, "formula-write.xlsx");
+        var existingExcel = ExcelTestWorkbook.SnapshotSettledExcel();
+
+        try
+        {
+            ExcelTestWorkbook.CreateTarget(target);
+            using var runtime = new ExcelWorkbookRuntime();
+            var outcome = await runtime.ExecuteAsync(new ExcelTaskPlan("formula-write", ExcelTaskPlans.WriteFormulas(
+                target, "Sheet1", [("B1", "=SUM(1,2)")])), CancellationToken.None);
+
+            Assert.True(outcome.Status == ExcelTaskStatus.Completed,
+                $"{outcome.Summary} {string.Join("; ", outcome.Checks?.Select(check => check.Detail) ?? [])}");
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "formula-write" && check.Passed);
+            Assert.Contains(outcome.Checks ?? [], check => check.Name == "reopen-verification" && check.Passed);
+            Assert.True(ExcelTestWorkbook.HasFormula(target, "B1", "=SUM(1,2)"));
+            Assert.True(ExcelTestWorkbook.HasValue(target, "B1", 3d));
         }
         finally
         {
@@ -1328,6 +1393,25 @@ public sealed class ExcelWorkbookRuntimeIntegrationTests
 
         // Exactly two owned processes for an Apply: the primary and the pre-launched verification.
         Assert.Equal(2, observer.CountOf("owned-process"));
+    }
+
+    private sealed class LockingRuntimeObserver(string outputPath) : IExcelWorkbookRuntimeObserver, IDisposable
+    {
+        private FileStream? _outputLock;
+
+        public void OnPhase(string phase)
+        {
+            if (phase == "copy-promotion")
+            {
+                _outputLock = new FileStream(outputPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            }
+        }
+
+        public void OnOwnedProcessCaptured(ProcessIdentity identity) { }
+
+        public void OnStagingPathCreated(string stagingPath) { }
+
+        public void Dispose() => _outputLock?.Dispose();
     }
 
     [Fact]

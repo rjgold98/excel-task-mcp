@@ -20,7 +20,7 @@ perform and verify it. The server never delegates planning to a hidden model.
 ### Task Engine
 
 The external module interface is `IExcelTaskEngine.RunAsync`. Its request has a
-manual closed operation union of eleven kinds, so the MCP schema stays small
+manual closed operation union of twelve kinds, so the MCP schema stays small
 without generic action language:
 
 | Operation | Reads or writes | Notes |
@@ -32,6 +32,7 @@ without generic action language:
 | `AuditWorkbookFlows` | reads | Opens Excel; the only operation that sees queries, the model, and macros |
 | `ReadWorksheetRange` | reads | One bounded range |
 | `WriteWorksheetValues` | writes | Constants only; never formula text |
+| `WriteWorksheetFormulas` | writes | Explicit caller-supplied A1 formulas; read back and save/reopen verified |
 | `FindReplace` | both | Plan locates, Apply rewrites constants |
 | `Create` | writes | Empty workbook or worksheet; never overwrites |
 | `SetNumberFormat` | writes | Display only; no values, fonts, fills, or borders |
@@ -64,6 +65,15 @@ an optional no-argument run remains bounded by the existing worker deadline.
 Trust access is intentionally controlled by the user, while a dialog or timeout
 after dispatch is `Unknown` rather than retried.
 
+`WriteWorksheetValues` and `WriteWorksheetFormulas` are deliberately separate
+interfaces. The former rejects text beginning with `=` so a caller cannot turn
+a constant write into a formula accidentally. The latter accepts bounded A1
+formula text only when the caller names that operation, reads each formula back
+before saving, and verifies it again after reopening. The receipt carries counts
+and checks rather than formula text. When a formula can be inferred from
+neighbouring evidence, the repair/extension operations remain the stronger
+choice because they verify the pattern as well as the stored formula.
+
 ### Excel adapter
 
 The Excel adapter satisfies the workbook-runtime port. It owns one STA thread,
@@ -82,6 +92,16 @@ The adapter has two ownership modes:
 - `isolated`: ExcelTask owns Excel and may close/quit it;
 - `use_open`: ExcelTask attaches to one exact workbook after confirmation and
   must not close or quit the user's Excel process.
+
+**Mutation lifecycle is one private transaction for generic, direct/inferred
+formula, and exhibit Apply paths.** `ExecuteMutation` owns the save, owned-Excel close-and-prove,
+file-lock check, reopen verification, staging promotion, cleanup, and
+`Unknown` classification. Formula/exhibit code supplies only its workbook
+preflight, two-phase evidence revalidation, COM mutation, recalculation, and
+saved-workbook verifier. Macro editing stays outside this seam: its VBA hash
+precondition, dialog handling, and abandoned-process recovery are materially
+different. The seam is a reliability boundary; it does not change the MCP
+schema or remove the load-bearing Excel teardown and verification work.
 
 **Workbook identity is exact, and a synced path has two exact spellings.** A
 workbook opened from a OneDrive or SharePoint folder reports a service URL as
@@ -124,8 +144,10 @@ Only `Rejected` is automatically safe to retry after correction. A repeated
 - Create isolated Excel only for a task, then prove process exit; do not add
   warm-process reuse until work-computer measurements justify it.
 - Bound every task and return changed ranges/checks rather than workbook data.
-- Limit formula work to 16 requested ranges, 10,000 scanned cells, 2,000
-  planned mutations, and 24 extension periods; never put formula text on the
-  MCP wire. The macro operation bounds procedure names/hashes to 96 characters
+- Limit inferred formula work to 16 requested ranges, 10,000 scanned cells,
+  2,000 planned mutations, and 24 extension periods. Direct formula writes are
+  limited to 200 cells and an 8,192-character formula per cell within a
+  400-cell span and 768 KiB of UTF-8 formula text per request; formula text is
+  request input only and never appears in a receipt. The macro operation bounds procedure names/hashes to 96 characters
   and Plan source to 8,192 characters; Apply returns no source.
 - Measure actual Copilot tokens and turns separately from server/COM timing.

@@ -44,7 +44,7 @@ Three files are written, and the third is printed to the console as well.
 ### What it reports beyond pass and fail
 
 **Coverage.** The last line of the operation list names any operation the run
-did not exercise. The check once covered five of eleven and still printed PASS,
+did not exercise. The check once covered five of twelve and still printed PASS,
 so a subset is now stated rather than implied. On its first run the reporter
 found a real gap — `RepairExistingWorksheet` — which is now a step.
 

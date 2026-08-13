@@ -55,6 +55,26 @@ internal static class ExcelTaskPlans
                 worksheet,
                 [.. cells.Select(cell => new NormalizedWorksheetCellValue(cell.Address, cell.Value))])));
 
+    public static NormalizedExcelTaskRequest WriteFormulas(
+        string target,
+        string worksheet,
+        (string Address, string Formula)[] cells,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        SaveMode save = SaveMode.Same,
+        string? output = null,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        save,
+        output,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.WriteWorksheetFormulas,
+            WriteWorksheetFormulas: new NormalizedWriteWorksheetFormulasOperation(
+                worksheet,
+                [.. cells.Select(cell => new NormalizedWorksheetCellFormula(cell.Address, cell.Formula))])));
+
     public static NormalizedExcelTaskRequest FindReplace(
         string target,
         string worksheet,

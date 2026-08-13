@@ -197,15 +197,16 @@ public sealed partial class ExcelWorkbookRuntime
 
             return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, save.CompletedSummary, changes, checks, Range: save.Range);
         }
-        // IOException and UnauthorizedAccessException are the promotion failing - the one step
-        // after verification that still touches the filesystem. It used to be in no operation's
-        // filter, so it escaped through the finally that deletes the verified staging file and
-        // reached the caller as an Unknown with no receipt at all.
-        catch (Exception exception) when (ComAccess.IsComFailure(exception) || exception is IOException or UnauthorizedAccessException)
+        // The operation and the lifecycle both run inside this boundary. A COM fault, a failed
+        // save, a locked promotion destination, or an unexpected late-bound Excel failure must
+        // become a receipt rather than escape through the dispatcher; after a mutation attempt the
+        // only truthful classification is Unknown.
+        catch (Exception exception)
         {
             var mutationAttempted = context?.MutationAttempted ?? false;
             checks.Add(new TaskCheck(failureKind, false, DescribeFailure(failureKind, exception)));
             var cleanupFailure = ExcelSession.CloseAndProve(ref session, $"the failed {failureKind}", checks, changes);
+            AddStagingCleanupCheck(stagingPath, checks);
             if (cleanupFailure is not null) return cleanupFailure;
             return new WorkbookExecutionOutcome(
                 mutationAttempted ? ExcelTaskStatus.Unknown : ExcelTaskStatus.Rejected,

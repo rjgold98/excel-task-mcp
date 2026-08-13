@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace ExcelTask.Core;
@@ -542,6 +543,12 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
     /// </summary>
     public const int MaxWriteCells = 200;
 
+    /// <summary>Excel's maximum formula text length; formula writes are bounded before COM sees them.</summary>
+    public const int MaxFormulaTextLength = 8_192;
+
+    /// <summary>Keeps the serialized formula request below the private worker's 1 MiB input frame.</summary>
+    public const int MaxFormulaWriteUtf8Bytes = 768 * 1024;
+
     private static bool TryNormalizeWrite(
         WriteWorksheetValuesOperation write,
         ExcelOperationKind kind,
@@ -589,7 +596,7 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
             if (cell.Value.StartsWith('='))
             {
-                error = $"Cell {address} starts with '='. This operation writes constants only; use ExtendFormulaSeries or RepairExistingWorksheet for formulas, which are inferred from the sheet rather than supplied.";
+                error = $"Cell {address} starts with '='. This operation writes constants only; use WriteWorksheetFormulas for caller-supplied formulas, or ExtendFormulaSeries/RepairExistingWorksheet when the formula can be inferred from the sheet.";
                 return false;
             }
 
@@ -616,6 +623,83 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         normalized = new NormalizedExcelOperation(
             kind,
             WriteWorksheetValues: new NormalizedWriteWorksheetValuesOperation(worksheetName!, cells));
+        error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeFormulaWrite(
+        WriteWorksheetFormulasOperation write,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(write.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (write.Cells is not { Count: > 0 })
+        {
+            error = "At least one formula cell to write is required.";
+            return false;
+        }
+
+        if (write.Cells.Count > MaxWriteCells)
+        {
+            error = $"The request writes {write.Cells.Count:N0} formula cells and the limit is {MaxWriteCells}. Split the write across calls.";
+            return false;
+        }
+
+        var cells = new List<NormalizedWorksheetCellFormula>(write.Cells.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var bounds = (MinRow: int.MaxValue, MinColumn: int.MaxValue, MaxRow: 0, MaxColumn: 0);
+        var formulaBytes = 0;
+        foreach (var cell in write.Cells)
+        {
+            if (!TryNormalizeA1Range(cell.Address, out var parsed) || parsed.Width != 1 || parsed.Height != 1)
+            {
+                error = "Each formula address must be a single A1 cell such as B7.";
+                return false;
+            }
+
+            var address = ColumnName(parsed.StartColumn) + parsed.StartRow.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (!seen.Add(address))
+            {
+                error = $"Cell {address} appears more than once; each cell may be written once per call.";
+                return false;
+            }
+
+            if (cell.Formula is null || !cell.Formula.StartsWith('='))
+            {
+                error = $"Cell {address} must contain formula text beginning with '='.";
+                return false;
+            }
+
+            if (cell.Formula.Length > MaxFormulaTextLength)
+            {
+                error = $"Formula for cell {address} is {cell.Formula.Length:N0} characters and the limit is {MaxFormulaTextLength:N0}.";
+                return false;
+            }
+
+            formulaBytes = checked(formulaBytes + Encoding.UTF8.GetByteCount(cell.Formula));
+            if (formulaBytes > MaxFormulaWriteUtf8Bytes)
+            {
+                error = $"Formula text totals more than {MaxFormulaWriteUtf8Bytes / 1024:N0} KiB in one request. Split the formula write across calls.";
+                return false;
+            }
+
+            bounds = (Math.Min(bounds.MinRow, parsed.StartRow), Math.Min(bounds.MinColumn, parsed.StartColumn),
+                Math.Max(bounds.MaxRow, parsed.StartRow), Math.Max(bounds.MaxColumn, parsed.StartColumn));
+            cells.Add(new NormalizedWorksheetCellFormula(address, cell.Formula));
+        }
+
+        var span = (long)(bounds.MaxRow - bounds.MinRow + 1) * (bounds.MaxColumn - bounds.MinColumn + 1);
+        if (span > MaxReadCells)
+        {
+            error = $"The formula cells span {span:N0} cells of the sheet and must fit inside {MaxReadCells}. Group the write into a smaller area.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            WriteWorksheetFormulas: new NormalizedWriteWorksheetFormulasOperation(worksheetName!, cells));
         error = null;
         return true;
     }
@@ -770,6 +854,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
             case ExcelOperationKind.WriteWorksheetValues when operation.WriteWorksheetValues is not null:
                 return TryNormalizeWrite(operation.WriteWorksheetValues, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.WriteWorksheetFormulas when operation.WriteWorksheetFormulas is not null:
+                return TryNormalizeFormulaWrite(operation.WriteWorksheetFormulas, operation.Kind, out normalized, out error);
 
             case ExcelOperationKind.FindReplace when operation.FindReplace is not null:
                 return TryNormalizeFindReplace(operation.FindReplace, mode, operation.Kind, out normalized, out error);

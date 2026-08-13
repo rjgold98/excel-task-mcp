@@ -22,3 +22,7 @@ These decisions were locked with the user on 2026-08-08.
 11. Overwriting an existing file requires explicit authorization.
 12. No full CLI, saved template preference, workbook memory, compatibility
     facade, specialist packs, or broad feature parity belongs in the MVP.
+13. Caller-supplied formulas are supported only through a separate bounded
+    `WriteWorksheetFormulas` operation. `WriteWorksheetValues` remains
+    constants-only; direct formulas are read back before save and verified after
+    reopen, and formula text is never returned in receipts.

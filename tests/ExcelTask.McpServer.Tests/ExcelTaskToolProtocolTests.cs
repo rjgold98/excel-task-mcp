@@ -78,7 +78,9 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Equal("excel_task", tool.Name);
         // The budget forces every operation to earn its bytes: 8 KB for the first four, 9 KB when
         // the audit became the fifth, 11 KB for the range read, 13 KB for the value write, 15 KB
-        // for find/replace and create together, 16 KB when the structure scan became the eleventh.
+        // for find/replace and create together, and 16 KB for the structure scan and formula-write
+        // operations. The formula operation earns its schema bytes because it closes the one
+        // measured write gap without adding another MCP tool.
         // The two reads and writes of cells also carry an output schema, being the only operations
         // that return workbook contents. It must not grow to make room for wordier prose - only for
         // a new operation, or for a rule the caller cannot act without, which field measurement
@@ -119,13 +121,13 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // A/B measurement (docs/INTERFACE-AB-STUDY.md) showed both of these rules cost round trips
         // when they were enforced but unstated: UseOpen+Copy is rejected, and asking AskIfOpen about
         // a workbook the caller already said was open only ever returns a confirmation.
-        AssertDescription(properties, "workbookBinding", "Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure and Create require Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.");
-        AssertDescription(properties, "save", "Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows, ReadWorksheetRange, ScanWorkbookStructure and Create never take a save destination: leave Same with no outputWorkbookPath.");
+        AssertDescription(properties, "workbookBinding", "AskIfOpen when unknown; resubmit UseOpen or Isolated if confirmation returns. Use UseOpen when the workbook is known open. EditMacroProcedure/Create require Isolated. UseOpen+Copy and Isolated+Same while open are rejected.");
+        AssertDescription(properties, "save", "Same saves the target; Copy saves outputWorkbookPath. Macro editing requires .xlsm Copy. UseOpen+Copy is rejected. Audit, Read, Scan, and Create never take output; leave Same.");
         AssertDescription(properties, "outputWorkbookPath", "Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.");
         // The single most frequent failure in every A/B round, in both the original study and the
         // v0.11.0 run: a same-file Apply sent without this flag. "An existing save destination" did
         // not read as "the target workbook you are editing", so the rule is now spelled per save mode.
-        AssertDescription(properties, "overwriteConfirmed", "Explicit authorization to overwrite. Apply with save Same requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it, and neither does Create with kind Workbook, which is refused outright if anything is already at the path.");
+        AssertDescription(properties, "overwriteConfirmed", "Explicit overwrite authorization. Apply+Same requires true; Apply+Copy requires true only when output exists. Plan and Create Workbook do not require it; Create Workbook refuses an existing file.");
 
         var operation = ResolveReference(properties.GetProperty("operation"), tool.InputSchema);
         var operationProperties = operation.GetProperty("properties");
@@ -137,6 +139,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         AssertDescription(operationProperties, "auditWorkbookFlows", "Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.");
         AssertDescription(operationProperties, "readWorksheetRange", "Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.");
         AssertDescription(operationProperties, "writeWorksheetValues", "Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.");
+        AssertDescription(operationProperties, "writeWorksheetFormulas", "Required only for WriteWorksheetFormulas; writes A1 formulas, reads/saves/reopens/verifies them, and never returns formula text.");
         AssertDescription(operationProperties, "findReplace", "Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.");
         AssertDescription(operationProperties, "create", "Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.");
         AssertDescription(operationProperties, "setNumberFormat", "Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.");
@@ -160,7 +163,7 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         // queries, connections or the model because they are unreadable without Excel - but a caller
         // who scans, sees no macro, and concludes there is none has been misled by an omission. The
         // description says so and routes to the operation that can answer.
-        AssertDescription(operationProperties, "scanWorkbookStructure", "Required only when kind is ScanWorkbookStructure; all other payloads must be null, and supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.");
+        AssertDescription(operationProperties, "scanWorkbookStructure", "Required only for ScanWorkbookStructure; supply {}. Reads the package directly without Excel and reports sheet dimensions, formula/constant counts, defined names, tables, external links, and constant islands. Counts only. It omits macros, queries, connections, and the data model; use AuditWorkbookFlows for those. Use it before deciding what to read or fix.");
 
         var create = ResolveReference(operationProperties.GetProperty("create"), tool.InputSchema);
         AssertDescription(create.GetProperty("properties"), "kind", "Workbook creates an empty workbook at targetWorkbookPath, which must not already exist. Worksheet adds an empty sheet to the existing target. Either way Create writes the target itself: it requires binding Isolated and takes no save destination.");
@@ -171,6 +174,12 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         var readRange = ResolveReference(operationProperties.GetProperty("readWorksheetRange"), tool.InputSchema);
         AssertDescription(readRange.GetProperty("properties"), "range", "One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.");
         AssertDescription(readRange.GetProperty("properties"), "formulas", "False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.");
+
+        var formulaWrite = ResolveReference(operationProperties.GetProperty("writeWorksheetFormulas"), tool.InputSchema);
+        AssertDescription(formulaWrite.GetProperty("properties"), "cells", "Up to 200 single-cell A1 formulas; each begins with =, is at most 8,192 characters, all addresses fit within a 400-cell span, and total UTF-8 formula text is at most 768 KiB.");
+        var formulaCell = ResolveReference(formulaWrite.GetProperty("properties").GetProperty("cells"), tool.InputSchema).GetProperty("items");
+        formulaCell = ResolveReference(formulaCell, tool.InputSchema);
+        AssertDescription(formulaCell.GetProperty("properties"), "formula", "A1 formula beginning with =; stored and verified, never returned.");
 
         var copyExhibit = ResolveReference(operationProperties.GetProperty("copyExhibit"), tool.InputSchema);
         AssertDescription(copyExhibit.GetProperty("properties"), "repairRanges", "Bounded A1 ranges on the copied worksheet where blank formulas may be repaired; use [] when none are needed. At most 16 ranges and 10,000 cells per call; split a larger area across calls.");
@@ -269,6 +278,24 @@ public sealed class ExcelTaskToolProtocolTests : IAsyncLifetime, IAsyncDisposabl
         Assert.Equal(FormulaExtensionDirection.Right, extension.Direction);
         Assert.Equal("B2:C4", extension.EvidenceRange.ToString());
         Assert.Equal("D2:F4", extension.DestinationRange.ToString());
+    }
+
+    [Fact]
+    public async Task CallToolPlanWriteWorksheetFormulasRoundTripsOperation()
+    {
+        _runtime!.Outcome = new WorkbookExecutionOutcome(ExcelTaskStatus.Planned, "Formula write plan ready");
+        var operation = new ExcelOperation(
+            ExcelOperationKind.WriteWorksheetFormulas,
+            WriteWorksheetFormulas: new WriteWorksheetFormulasOperation(
+                "Model", [new WorksheetCellFormula("B7", "=SUM(A1:A6)")]));
+
+        var result = await CallAsync(Request(ExcelTaskMode.Plan, operation));
+
+        Assert.False(result.IsError);
+        var formulaWrite = Assert.IsType<NormalizedWriteWorksheetFormulasOperation>(_runtime.Plan!.Request.Operation.WriteWorksheetFormulas);
+        Assert.Equal("Model", formulaWrite.WorksheetName);
+        Assert.Equal("B7", formulaWrite.Cells.Single().Address);
+        Assert.Equal("=SUM(A1:A6)", formulaWrite.Cells.Single().Formula);
     }
 
     [Fact]

@@ -255,36 +255,32 @@ public sealed partial class ExcelWorkbookRuntime
             $"{verb} {result.RepairCount} formula changes.")).ToArray();
     }
 
-    private static bool VerifySavedWorkbook(
-        string path,
+    private static (bool Verified, TaskCheck Check) VerifySavedWorkbook(
+        ExcelSession session,
         string worksheetName,
-        IReadOnlyList<ExpectedFormula> expectedRepairs,
-        PendingVerification verification,
-        IExcelWorkbookRuntimeObserver observer,
-        out TaskCheck check) =>
-        verification.Verify(path, observer, session =>
+        IReadOnlyList<ExpectedFormula> expectedRepairs)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Item(sheets, worksheetName));
+
+        // Read the whole bounding box of the repaired cells in one array rather than fetching
+        // each cell across the COM boundary. Measured on this machine: 3,000 individual cell
+        // reads cost about 4.9 seconds; the same cells as one range read cost 13 ms. The
+        // per-call cost of COM, not the work, was the entire verification budget.
+        ReadFormulaBox(references, sheet, expectedRepairs, out var box, out var origin);
+
+        foreach (var expected in expectedRepairs)
         {
-            using var references = new ComReferenceScope();
-            var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
-            var sheet = references.Add(Item(sheets, worksheetName));
-
-            // Read the whole bounding box of the repaired cells in one array rather than fetching
-            // each cell across the COM boundary. Measured on this machine: 3,000 individual cell
-            // reads cost about 4.9 seconds; the same cells as one range read cost 13 ms. The
-            // per-call cost of COM, not the work, was the entire verification budget.
-            ReadFormulaBox(references, sheet, expectedRepairs, out var box, out var origin);
-
-            foreach (var expected in expectedRepairs)
+            var actual = box[expected.Row - origin.Row, expected.Column - origin.Column];
+            if (!string.Equals(actual, expected.FormulaR1C1, StringComparison.Ordinal))
             {
-                var actual = box[expected.Row - origin.Row, expected.Column - origin.Column];
-                if (!string.Equals(actual, expected.FormulaR1C1, StringComparison.Ordinal))
-                {
-                    return (false, new TaskCheck("reopen-verification", false, "A repaired formula was not present after reopening the saved workbook."));
-                }
+                return (false, new TaskCheck("reopen-verification", false, "A repaired formula was not present after reopening the saved workbook."));
             }
+        }
 
-            return (true, new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas."));
-        }, out check);
+        return (true, new TaskCheck("reopen-verification", true, $"Saved workbook reopened with the requested worksheet and {expectedRepairs.Count} requested formulas."));
+    }
 
     /// <summary>
     /// Reads the R1C1 formulas of the smallest rectangle covering every expected repair, as one

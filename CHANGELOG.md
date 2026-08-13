@@ -16,6 +16,32 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
+## 0.18.0 - 2026-08-13
+
+### Added - explicit formula writes
+
+- Added `WriteWorksheetFormulas`, a separate bounded operation for caller-supplied
+  A1 formulas. It accepts up to 200 single-cell formulas (8,192 characters each,
+  within a 400-cell span, and 768 KiB of UTF-8 formula text per request), reads
+  them back before saving, and verifies them after reopening. Formula text is
+  never returned in receipts.
+- `WriteWorksheetValues` remains constants-only and now directs intentional
+  formula writes to the explicit operation; inferred repair and extension remain
+  preferred when sheet evidence can prove the intended pattern.
+
+### Changed - formula mutations use the shared transaction lifecycle
+
+- Formula and exhibit Apply operations now use the private mutation transaction
+  for save, owned-Excel cleanup proof, file-lock checking, reopen verification,
+  staging promotion, and uncertain-outcome classification. Their formula
+  preflight, two-phase revalidation, mutation, recalculation, and verifier stay
+  operation-specific. Macro editing remains bespoke because its VBA hash,
+  dialog, and abandoned-process rules are different.
+- This is a reliability consolidation, not a measured MCP-token or
+  end-to-end-speed optimization. The new regression proves a locked promotion
+  is returned as `Unknown` with a failed `formula-save` check instead of the
+  former `Partial` result with no operation-specific failure check.
+
 ## 0.17.1 - 2026-08-11
 
 Six low-risk findings, two of them live defects. Nothing here changes behaviour

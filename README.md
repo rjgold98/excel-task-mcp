@@ -1,4 +1,4 @@
-# ExcelTask 0.17.1
+# ExcelTask 0.18.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -29,25 +29,31 @@ One request can perform exactly one operation:
 6. read the contents of one bounded worksheet range, as displayed values or as
    R1C1 formulas; or
 7. write constants into named cells, never formula text; or
-8. find the cells whose text matches, and rewrite the constants among them,
+8. write caller-supplied A1 formulas through the explicit
+   `WriteWorksheetFormulas` operation, with immediate read-back and save/reopen
+   verification; or
+9. find the cells whose text matches, and rewrite the constants among them,
    leaving any cell whose text comes from a formula reported but untouched; or
-9. create an empty workbook, or add an empty worksheet, never overwriting
+10. create an empty workbook, or add an empty worksheet, never overwriting
    either; or
-10. set one number format code across a bounded range, changing how numbers
-    display and never the numbers themselves; or
-11. map a workbook's structure by reading the file directly - no Excel process
-    at all: sheets, dimensions, formula/constant counts, the constant islands
-    that mark manual overrides inside calculated columns, plus defined names,
-    tables, and external links by file name; then
-12. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+11. set one number format code across a bounded range, changing how numbers
+   display and never the numbers themselves; or
+12. map a workbook's structure by reading the file directly - no Excel process
+   at all: sheets, dimensions, formula/constant counts, the constant islands
+   that mark manual overrides inside calculated columns, plus defined names,
+   tables, and external links by file name; then
+13. recalculate, save, close owned Excel, reopen the saved workbook, and verify
     the worksheet, repairs, procedure, written values, replacements, or format;
     and
-13. return a compact, structured receipt.
+14. return a compact, structured receipt.
 
-Operations 5 and 6 never write, and say so from evidence: their receipts carry a
-check proving the workbook's size and timestamp were identical before and after.
+Operations 5, 6, and 12 never write, and say so from evidence: their receipts
+carry a check proving the workbook's size and timestamp were identical before
+and after (the structure scan additionally avoids Excel entirely).
 The receipt withholds workbook values and formula text everywhere except the
 range read, where the contents are the entire request rather than incidental.
+Formula text is accepted only by `WriteWorksheetFormulas`; it is never echoed
+in a receipt.
 
 Every inspection and execution runs in a short-lived private worker. The MCP
 host enforces a two-minute deadline, reports interrupted mutations as
@@ -72,11 +78,12 @@ suppressed either way.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `FindReplace`, `Create`, `SetNumberFormat`, or `ScanWorkbookStructure`. Supply exactly the one matching payload. It never
-  accepts formula text or `FormulaR1C1`: `WriteWorksheetValues` takes constants
-  only and rejects any value starting with `=`, and `FindReplace` refuses a
-  replacement that would leave a cell starting with `=` even when the
-  replacement text itself is a legal constant.
+  `WriteWorksheetFormulas`, `FindReplace`, `Create`, `SetNumberFormat`, or
+  `ScanWorkbookStructure`. Supply exactly the one matching payload.
+  `WriteWorksheetValues` still takes constants only and rejects any value
+  starting with `=`; `WriteWorksheetFormulas` is the explicit path for A1
+  formulas and `FindReplace` still refuses a replacement that would leave a
+  cell starting with `=`.
 - Start with `AuditWorkbookFlows` when the worksheet names are unknown. Every
   other operation requires a worksheet name it otherwise has no way to discover.
 - `FindReplace` matches plain text on what the cell displays; `*` and `?` are
@@ -97,6 +104,11 @@ suppressed either way.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
   cell's text. It rejects a range larger than that rather than truncating to a
   partial answer that would read as a complete one.
+- `WriteWorksheetFormulas` accepts at most 200 single-cell A1 formulas, each no
+  longer than 8,192 characters, within one 400-cell span, and no more than
+  768 KiB of UTF-8 formula text per request. Excel reads them back before saving
+  and verifies them again after reopening; the receipt returns counts and
+  checks, never formula text.
 - The `EditMacroProcedure` operation is deliberately narrow: only an isolated
   `.xlsm` saved as a `Copy`, one named standard-module procedure, full
   replacement guarded by the expected current hash, and an optional no-argument

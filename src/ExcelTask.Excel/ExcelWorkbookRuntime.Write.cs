@@ -211,4 +211,165 @@ public sealed partial class ExcelWorkbookRuntime
         return (true, new TaskCheck("reopen-verification", true,
             $"Saved workbook reopened with all {operation.Cells.Count} written values."));
     }
+
+    /// <summary>
+    /// Writes caller-supplied A1 formulas as a distinct operation from constant writes. The
+    /// formula text is never placed in the receipt; the immediate read-back and the shared
+    /// save/reopen transaction prove only that Excel stored the requested formulas.
+    /// </summary>
+    private static WorkbookExecutionOutcome ExecuteFormulaWriteCore(ExcelTaskPlan plan, IExcelWorkbookRuntimeObserver observer)
+    {
+        var operation = plan.Request.Operation.WriteWorksheetFormulas!;
+        return ExecuteMutation(plan, observer, "formula-write", "The formula write", context =>
+        {
+            context.OnPhase("formula-write-preflight");
+            var preflight = PreflightWorksheetExists(context.Session, operation.WorksheetName);
+            context.Checks.AddRange(preflight.Checks);
+            if (!preflight.IsFeasible)
+            {
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(ExcelTaskStatus.Rejected, "The requested worksheet was not found.", Checks: context.Checks),
+                    "formula write preflight");
+            }
+
+            if (!context.Apply)
+            {
+                context.Changes.Add(new TaskChange("formula-write", $"{operation.WorksheetName}!{operation.Cells[0].Address}",
+                    $"Planned {operation.Cells.Count} caller-supplied formula writes."));
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Planned,
+                        $"Planned {operation.Cells.Count} formula writes; no Excel changes were made.",
+                        context.Changes,
+                        context.Checks),
+                    "formula write planning");
+            }
+
+            context.OnPhase("formula-write");
+            var formulaCells = CreateFormulaWriteCells(operation);
+            if (!ApplyWorksheetFormulas(context.Session, formulaCells, context.MarkMutationAttempted, out var formulaCheck))
+            {
+                context.Checks.Add(formulaCheck);
+                return new MutationStep.Finish(
+                    new WorkbookExecutionOutcome(
+                        ExcelTaskStatus.Unknown,
+                        "Excel did not store every requested formula as written.",
+                        context.Changes,
+                        context.Checks,
+                        CanRetry: false,
+                        RetryReason: "Inspect the workbook before retrying."),
+                    "the formula write");
+            }
+
+            context.Checks.Add(formulaCheck);
+            context.Changes.Add(new TaskChange("formula-write", $"{operation.WorksheetName}!{operation.Cells[0].Address}",
+                $"Wrote {operation.Cells.Count} caller-supplied formulas."));
+
+            return new MutationStep.SaveAndVerify(
+                verification => VerifySavedFormulasBody(verification, operation.WorksheetName, formulaCells),
+                $"Wrote {operation.Cells.Count} formulas, saved, and verified them after reopening.",
+                "Excel saved the workbook, but reopen verification did not confirm every requested formula.");
+        });
+    }
+
+    private static bool ApplyWorksheetFormulas(
+        ExcelSession session,
+        IReadOnlyList<FormulaWriteCell> cells,
+        Action markMutationAttempted,
+        out TaskCheck check)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Item(sheets, cells[0].WorksheetName));
+
+        foreach (var cell in cells)
+        {
+            var target = references.Add(Get(sheet, "Range", cell.Address));
+            markMutationAttempted();
+            Set(target, "Formula", cell.Formula);
+        }
+
+        ReadFormulaWriteBox(references, sheet, cells, out var box, out var origin);
+        foreach (var cell in cells)
+        {
+            var actual = box[cell.Row - origin.Row, cell.Column - origin.Column];
+            if (!FormulaEquivalent(actual, cell.Formula))
+            {
+                check = new TaskCheck("formula-write", false,
+                    $"Excel stored a different formula in {cell.Address}; no further cells were confirmed.");
+                return false;
+            }
+        }
+
+        check = new TaskCheck("formula-write", true,
+            $"Wrote {cells.Count} formula(s) and read every one back from Excel.");
+        return true;
+    }
+
+    private static (bool Verified, TaskCheck Check) VerifySavedFormulasBody(
+        ExcelSession session,
+        string worksheetName,
+        IReadOnlyList<FormulaWriteCell> cells)
+    {
+        using var references = new ComReferenceScope();
+        var sheets = references.Add(Get(session.TargetWorkbook, "Worksheets"));
+        var sheet = references.Add(Item(sheets, worksheetName));
+        ReadFormulaWriteBox(references, sheet, cells, out var box, out var origin);
+        foreach (var cell in cells)
+        {
+            var actual = box[cell.Row - origin.Row, cell.Column - origin.Column];
+            if (!FormulaEquivalent(actual, cell.Formula))
+            {
+                return (false, new TaskCheck("reopen-verification", false,
+                    $"A requested formula was not present after reopening at {cell.Address}."));
+            }
+        }
+
+        return (true, new TaskCheck("reopen-verification", true,
+            $"Saved workbook reopened with all {cells.Count} requested formulas."));
+    }
+
+    private static FormulaWriteCell[] CreateFormulaWriteCells(NormalizedWriteWorksheetFormulasOperation operation) =>
+        operation.Cells.Select(cell =>
+        {
+            var bounds = WorkbookRuntimeHelpers.GetBounds(new FormulaRepairRange(cell.Address, cell.Address));
+            return new FormulaWriteCell(operation.WorksheetName, cell.Address, bounds.StartRow, bounds.StartColumn, cell.Formula);
+        }).ToArray();
+
+    private static void ReadFormulaWriteBox(
+        ComReferenceScope references,
+        object sheet,
+        IReadOnlyList<FormulaWriteCell> cells,
+        out string?[,] box,
+        out (int Row, int Column) origin)
+    {
+        var minRow = cells.Min(cell => cell.Row);
+        var maxRow = cells.Max(cell => cell.Row);
+        var minColumn = cells.Min(cell => cell.Column);
+        var maxColumn = cells.Max(cell => cell.Column);
+        origin = (minRow, minColumn);
+
+        var address = $"{WorkbookRuntimeHelpers.ToA1Address(minRow, minColumn)}:{WorkbookRuntimeHelpers.ToA1Address(maxRow, maxColumn)}";
+        var range = references.Add(Get(sheet, "Range", address));
+        var value = Get(range, "Formula");
+        var rows = maxRow - minRow + 1;
+        var columns = maxColumn - minColumn + 1;
+        box = new string?[rows, columns];
+        for (var row = 0; row < rows; row++)
+        {
+            for (var column = 0; column < columns; column++)
+            {
+                box[row, column] = FormulaCellOf(value, row, column);
+            }
+        }
+    }
+
+    private static string? FormulaCellOf(object? value, int row, int column) => value is Array values
+        ? values.GetValue(row + values.GetLowerBound(0), column + values.GetLowerBound(1)) as string
+        : value as string;
+
+    private static bool FormulaEquivalent(string? actual, string expected) =>
+        actual is not null && string.Equals(actual.Trim(), expected.Trim(), StringComparison.OrdinalIgnoreCase);
+
+    private sealed record FormulaWriteCell(string WorksheetName, string Address, int Row, int Column, string Formula);
 }

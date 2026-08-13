@@ -6,7 +6,7 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, FindReplace, Create, SetNumberFormat, ScanWorkbookStructure }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, WriteWorksheetFormulas, FindReplace, Create, SetNumberFormat, ScanWorkbookStructure }
 public enum CreateKind { Workbook, Worksheet }
 public enum FormulaExtensionDirection { Right, Down }
 
@@ -65,16 +65,18 @@ public sealed record ReadWorksheetRangeOperation(
 /// <summary>
 /// Writes constants into named cells.
 ///
-/// This server refuses model-written formula text, and that refusal is not relaxed here. The two
+/// This operation refuses model-written formula text, and that refusal is not relaxed here. The two
 /// are not the same risk. A formula composed by a model can be plausible and silently wrong - off
 /// by a row, anchored where it should be relative - and a receipt saying "it was written" would
 /// confirm nothing about whether it was right. That is why ExtendFormulaSeries and
-/// RepairExistingWorksheet infer formulas from evidence already in the sheet instead of accepting
-/// them. A constant has no such failure mode: it is exactly what the caller named, and reading it
-/// back proves it character for character. So values are writable and formulas are still not.
+/// RepairExistingWorksheet infer formulas from evidence already in the sheet, while the separate
+/// WriteWorksheetFormulas operation is the explicit opt-in for callers that really do have formula
+/// text. A constant has no such failure mode: it is exactly what the caller named, and reading it
+/// back proves it character for character.
 ///
 /// Anything beginning with "=" is rejected rather than written as text, because silently storing a
-/// formula as a label is the kind of quiet wrongness this whole design exists to avoid.
+/// formula as a label is the kind of quiet wrongness this whole design exists to avoid; use the
+/// separate formula-write operation when a formula is intentional.
 /// </summary>
 public sealed record WriteWorksheetValuesOperation(
     [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
@@ -84,6 +86,26 @@ public sealed record WriteWorksheetValuesOperation(
 public sealed record WorksheetCellValue(
     [property: Description("Single A1 cell address, such as B7.")] string Address,
     [property: Description("Constant to write. Numbers and TRUE/FALSE are written as numbers and booleans, everything else as text. Must not start with =.")] string Value);
+
+/// <summary>
+/// Writes caller-supplied A1 formulas into named cells.
+///
+/// Formula text is deliberately a separate operation from <see cref="WriteWorksheetValuesOperation"/>
+/// so a model cannot turn a constant write into a formula by accident. Formula writes are accepted
+/// only when they begin with '=' and stay inside the same bounded cell/span limits as value writes.
+/// Apply reads each formula back before saving and verifies the saved formulas after reopening; the
+/// receipt reports counts and fingerprints, never the formula text itself. When a formula can be
+/// inferred from neighbouring evidence, ExtendFormulaSeries or RepairExistingWorksheet remains the
+/// stronger choice because it can prove the intended pattern rather than only the stored formula.
+/// </summary>
+public sealed record WriteWorksheetFormulasOperation(
+    [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Up to 200 single-cell A1 formulas; each begins with =, is at most 8,192 characters, all addresses fit within a 400-cell span, and total UTF-8 formula text is at most 768 KiB.")] IReadOnlyList<WorksheetCellFormula> Cells);
+
+/// <summary>One caller-supplied A1 formula. Formula text is stored in the workbook but withheld from receipts.</summary>
+public sealed record WorksheetCellFormula(
+    [property: Description("Single A1 cell, such as B7.")] string Address,
+    [property: Description("A1 formula beginning with =; stored and verified, never returned.")] string Formula);
 
 /// <summary>
 /// Finds cells whose text matches, and optionally replaces it.
@@ -162,19 +184,20 @@ public sealed record ExcelOperation(
     [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
     [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
     [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    [property: Description("Required only for WriteWorksheetFormulas; writes A1 formulas, reads/saves/reopens/verifies them, and never returns formula text.")] WriteWorksheetFormulasOperation? WriteWorksheetFormulas = null,
     [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
     [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
     [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null,
-    [property: Description("Required only when kind is ScanWorkbookStructure; all other payloads must be null, and supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel - absence here is not evidence they are absent, so use AuditWorkbookFlows when those matter. Use it before deciding what to read or fix.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null);
+    [property: Description("Required only for ScanWorkbookStructure; supply {}. Reads the package directly without Excel and reports sheet dimensions, formula/constant counts, defined names, tables, external links, and constant islands. Counts only. It omits macros, queries, connections, and the data model; use AuditWorkbookFlows for those. Use it before deciding what to read or fix.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
     [property: Description("The required manual operation union. Supply exactly one payload matching kind.")] ExcelOperation Operation,
     [property: Description("Plan previews without mutation; Apply performs the task after required confirmations.")] ExcelTaskMode Mode = ExcelTaskMode.Apply,
-    [property: Description("Use AskIfOpen when the workbook state is unknown; resubmit with UseOpen or Isolated if confirmation is returned. When the request already says the workbook is open, use UseOpen directly to avoid a wasted round trip. EditMacroProcedure and Create require Isolated. UseOpen cannot be combined with Copy, and Isolated with save Same is rejected while the target is open in Excel.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
-    [property: Description("Same saves to the target; Copy saves only to outputWorkbookPath. EditMacroProcedure requires Copy to an .xlsm path. Copy is rejected with UseOpen. AuditWorkbookFlows, ReadWorksheetRange, ScanWorkbookStructure and Create never take a save destination: leave Same with no outputWorkbookPath.")] SaveMode Save = SaveMode.Same,
+    [property: Description("AskIfOpen when unknown; resubmit UseOpen or Isolated if confirmation returns. Use UseOpen when the workbook is known open. EditMacroProcedure/Create require Isolated. UseOpen+Copy and Isolated+Same while open are rejected.")] WorkbookBinding WorkbookBinding = WorkbookBinding.AskIfOpen,
+    [property: Description("Same saves the target; Copy saves outputWorkbookPath. Macro editing requires .xlsm Copy. UseOpen+Copy is rejected. Audit, Read, Scan, and Create never take output; leave Same.")] SaveMode Save = SaveMode.Same,
     [property: Description("Required destination path when save is Copy; omit for Same. Must differ from the target path and carry the target's extension.")] string? OutputWorkbookPath = null,
-    [property: Description("Explicit authorization to overwrite. Apply with save Same requires it, because saving in place overwrites the target workbook itself. Apply with save Copy requires it only when outputWorkbookPath already exists. Plan never requires it, and neither does Create with kind Workbook, which is refused outright if anything is already at the path.")] bool OverwriteConfirmed = false);
+    [property: Description("Explicit overwrite authorization. Apply+Same requires true; Apply+Copy requires true only when output exists. Plan and Create Workbook do not require it; Create Workbook refuses an existing file.")] bool OverwriteConfirmed = false);
 
 /// <summary>
 /// What inspection needs to know before execution. <paramref name="TargetMustExist"/> is false for
@@ -244,6 +267,10 @@ public sealed record NormalizedWorksheetCellValue(string Address, string Value);
 
 public sealed record NormalizedWriteWorksheetValuesOperation(string WorksheetName, IReadOnlyList<NormalizedWorksheetCellValue> Cells);
 
+public sealed record NormalizedWorksheetCellFormula(string Address, string Formula);
+
+public sealed record NormalizedWriteWorksheetFormulasOperation(string WorksheetName, IReadOnlyList<NormalizedWorksheetCellFormula> Cells);
+
 public sealed record NormalizedFindReplaceOperation(string WorksheetName, string Find, string? ReplaceWith, FormulaRepairRange? Range, bool WholeCell, bool MatchCase);
 
 public sealed record NormalizedCreateOperation(CreateKind Kind, string? WorksheetName);
@@ -262,6 +289,7 @@ public sealed record NormalizedExcelOperation(
     NormalizedAuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
     NormalizedReadWorksheetRangeOperation? ReadWorksheetRange = null,
     NormalizedWriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    NormalizedWriteWorksheetFormulasOperation? WriteWorksheetFormulas = null,
     NormalizedFindReplaceOperation? FindReplace = null,
     NormalizedCreateOperation? Create = null,
     NormalizedSetNumberFormatOperation? SetNumberFormat = null,

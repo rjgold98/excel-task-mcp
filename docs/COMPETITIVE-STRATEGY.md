@@ -5,7 +5,7 @@ or **portability**, and ExcelTask beats all of them on not being wrong. This is 
 claim it argues is that all three axes are reachable *from* the design rather than against it,
 because one move unlocks all three — and that move already shipped.
 
-## Status of this document's claims, as of v0.17.0
+## Status of this document's claims, as of v0.18.0
 
 Read this first; the rest was written before any of it was tested.
 
@@ -16,6 +16,7 @@ Read this first; the rest was written before any of it was tested.
 | ~44% off the four accelerable operations from file-based verification | **Still projected.** Arithmetic from the timings, not an observed result. Nothing has been built. |
 | "Correctness nobody has measured on a real machine" is the durable advantage | **Weakened by our own evidence.** Two correctness defects shipped and were found by running the binary against hostile fixtures, not by the suite. The advantage is real only to the extent the checking is real; see below. |
 | The competitor comparison numbers (8.1x surface, 74% fewer tokens…) | **One run per workflow**, on the work computer, at v0.10.x. Not a benchmark, and now four releases stale. |
+| Direct formula writing | **Implemented in v0.18.0.** `WriteWorksheetFormulas` is bounded and save/reopen verified; the field check still needs to run on managed hardware. |
 
 The fourth row is the one that changed. This document argues that the field is
 uniformly untested and that this is ExcelTask's opening. That is still true of
@@ -113,7 +114,7 @@ ExcelTask's ~16 KB.
 
 The genuinely missing breadth is short and known:
 
-1. **Formula writing** (`set-formulas`, 15 sessions) — the one real gap, discussed below.
+1. **Formula writing** (`set-formulas`, 15 sessions) — now covered by a bounded operation, discussed below.
 2. **Formatting beyond number formats** (12 sessions) — gated on an operation-level count, not on
    effort.
 3. **Tables beyond listing** (11 sessions).
@@ -126,24 +127,21 @@ Operation payload descriptions are the bulk of the 16 KB, and MCP offers resourc
 places to put detail that a caller fetches only when it needs it. That is worth designing *before*
 the budget forces a bad cut, not after.
 
-### The formula gap, and the option never evaluated
+### Formula writing: covered without weakening constant writes
 
-Refusing model-written formula text is the correct call and the landscape confirms how unusual it
-is — every competitor accepts them, one writing `=`-prefixed strings verbatim with no validation and
-no recalculation. But refusal is the *strict end* of a spectrum the survey found, not the only
-principled point on it:
+The demand measurement identified `set-formulas` in 15 sessions, so the missing capability is now
+an explicit `WriteWorksheetFormulas` operation rather than a relaxation of `WriteWorksheetValues`.
+It accepts bounded A1 formula text (200 cells, 8,192 characters per formula, one 400-cell span,
+and 768 KiB of UTF-8 formula text per request), reads every formula back before saving, and verifies
+the formulas again after reopening. Formula text is request input only: receipts return counts,
+checks, and fingerprints rather than workbook contents.
 
-- **Refuse** (ExcelTask today)
-- **Constrain to a grammar** — SheetMind restricts generation to a closed BNF over seven operations,
-  so what the model emits is executable by construction
-- **Embrace with a sandbox** — Microsoft's own SheetBrain runs model-written Python in one
-
-A grammar-constrained formula operation would keep every property that matters: the model cannot
-emit arbitrary text, the result is verifiable, and a bad formula is rejected structurally rather
-than discovered later. **It should not be built until the prerequisite measurement is done**, which
-the roadmap already names: how much of those 15 sessions `ExtendFormulaSeries` and
-`RepairExistingWorksheet` already cover. If inference covers 12 of 15, the refusal costs almost
-nothing and stays. If it covers 3, this is the most valuable unbuilt thing in the project.
+This proves persistence and formula identity, not semantic intent. A caller-composed formula can
+still be off by a row or anchor. When neighbouring evidence makes the intended pattern clear,
+`ExtendFormulaSeries` and `RepairExistingWorksheet` remain the safer interfaces because they infer
+the formula and verify the pattern. The direct operation is the deliberate escape hatch for the
+real demand that inference cannot cover, with the same save/reopen and truthful `Unknown` lifecycle
+as every other mutation.
 
 ## Portability: partial, honest, and already half true
 
@@ -231,8 +229,8 @@ multi-week investment**, because it is the only one that could make the whole ca
    ambiguity and an explicit refusal to resolve locale-dependent format ids. ~44% off those
    operations, guarantee unchanged.
 3. **Recalibrate the read bound** against the measured cost model. Cheapest real win available.
-4. **Measure formula-inference coverage.** It decides whether the grammar-constrained operation is
-   the most valuable unbuilt thing or an unnecessary risk.
+4. **Measure formula-inference coverage.** It decides when the direct formula-write escape hatch
+   can be replaced by a more opinionated grammar for the most common shapes.
 5. **Corpus-audit the real exhibits.** Unblocks formatting, tables, and Power Query in one pass.
 
 ## What would make this strategy wrong
@@ -241,7 +239,7 @@ multi-week investment**, because it is the only one that could make the whole ca
   argument for live Excel weakens sharply, and the file-format camp becomes more attractive than
   this document assumes.
 - If the formula-coverage measurement shows inference already covers most real demand, item 4
-  disappears and the refusal is simply correct.
+  becomes a grammar-hardening opportunity rather than a breadth gap.
 - If file-based verification is ever caught disagreeing with Excel verification on the same
   assertion, item 2 must be reverted whole — two implementations that can disagree about what a
   workbook contains is the exact defect class this project spent v0.13.0 removing.

@@ -20,6 +20,8 @@ public sealed class ExcelTaskEngineTests
             typeof(ReadWorksheetRangeOperation),
             typeof(WriteWorksheetValuesOperation),
             typeof(WorksheetCellValue),
+            typeof(WriteWorksheetFormulasOperation),
+            typeof(WorksheetCellFormula),
             typeof(FindReplaceOperation),
             typeof(CreateOperation),
             typeof(SetNumberFormatOperation),
@@ -702,7 +704,55 @@ public sealed class ExcelTaskEngineTests
         // would be the worst of both: it looks written and computes nothing.
         Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
         Assert.Contains("constants only", receipt.Summary, StringComparison.Ordinal);
-        Assert.Contains("ExtendFormulaSeries", receipt.Summary, StringComparison.Ordinal);
+        Assert.Contains("WriteWorksheetFormulas", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FormulaWriteAcceptsA1FormulaTextAsItsOwnOperation()
+    {
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            FormulaWriteRequest([("B7", "=SUM(A1:A6)")], ExcelTaskMode.Plan), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
+        var normalized = Assert.IsType<NormalizedWriteWorksheetFormulasOperation>(runtime.Plan!.Request.Operation.WriteWorksheetFormulas);
+        Assert.Equal("B7", normalized.Cells.Single().Address);
+        Assert.Equal("=SUM(A1:A6)", normalized.Cells.Single().Formula);
+    }
+
+    [Fact]
+    public async Task FormulaWriteRequiresFormulaTextBeginningWithEquals()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FormulaWriteRequest([("B7", "SUM(A1:A6)")]), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("beginning with '='", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FormulaWriteRequiresOverwriteConfirmationBecauseItChangesTheWorkbook()
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FormulaWriteRequest([("B7", "=SUM(A1:A6)")], overwriteConfirmed: false), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.NeedsConfirmation, receipt.Status);
+        Assert.Contains(receipt.Confirmation.Requirements, requirement => requirement.Code == "overwrite-same");
+    }
+
+    [Fact]
+    public async Task FormulaWriteRejectsARequestThatWouldExceedTheWorkerInputBound()
+    {
+        var cells = Enumerable.Range(1, 100)
+            .Select(row => ($"A{row}", "=" + new string('x', ExcelTaskEngine.MaxFormulaTextLength - 1)))
+            .ToArray();
+
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            FormulaWriteRequest(cells, ExcelTaskMode.Plan), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("768 KiB", receipt.Summary, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -759,6 +809,7 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.AuditWorkbookFlows, AuditWorkbookFlows: new()),
             new(ExcelOperationKind.ReadWorksheetRange, ReadWorksheetRange: new("Sheet1", "A1:B2")),
             new(ExcelOperationKind.WriteWorksheetValues, WriteWorksheetValues: new("Sheet1", [new("A1", "1")])),
+            new(ExcelOperationKind.WriteWorksheetFormulas, WriteWorksheetFormulas: new("Sheet1", [new("A1", "=1")])),
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
             new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
             new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00")),
@@ -1206,6 +1257,22 @@ public sealed class ExcelTaskEngineTests
                     "Sheet1",
                     [.. cells.Select(cell => new WorksheetCellValue(cell.Address, cell.Value))])),
             Mode: ExcelTaskMode.Apply,
+            WorkbookBinding: WorkbookBinding.Isolated,
+            Save: SaveMode.Same,
+            OutputWorkbookPath: null,
+            OverwriteConfirmed: overwriteConfirmed);
+
+    private static ExcelTaskRequest FormulaWriteRequest(
+        (string Address, string Formula)[] cells,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        bool overwriteConfirmed = true) => new(
+            TargetWorkbookPath: ".\\model.xlsx",
+            Operation: new ExcelOperation(
+                ExcelOperationKind.WriteWorksheetFormulas,
+                WriteWorksheetFormulas: new WriteWorksheetFormulasOperation(
+                    "Sheet1",
+                    [.. cells.Select(cell => new WorksheetCellFormula(cell.Address, cell.Formula))])),
+            Mode: mode,
             WorkbookBinding: WorkbookBinding.Isolated,
             Save: SaveMode.Same,
             OutputWorkbookPath: null,

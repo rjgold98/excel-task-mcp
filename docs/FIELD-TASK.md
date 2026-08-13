@@ -19,7 +19,7 @@ Three questions, in order of value. Everything else is confirmation.
 2. **What does the agent reach for instead of ExcelTask?** A previous session
    made 216 PowerShell calls against 71 ExcelTask calls. Knowing which receipt
    sent it away is worth more than any feature on the roadmap. Step 6.
-3. **Do all eleven operations still work on managed hardware?** Step 3.
+3. **Do all twelve operations still work on managed hardware?** Step 3.
 
 ## Boundaries
 
@@ -175,7 +175,7 @@ It prints a digest of about fifteen lines and writes three files to
 `Desktop\ExcelTask-FieldCheck`.
 
 **What good looks like:** every operation row reads `Completed` or `Planned`,
-every row ends `leaked=0`, the last line reads `Coverage: all 11 operations
+every row ends `leaked=0`, the last line reads `Coverage: all 12 operations
 exercised.`, and the digest ends `leaked=0 result=PASS`. Exit code `0`.
 
 ```powershell
@@ -307,7 +307,7 @@ git -C <your local clone> pull
 dotnet test ExcelTask.slnx --filter "RunType!=OnDemand" -p:NuGetAudit=false
 ```
 
-**Expected: 236 fast tests, zero failures** — Core 133, Excel 85, McpServer 18.
+**Expected: 245 fast tests, zero failures** — Core 138, Excel 88, McpServer 19.
 The current counts are also in `ROADMAP.md` under Delivered, updated each
 release; if these disagree with the roadmap, trust the roadmap and report the
 difference.
@@ -318,7 +318,7 @@ Then the full gate, which drives real Excel and takes about ten minutes:
 .\scripts\Test-Mvp.ps1 -IncludeExcel
 ```
 
-**Expected: 276 total, zero failures, and no Excel process left behind.**
+**Expected: 288 total, zero failures, and no Excel process left behind.**
 
 **Report the pass/fail/skip counts per assembly, verbatim.** "Tests passed"
 without counts will be sent back.

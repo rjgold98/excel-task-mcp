@@ -275,6 +275,26 @@ public sealed class ExcelTaskRealExcelOnDemandTests
             Assert.False(written.IsError);
             Assert.Equal(nameof(ExcelTaskStatus.Completed), written.StructuredContent!.Value.GetProperty("status").GetString());
 
+            var formulaWritten = await client.CallToolAsync(
+                "excel_task",
+                new Dictionary<string, object?>
+                {
+                    ["request"] = new ExcelTaskRequest(
+                        target,
+                        new ExcelOperation(
+                            ExcelOperationKind.WriteWorksheetFormulas,
+                            WriteWorksheetFormulas: new WriteWorksheetFormulasOperation(
+                                "Rollforward", [new WorksheetCellFormula("B1", "=SUM(1,2)")])),
+                        ExcelTaskMode.Apply,
+                        WorkbookBinding.Isolated,
+                        SaveMode.Same,
+                        null,
+                        OverwriteConfirmed: true)
+                });
+            Assert.False(formulaWritten.IsError);
+            Assert.Equal(nameof(ExcelTaskStatus.Completed), formulaWritten.StructuredContent!.Value.GetProperty("status").GetString());
+            Assert.DoesNotContain("SUM(1,2)", formulaWritten.StructuredContent.Value.GetRawText(), StringComparison.Ordinal);
+
             var replaced = await client.CallToolAsync(
                 "excel_task",
                 new Dictionary<string, object?>

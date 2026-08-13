@@ -7,7 +7,7 @@ namespace ExcelTask.McpServer.Tests;
 /// The field check's own coverage arithmetic - the first test of any kind over the ~900 lines that
 /// validate a release on the locked-down work computer.
 ///
-/// It shipped covering five of eleven operations, exercising everything from the first four
+/// It shipped covering five of twelve operations, exercising everything from the first four
 /// releases and nothing from the last four, and still reported PASS. The step list is written by
 /// hand and will stay that way, since each step needs its own fixture; what it must never do again
 /// is stay quiet about what it skipped.
@@ -45,7 +45,7 @@ public sealed class FieldCheckCoverageTests
         var uncovered = FieldCheckCoverage.UncoveredKinds(shipped);
 
         Assert.Equal(
-            ["RepairExistingWorksheet", "ReadWorksheetRange", "WriteWorksheetValues", "FindReplace", "Create", "SetNumberFormat", "ScanWorkbookStructure"],
+            ["RepairExistingWorksheet", "ReadWorksheetRange", "WriteWorksheetValues", "WriteWorksheetFormulas", "FindReplace", "Create", "SetNumberFormat", "ScanWorkbookStructure"],
             uncovered);
     }
 

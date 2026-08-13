@@ -26,7 +26,7 @@ internal sealed record ToolSurface(
 /// <summary>
 /// Reports any operation this run never exercised.
 ///
-/// The check shipped once covering five of eleven operations - everything from the first four
+/// The check shipped once covering five of twelve operations - everything from the first four
 /// releases and nothing from the last four - so a field session validated the half already proven
 /// and reported PASS. The step list is written by hand and always will be, because each step needs
 /// its own fixture and arguments; what it must not do is stay silent about what it skipped. Labels
@@ -164,7 +164,7 @@ internal static class FieldCheck
 
     /// <summary>
     /// Says out loud what this run did not exercise. A check that silently covers a subset reports
-    /// PASS for the whole product, which is exactly how it once validated five of eleven operations
+    /// PASS for the whole product, which is exactly how it once validated five of twelve operations
     /// and said nothing.
     /// </summary>
     private static void ReportCoverageGaps(List<OperationResult> operations, List<string> notes)
@@ -230,7 +230,7 @@ internal static class FieldCheck
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: false));
 
         // The operations added since the first field check. Without these the check validated five
-        // of eleven operations and nothing shipped in the four most recent releases - a work-computer
+        // of twelve operations and nothing shipped in the four most recent releases - a work-computer
         // session spent proving the half that was already proven.
         await RunAsync(client, fixtures, operations, "ScanWorkbookStructure (Plan)", new ExcelTaskRequest(
             target,
@@ -253,6 +253,16 @@ internal static class FieldCheck
             new ExcelOperation(
                 ExcelOperationKind.WriteWorksheetValues,
                 WriteWorksheetValues: new WriteWorksheetValuesOperation("Model", [new WorksheetCellValue("A4", "FieldCheck")])),
+            ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
+
+        var formulaTarget = System.IO.Path.Combine(work, "formula-write-target.xlsx");
+        System.IO.File.Copy(target, formulaTarget, overwrite: true);
+        await RunAsync(client, fixtures, operations, "WriteWorksheetFormulas (Apply)", new ExcelTaskRequest(
+            formulaTarget,
+            new ExcelOperation(
+                ExcelOperationKind.WriteWorksheetFormulas,
+                WriteWorksheetFormulas: new WriteWorksheetFormulasOperation(
+                    "Model", [new WorksheetCellFormula("A4", "=SUM(A1:D1)")])),
             ExcelTaskMode.Apply, WorkbookBinding.Isolated, SaveMode.Same, null, OverwriteConfirmed: true));
 
         // Its own copy, because it repairs the same row SetNumberFormat later formats. Found by the
