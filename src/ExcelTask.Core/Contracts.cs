@@ -6,8 +6,14 @@ public enum ExcelTaskMode { Plan, Apply }
 public enum WorkbookBinding { AskIfOpen, UseOpen, Isolated }
 public enum SaveMode { Same, Copy }
 public enum ExcelTaskStatus { Planned, NeedsConfirmation, Completed, Rejected, Partial, Unknown }
-public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, WriteWorksheetFormulas, FindReplace, Create, SetNumberFormat, ScanWorkbookStructure }
+public enum ExcelOperationKind { CopyExhibit, RepairExistingWorksheet, ExtendFormulaSeries, EditMacroProcedure, AuditWorkbookFlows, ReadWorksheetRange, WriteWorksheetValues, WriteWorksheetFormulas, FindReplace, Create, SetRangeFormat, ScanWorkbookStructure, ManageTable, ManageQuery, ManageModelMeasure, ManageModelRelationship }
 public enum CreateKind { Workbook, Worksheet }
+
+/// <summary>What a table request does. ConvertToRange keeps every cell and drops only the table.</summary>
+public enum TableAction { Create, Rename, Restyle, Resize, ConvertToRange }
+
+/// <summary>What a Power Query request does.</summary>
+public enum QueryAction { Create, Replace, Delete }
 public enum FormulaExtensionDirection { Right, Down }
 
 public sealed record CopyExhibitOperation(
@@ -58,7 +64,7 @@ public sealed record AuditWorkbookFlowsOperation();
 /// range, capped cell text, and blanks omitted.
 /// </summary>
 public sealed record ReadWorksheetRangeOperation(
-    [property: Description("Existing worksheet name to read. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to read. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("One bounded A1 range to read, at most 400 cells. Narrow the range and read again if more is needed.")] string Range,
     [property: Description("False returns displayed values; true returns R1C1 formulas instead, for comparing a formula pattern.")] bool Formulas = false);
 
@@ -79,7 +85,7 @@ public sealed record ReadWorksheetRangeOperation(
 /// separate formula-write operation when a formula is intentional.
 /// </summary>
 public sealed record WriteWorksheetValuesOperation(
-    [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to write to. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("Cells to write, at most 200. Each address must fall inside one bounded A1 range no larger than 400 cells.")] IReadOnlyList<WorksheetCellValue> Cells);
 
 /// <summary>One constant to write. Text starting with = is rejected; this operation never writes formulas.</summary>
@@ -99,13 +105,13 @@ public sealed record WorksheetCellValue(
 /// stronger choice because it can prove the intended pattern rather than only the stored formula.
 /// </summary>
 public sealed record WriteWorksheetFormulasOperation(
-    [property: Description("Existing worksheet name to write to. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
-    [property: Description("Up to 200 single-cell A1 formulas; each begins with =, is at most 8,192 characters, all addresses fit within a 400-cell span, and total UTF-8 formula text is at most 768 KiB.")] IReadOnlyList<WorksheetCellFormula> Cells);
+    [property: Description("Worksheet.")] string WorksheetName,
+    [property: Description("200 A1 formulas; starts =; max 8,192 chars; span 400; UTF-8 768 KiB.")] IReadOnlyList<WorksheetCellFormula> Cells);
 
 /// <summary>One caller-supplied A1 formula. Formula text is stored in the workbook but withheld from receipts.</summary>
 public sealed record WorksheetCellFormula(
-    [property: Description("Single A1 cell, such as B7.")] string Address,
-    [property: Description("A1 formula beginning with =; stored and verified, never returned.")] string Formula);
+    [property: Description("A1 cell.")] string Address,
+    [property: Description("Starts =; never returned.")] string Formula);
 
 /// <summary>
 /// Finds cells whose text matches, and optionally replaces it.
@@ -117,7 +123,7 @@ public sealed record WorksheetCellFormula(
 /// server refuses everywhere else and a find/replace is no different.
 /// </summary>
 public sealed record FindReplaceOperation(
-    [property: Description("Existing worksheet name to search. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
+    [property: Description("Existing worksheet name to search. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
     [property: Description("Text to find, at most 200 characters. Matching is plain text on what the cell displays; * and ? are literal, not wildcards.")] string Find,
     [property: Description("Apply only, and must be omitted for Plan: replacement text, at most 200 characters. Cells holding formulas are reported but never rewritten, and a replacement that would leave a cell starting with = is refused before anything is written.")] string? ReplaceWith = null,
     [property: Description("One bounded A1 range to search, at most 10,000 cells; omit to search the worksheet's used range when it is within that bound.")] string? Range = null,
@@ -143,16 +149,34 @@ public sealed record CreateOperation(
 /// and had no way to make it read as 1,000.50 or (1,000.50), so a correct number could still be
 /// presented wrongly - which for a financial exhibit is the difference between usable and not.
 ///
-/// It is deliberately only the number format. Fonts, fills, borders, widths and conditional formats
-/// are not here and are not coming without evidence: the measured demand names the tool, not which
-/// of its operations were used, and building all of it on a tool-level count is how a server ends
-/// up with 230 operations and no idea which matter. The name says exactly what it sets so a caller
-/// does not spend a round trip discovering the rest is missing.
+/// It shipped as number format alone, deliberately, because the measured demand named the tool and
+/// not which of its operations were used - and building all of a tool on a tool-level count is how a
+/// server ends up with 230 operations and no idea which matter. The owner has since asked for the
+/// rest by name, which is the evidence that entry was waiting for.
+///
+/// Every appearance field is optional and independent. Omitted means "leave it as it is", which
+/// matters more here than anywhere else in the product: formatting is the one mutation with no
+/// recoverable prior state on the sheet, so a caller changing a fill must not have to restate a
+/// font it never looked at. At least one field must be supplied, because a request that changes
+/// nothing is a mistake worth naming rather than a no-op worth performing.
+///
+/// Still absent, and still on the same evidence rule: conditional formats, merged cells, alignment,
+/// and styles by name.
 /// </summary>
-public sealed record SetNumberFormatOperation(
-    [property: Description("Existing worksheet name to format. Run AuditWorkbookFlows first if the sheet names are unknown.")] string WorksheetName,
-    [property: Description("One bounded A1 range to format, at most 10,000 cells. The format applies to every cell in it, including blank ones.")] string Range,
-    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string NumberFormat);
+public sealed record SetRangeFormatOperation(
+    [property: Description("Existing worksheet name to format. If unknown, run ScanWorkbookStructure - it names them and starts no Excel.")] string WorksheetName,
+    [property: Description("One bounded A1 range to format, at most 10,000 cells. Formatting applies to every cell in it, including blank ones.")] string Range,
+    [property: Description("Excel number format code in US-English form, at most 255 characters, such as #,##0.00 or #,##0;(#,##0) or 0.0% or yyyy-mm-dd or General to clear formatting.")] string? NumberFormat = null,
+    [property: Description("True bolds, false clears bold; omit to leave it as it is.")] bool? Bold = null,
+    [property: Description("True italicises, false clears it; omit to leave it as it is.")] bool? Italic = null,
+    [property: Description("Font point size, 1 to 409.")] double? FontSize = null,
+    [property: Description("Font name. Excel stores whatever it is given and renders a substitute when the font is not installed, so a wrong name cannot be detected here - check the spelling.")] string? FontName = null,
+    [property: Description("Text colour as #RRGGBB.")] string? FontColor = null,
+    [property: Description("Cell background as #RRGGBB, or None to clear it.")] string? FillColor = null,
+    [property: Description("Which edges to draw: All, Outline, Top, Bottom, Left, Right, or None to clear them.")] string? Borders = null,
+    [property: Description("Border weight, used only with borders: Hairline, Thin, Medium, or Thick. Thin when omitted.")] string? BorderStyle = null,
+    [property: Description("Column width in characters, 0 to 255. Applies to every column the range touches, not only the cells in it.")] double? ColumnWidth = null,
+    [property: Description("Row height in points, 0 to 409. Applies to every row the range touches, not only the cells in it.")] double? RowHeight = null);
 
 /// <summary>
 /// Maps a workbook's structure by reading the file directly - no Excel process at all.
@@ -174,21 +198,111 @@ public sealed record SetNumberFormatOperation(
 /// </summary>
 public sealed record ScanWorkbookStructureOperation();
 
+/// <summary>
+/// Creates or changes one Excel table (a ListObject), beyond the listing the audit and the scan
+/// already give.
+///
+/// A table is the unit a lot of real work is organised around - structured references, a growing
+/// range that formulas follow, a style that survives inserted rows - and until now this server could
+/// tell you one existed and nothing else. Every action here is reversible by another call except
+/// ConvertToRange, which is why that one keeps the cells and only drops the table over them.
+///
+/// Deliberately absent: adding or removing columns, and sorting or filtering. Those change what the
+/// data says rather than how it is organised, and belong with the operations that already prove a
+/// value round trip rather than here.
+/// </summary>
+public sealed record ManageTableOperation(
+    [property: Description("Existing worksheet name holding the table, or where a new one goes.")] string WorksheetName,
+    [property: Description("Create, Rename, Restyle, Resize, or ConvertToRange - which keeps every cell and drops only the table over them.")] TableAction Action,
+    [property: Description("The table to act on, as the audit or scan reports it. For Create, the name the new table takes.")] string TableName,
+    [property: Description("A1 range for Create and Resize, including the header row. Ignored by the others.")] string? Range = null,
+    [property: Description("The new name, for Rename only. Must not already be in use.")] string? NewName = null,
+    [property: Description("Style name for Create and Restyle, such as TableStyleMedium2, or None for an unstyled table.")] string? TableStyle = null);
+
+/// <summary>
+/// Creates, replaces, or deletes one Power Query, guarded the way a macro edit is.
+///
+/// A query decides where a workbook's data comes from, which makes replacing one at least as
+/// consequential as replacing a macro procedure: a plausible-looking M expression pointing at the
+/// wrong source produces a workbook full of numbers that are all wrong and all confident. So it
+/// borrows the macro operation's precondition exactly. Plan reports the current query's fingerprint,
+/// and Apply must carry that fingerprint back, which fails if anything changed in between.
+///
+/// Plan returns the current expression alongside the fingerprint, the way macro Plan returns
+/// bounded VBA source. It did not until 0.20.0. An M expression very often names a server and a
+/// database and sometimes a key - Sql.Database(...) and Web.Contents(...) are the ordinary way to
+/// write one - so the expression was withheld and the caller was told to go read it in Excel. That
+/// withheld it from the one reader that has to understand a query in order to replace it correctly,
+/// and it made every replacement a blind edit guarded only by a hash. The owner asked for the text;
+/// PRIVACY.md section 4 states plainly what now crosses the boundary.
+///
+/// It is bounded the way macro source is: at most 8,192 characters, and OMITTED rather than
+/// truncated past that. Half an M expression reads exactly like a whole one, and a caller that sent
+/// one back as a replacement would destroy the query it meant to edit.
+/// </summary>
+public sealed record ManageQueryOperation(
+    [property: Description("The query to act on, as AuditWorkbookFlows lists it. For Create, the name the new query takes.")] string QueryName,
+    [property: Description("Create, Replace, or Delete. Delete removes the definition and leaves any worksheet it already loaded to.")] QueryAction Action,
+    [property: Description("Apply only, for Create and Replace: the complete M expression, at most 8,192 characters, as the Power Query editor shows it.")] string? Formula = null,
+    [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the query being changed, taken from the Plan receipt.")] string? ExpectedFormulaSha256 = null);
+
+/// <summary>
+/// Creates, replaces, or deletes one Data Model measure, guarded by the same fingerprint the query
+/// and macro operations use.
+///
+/// A measure is a DAX expression every pivot over the model reads through, so a wrong one is wrong
+/// everywhere at once and silently - which is why this carries a precondition rather than trusting
+/// the name alone. Unlike an M expression, DAX names columns in the model rather than servers, so
+/// the Plan receipt reports the expression as well as its fingerprint; there is nothing here that
+/// the audit would refuse to return.
+///
+/// Only measures. Model tables come from loading a query into the model - use ManageQuery - and
+/// relationships are not here yet, because a wrong relationship silently changes every number the
+/// model produces and the operation that adds one should be able to show what it would join before
+/// it does it.
+/// </summary>
+public sealed record ManageModelMeasureOperation(
+    [property: Description("Data Model table the measure belongs to, as AuditWorkbookFlows lists it. Load a query into the model with ManageQuery first if there is none.")] string TableName,
+    [property: Description("The measure to create, replace, or delete.")] string MeasureName,
+    [property: Description("Create, Replace, or Delete.")] QueryAction Action,
+    [property: Description("Apply only, for Create and Replace: the DAX expression, with NO leading equals sign, at most 8,192 characters. For example SUM(Sales[Amount]).")] string? Formula = null,
+    [property: Description("Apply only for Replace and Delete, and must be omitted for Plan: SHA-256 fingerprint of the measure being changed, taken from the Plan receipt.")] string? ExpectedFormulaSha256 = null);
+
+/// <summary>
+/// Creates or deletes one Data Model relationship.
+///
+/// A relationship decides how every pivot over the model aggregates, so a wrong one is wrong
+/// everywhere at once and produces numbers rather than errors. There is no expression to fingerprint
+/// here, so the precondition is the Plan itself: it confirms both tables and both columns exist and
+/// lists the relationships already joining them, so the join can be read before it is made. Replace
+/// is refused by name - a relationship is not edited in place, and delete-then-create says so.
+/// </summary>
+public sealed record ManageModelRelationshipOperation(
+    [property: Description("Data Model table on the MANY side - the fact table, whose column repeats.")] string FromTable,
+    [property: Description("Column on the many side, the foreign key.")] string FromColumn,
+    [property: Description("Data Model table on the ONE side - the lookup table, whose column is unique. Excel refuses the relationship if it is not.")] string ToTable,
+    [property: Description("Column on the one side, the primary key.")] string ToColumn,
+    [property: Description("Create or Delete. Replace is rejected: delete the relationship and create the new one.")] QueryAction Action);
+
 /// <summary>Manual closed union for the operation selected by the one Excel task.</summary>
 public sealed record ExcelOperation(
     [property: Description("Selects which one operation payload is supplied.")] ExcelOperationKind Kind,
-    [property: Description("Required only when kind is CopyExhibit; all other payloads must be null.")] CopyExhibitOperation? CopyExhibit = null,
-    [property: Description("Required only when kind is RepairExistingWorksheet; all other payloads must be null.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
-    [property: Description("Required only when kind is ExtendFormulaSeries; all other payloads must be null.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
-    [property: Description("Required only when kind is EditMacroProcedure; all other payloads must be null.")] EditMacroProcedureOperation? EditMacroProcedure = null,
-    [property: Description("Required only when kind is AuditWorkbookFlows; all other payloads must be null. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
-    [property: Description("Required only when kind is ReadWorksheetRange; all other payloads must be null. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
-    [property: Description("Required only when kind is WriteWorksheetValues; all other payloads must be null. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
-    [property: Description("Required only for WriteWorksheetFormulas; writes A1 formulas, reads/saves/reopens/verifies them, and never returns formula text.")] WriteWorksheetFormulasOperation? WriteWorksheetFormulas = null,
-    [property: Description("Required only when kind is FindReplace; all other payloads must be null. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
-    [property: Description("Required only when kind is Create; all other payloads must be null. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
-    [property: Description("Required only when kind is SetNumberFormat; all other payloads must be null. Sets how a range displays its numbers. Plan reports the range's current format and changes nothing. It changes no cell values, and it sets nothing else: no fonts, fills, borders, widths, or conditional formats.")] SetNumberFormatOperation? SetNumberFormat = null,
-    [property: Description("Required only for ScanWorkbookStructure; supply {}. Reads the package directly without Excel and reports sheet dimensions, formula/constant counts, defined names, tables, external links, and constant islands. Counts only. It omits macros, queries, connections, and the data model; use AuditWorkbookFlows for those. Use it before deciding what to read or fix.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null);
+    [property: Description("Required when kind is CopyExhibit.")] CopyExhibitOperation? CopyExhibit = null,
+    [property: Description("Required when kind is RepairExistingWorksheet.")] RepairExistingWorksheetOperation? RepairExistingWorksheet = null,
+    [property: Description("Required when kind is ExtendFormulaSeries.")] ExtendFormulaSeriesOperation? ExtendFormulaSeries = null,
+    [property: Description("Required when kind is EditMacroProcedure.")] EditMacroProcedureOperation? EditMacroProcedure = null,
+    [property: Description("Required when kind is AuditWorkbookFlows. It takes no options, so supply the empty object {} - omitting it entirely is rejected. The read-only report lists worksheets, tables, defined names, queries, connections, macro components and procedures, the data model, pivots, and external links.")] AuditWorkbookFlowsOperation? AuditWorkbookFlows = null,
+    [property: Description("Required when kind is ReadWorksheetRange. Reads one bounded range and returns its contents.")] ReadWorksheetRangeOperation? ReadWorksheetRange = null,
+    [property: Description("Required when kind is WriteWorksheetValues. Writes constants into named cells and reads them back. Never accepts formula text.")] WriteWorksheetValuesOperation? WriteWorksheetValues = null,
+    [property: Description("Formula-write payload.")] WriteWorksheetFormulasOperation? WriteWorksheetFormulas = null,
+    [property: Description("Required when kind is FindReplace. Plan lists the matching cells and changes nothing - also how to locate a known label; Apply rewrites the constants among them.")] FindReplaceOperation? FindReplace = null,
+    [property: Description("Required when kind is Create. Creates an empty workbook or adds an empty worksheet.")] CreateOperation? Create = null,
+    [property: Description("Required when kind is SetRangeFormat. Sets how a range looks: number format, bold, italic, font size/name/colour, fill, borders, column width, row height. Every field is optional and independent - omit one to leave it as it is - and at least one must be supplied. Plan reports what is there now and changes nothing. It never changes a cell value.")] SetRangeFormatOperation? SetRangeFormat = null,
+    [property: Description("Required when kind is ScanWorkbookStructure; supply the empty object {}. Reads the file directly without starting Excel - fast on any size. Reports each sheet's dimension and formula/constant counts, defined names, tables, and external links by file name, and flags mostly-formula columns holding scattered constants: the shape of a manual override. Counts only, never contents. It reports nothing about macros, queries, connections, or the data model, which are unreadable without Excel; absence here is not evidence, so use AuditWorkbookFlows when those matter.")] ScanWorkbookStructureOperation? ScanWorkbookStructure = null,
+    [property: Description("Required when kind is ManageTable. Creates or changes one Excel table: create over a range, rename, restyle, resize, or convert back to plain cells. Plan reports it as it is now and changes nothing.")] ManageTableOperation? ManageTable = null,
+    [property: Description("Required when kind is ManageQuery. Creates, replaces, or deletes one Power Query. Plan reports the query''s current M expression and fingerprint; Apply must carry the fingerprint back.")] ManageQueryOperation? ManageQuery = null,
+    [property: Description("Required when kind is ManageModelMeasure. Creates, replaces, or deletes one Data Model measure. Plan reports the DAX and its fingerprint; Apply must carry the fingerprint back.")] ManageModelMeasureOperation? ManageModelMeasure = null,
+    [property: Description("Required when kind is ManageModelRelationship. Creates or deletes one Data Model relationship, from the many side to the one side. Plan names the join and lists what already joins those tables.")] ManageModelRelationshipOperation? ManageModelRelationship = null);
 
 public sealed record ExcelTaskRequest(
     [property: Description("Target workbook path, ending .xlsx or .xlsm. It must already exist for every operation except Create with kind Workbook, where it must not.")] string TargetWorkbookPath,
@@ -275,9 +389,23 @@ public sealed record NormalizedFindReplaceOperation(string WorksheetName, string
 
 public sealed record NormalizedCreateOperation(CreateKind Kind, string? WorksheetName);
 
-public sealed record NormalizedSetNumberFormatOperation(string WorksheetName, FormulaRepairRange Range, string NumberFormat);
+public sealed record NormalizedSetRangeFormatOperation(string WorksheetName, FormulaRepairRange Range, string? NumberFormat, bool? Bold, bool? Italic, double? FontSize, string? FontName, int? FontColor, int? FillColor, RangeBorderEdges Borders, RangeBorderWeight BorderStyle, double? ColumnWidth, double? RowHeight);
+
+/// <summary>Which edges a border request draws. None clears them.</summary>
+public enum RangeBorderEdges { Unspecified, None, All, Outline, Top, Bottom, Left, Right }
+
+/// <summary>Border weight, mapped to Excel's own weights rather than exposing its numbers.</summary>
+public enum RangeBorderWeight { Thin, Hairline, Medium, Thick }
 
 public sealed record NormalizedScanWorkbookStructureOperation();
+
+public sealed record NormalizedManageTableOperation(string WorksheetName, TableAction Action, string TableName, FormulaRepairRange? Range, string? NewName, string? TableStyle);
+
+public sealed record NormalizedManageQueryOperation(string QueryName, QueryAction Action, string? Formula, string? ExpectedFormulaSha256);
+
+public sealed record NormalizedManageModelMeasureOperation(string TableName, string MeasureName, QueryAction Action, string? Formula, string? ExpectedFormulaSha256);
+
+public sealed record NormalizedManageModelRelationshipOperation(string FromTable, string FromColumn, string ToTable, string ToColumn, QueryAction Action);
 
 /// <summary>Validated internal counterpart of <see cref="ExcelOperation"/>. It contains no legacy flat request fields.</summary>
 public sealed record NormalizedExcelOperation(
@@ -292,8 +420,12 @@ public sealed record NormalizedExcelOperation(
     NormalizedWriteWorksheetFormulasOperation? WriteWorksheetFormulas = null,
     NormalizedFindReplaceOperation? FindReplace = null,
     NormalizedCreateOperation? Create = null,
-    NormalizedSetNumberFormatOperation? SetNumberFormat = null,
-    NormalizedScanWorkbookStructureOperation? ScanWorkbookStructure = null);
+    NormalizedSetRangeFormatOperation? SetRangeFormat = null,
+    NormalizedScanWorkbookStructureOperation? ScanWorkbookStructure = null,
+    NormalizedManageTableOperation? ManageTable = null,
+    NormalizedManageQueryOperation? ManageQuery = null,
+    NormalizedManageModelMeasureOperation? ManageModelMeasure = null,
+    NormalizedManageModelRelationshipOperation? ManageModelRelationship = null);
 
 public sealed record NormalizedExcelTaskRequest(
     string TargetWorkbookPath,
@@ -308,6 +440,16 @@ public sealed record ExcelTaskPlan(string TaskId, NormalizedExcelTaskRequest Req
 public sealed record TaskChange(string Kind, string Target, string Summary);
 public sealed record TaskCheck(string Name, bool Passed, string Detail);
 public sealed record MacroProcedureReceipt(string ComponentName, string ProcedureName, string Sha256, string? Source, bool RunRequested, bool RunCompleted);
+
+/// <summary>
+/// One Power Query as Plan found it. <paramref name="Formula"/> is the stored M expression, present
+/// on Plan and null on Apply - the same split macro source uses, because Apply's answer is what
+/// changed, not what was there.
+///
+/// Null also means "too long to send whole": past 8,192 characters the expression is omitted rather
+/// than cut, so <paramref name="Length"/> is the field that always tells the truth about size.
+/// </summary>
+public sealed record QueryReceipt(string QueryName, string Sha256, int Length, string? Formula);
 
 /// <summary>
 /// One element of a workbook's data flow. <paramref name="Kind"/> says what it is - a query, a
@@ -360,10 +502,10 @@ public sealed record WorksheetRangeReceipt(
 /// what a runtime supplies is advisory and, today, decorative for every status a mutation path
 /// actually produces.
 /// </summary>
-public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
+public sealed record WorkbookExecutionOutcome(ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange>? Changes = null, IReadOnlyList<TaskCheck>? Checks = null, bool CanRetry = false, string? RetryReason = null, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null, QueryReceipt? Query = null);
 public sealed record SaveReceipt(SaveMode Mode, string? OutputWorkbookPath, bool OverwriteConfirmed);
 public sealed record RetryReceipt(bool CanRetry, string? Reason);
 public sealed record ConfirmationRequirement(string Code, string Prompt);
 public sealed record ConfirmationReceipt(bool Required, IReadOnlyList<ConfirmationRequirement> Requirements);
 public sealed record PhaseTimings(TimeSpan Validation, TimeSpan Inspection, TimeSpan Execution, TimeSpan Total);
-public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null);
+public sealed record ExcelTaskReceipt(string TaskId, ExcelTaskStatus Status, string Summary, IReadOnlyList<TaskChange> Changes, IReadOnlyList<TaskCheck> Checks, SaveReceipt Save, RetryReceipt Retry, ConfirmationReceipt Confirmation, PhaseTimings Timings, MacroProcedureReceipt? MacroProcedure = null, WorkbookAuditReceipt? Audit = null, WorksheetRangeReceipt? Range = null, QueryReceipt? Query = null);

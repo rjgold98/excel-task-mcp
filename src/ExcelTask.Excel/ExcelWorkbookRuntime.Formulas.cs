@@ -72,7 +72,7 @@ public sealed partial class ExcelWorkbookRuntime
         return false;
     }
 
-    private static void CopyReferenceWorksheet(ExcelSession session, string referenceSheetName, string newSheetName, Action<string> updatePhase)
+    private static CopyRebindResult CopyReferenceWorksheet(ExcelSession session, string referenceSheetName, string newSheetName, Action<string> updatePhase)
     {
         using var references = new ComReferenceScope();
         updatePhase("worksheet-copy-reference-sheets");
@@ -90,6 +90,158 @@ public sealed partial class ExcelWorkbookRuntime
         var copiedSheet = references.Add(Item(targetSheets, count + 1));
         updatePhase("worksheet-copy-rename");
         Set(copiedSheet, "Name", newSheetName);
+
+        updatePhase("worksheet-copy-rebind");
+        return RebindCopiedReferences(session, targetSheets, copiedSheet, references);
+    }
+
+    /// <summary>
+    /// What happened to the references Excel rewrote when it copied the sheet.
+    /// <paramref name="Rebound"/> names sheets pointed back inside the target;
+    /// <paramref name="StillExternal"/> names sheets the target does not have, which therefore
+    /// cannot be made internal and are reported instead.
+    /// </summary>
+    private sealed record CopyRebindResult(IReadOnlyList<string> Rebound, IReadOnlyList<string> StillExternal);
+
+    /// <summary>
+    /// Points the copied sheet's formulas back at the target workbook.
+    ///
+    /// Excel does not copy a worksheet's formulas verbatim. A formula reading another sheet in the
+    /// source - =Data!A1 - becomes ='[source.xlsx]Data'!A1 in the destination, because the sheet it
+    /// named is not there. The copy still calculates, which is what makes this so quiet: the numbers
+    /// look right and are read out of the workbook the exhibit was copied FROM, so the new sheet
+    /// reports the template's figures rather than the workbook it now lives in, and it breaks the
+    /// day the template moves.
+    ///
+    /// Measured in the field before it was measured here: one copy produced 305 externally linked
+    /// formula cells, and the follow-up repair fixed none of them.
+    ///
+    /// Where the target has a sheet of the same name, the prefix is removed and the formula binds
+    /// locally - verified: the values change to the target's own numbers and the external link
+    /// disappears. Where it does not, nothing is rewritten, because pointing a formula at a sheet
+    /// that does not exist would turn a wrong number into a #REF. Those are named in the receipt so
+    /// the caller learns it rather than discovering it a quarter later.
+    /// </summary>
+    private static CopyRebindResult RebindCopiedReferences(
+        ExcelSession session,
+        object targetSheets,
+        object copiedSheet,
+        ComReferenceScope references)
+    {
+        var sourceName = Get(session.ReferenceWorkbook, "Name") as string;
+        if (string.IsNullOrEmpty(sourceName)) return new CopyRebindResult([], []);
+
+        var used = references.Add(Get(copiedSheet, "UsedRange"));
+        var formulas = GetOrNull(used, "Formula");
+        var referenced = ExternalSheetNames(formulas, sourceName);
+        if (referenced.Count == 0) return new CopyRebindResult([], []);
+
+        List<string> rebound = [];
+        List<string> stillExternal = [];
+        foreach (var sheetName in referenced)
+        {
+            if (!WorksheetExists(targetSheets, sheetName, references))
+            {
+                stillExternal.Add(sheetName);
+                continue;
+            }
+
+            // Text replacement rather than per-cell assignment. Assigning a formula back cell by
+            // cell is what the field repair tried, and Excel re-resolved each one to the external
+            // form; replacing the prefix in place leaves Excel nothing to re-resolve.
+            // The quoted form carries doubled apostrophes, because that is how Excel wrote it; the
+            // bare form only ever appears for a name that needed no quoting, so it has none.
+            var quoted = $"'[{sourceName}]{sheetName.Replace("'", "''", StringComparison.Ordinal)}'!";
+            var bare = $"[{sourceName}]{sheetName}!";
+            var replacement = $"{QuoteSheetIfNeeded(sheetName)}!";
+            Invoke(used, "Replace", quoted, replacement, XlPart, XlByRows, false);
+            Invoke(used, "Replace", bare, replacement, XlPart, XlByRows, false);
+            rebound.Add(sheetName);
+        }
+
+        return new CopyRebindResult(rebound, stillExternal);
+    }
+
+    private const int XlPart = 2;
+    private const int XlByRows = 1;
+
+    /// <summary>
+    /// A sheet name written back into a formula, quoted exactly when Excel requires it.
+    ///
+    /// "Every character is alphanumeric" is not Excel's rule and reading it as one produced two
+    /// wrong formulas. A name that starts with a digit needs quotes - <c>2024</c> and <c>2025</c>
+    /// are ordinary fiscal-year tabs, and <c>=2024!A1</c> is not a formula Excel accepts. So does a
+    /// name that is itself a cell or row/column reference: <c>A1</c>, <c>R1</c>, <c>C5</c>. And an
+    /// apostrophe inside a quoted name has to be doubled, or the quotes close early.
+    /// </summary>
+    internal static string QuoteSheetIfNeeded(string sheetName) =>
+        NeedsQuoting(sheetName)
+            ? $"'{sheetName.Replace("'", "''", StringComparison.Ordinal)}'"
+            : sheetName;
+
+    private static bool NeedsQuoting(string sheetName)
+    {
+        if (sheetName.Length == 0) return true;
+        if (!sheetName.All(character => char.IsLetterOrDigit(character) || character == '_')) return true;
+        if (char.IsDigit(sheetName[0])) return true;
+        return LooksLikeCellReference(sheetName);
+    }
+
+    /// <summary>
+    /// Whether the name would be read as a reference rather than a sheet: A1-style, or the R/C
+    /// forms Excel reserves whole. Deliberately generous - quoting a name that did not need it is
+    /// still a valid formula, while failing to quote one that did is not.
+    /// </summary>
+    private static bool LooksLikeCellReference(string name)
+    {
+        if (name.Length == 1 && (name[0] is 'R' or 'C' or 'r' or 'c')) return true;
+
+        var index = 0;
+        while (index < name.Length && char.IsLetter(name[index])) index++;
+        if (index == 0 || index > 3 || index == name.Length) return false;
+        return name[index..].All(char.IsDigit);
+    }
+
+    /// <summary>
+    /// Every sheet of the source workbook that the copied formulas now point at, read from the
+    /// bulk formula array rather than cell by cell.
+    /// </summary>
+    internal static SortedSet<string> ExternalSheetNames(object? formulas, string sourceWorkbookName)
+    {
+        SortedSet<string> names = new(StringComparer.OrdinalIgnoreCase);
+        var marker = $"[{sourceWorkbookName}]";
+
+        void Scan(string? formula)
+        {
+            if (formula is null) return;
+            var from = 0;
+            while (true)
+            {
+                var start = formula.IndexOf(marker, from, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) return;
+                var nameStart = start + marker.Length;
+                var end = formula.IndexOf('!', nameStart);
+                if (end < 0) return;
+                // Un-double the apostrophes Excel doubled on the way in. A sheet named Payer's Data
+                // arrives as '[source.xlsx]Payer''s Data'!, and reading it literally produced a
+                // name that could never match the real sheet - so a fixable exhibit was left
+                // external and the receipt named a worksheet that does not exist.
+                var sheet = formula[nameStart..end].TrimEnd('\'').Replace("''", "'", StringComparison.Ordinal);
+                if (sheet.Length > 0) names.Add(sheet);
+                from = end + 1;
+            }
+        }
+
+        if (formulas is Array array)
+        {
+            foreach (var value in array) Scan(value as string);
+        }
+        else
+        {
+            Scan(formulas as string);
+        }
+
+        return names;
     }
 
     private static FormulaExecutionPlan AnalyzeFormulaPlan(ExcelSession session, NormalizedExcelOperation operation) => operation.Kind switch

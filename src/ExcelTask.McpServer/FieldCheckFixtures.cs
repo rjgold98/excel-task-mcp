@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -42,14 +43,30 @@ internal sealed class FieldCheckFixtures
     public static int CountLeakedAfterSettling(
         ISet<ProcessIdentity> before,
         IReadOnlyCollection<ProcessIdentity> harnessOwned,
+        TimeSpan timeout) => LeakedAfterSettling(before, harnessOwned, timeout).Count;
+
+    /// <summary>
+    /// The same wait, returning which processes were still up rather than only how many.
+    ///
+    /// The identities are what let a per-operation figure be corrected later. An operation's own
+    /// wait can expire while Excel is genuinely still shutting down - four connected COM add-ins on
+    /// the work computer push teardown past twenty seconds where a clean machine finishes in three -
+    /// and the run then prints "Leaked Excel: 2" beside an operation that leaked nothing. Keeping the
+    /// identities means the final snapshot can settle the question exactly: a process still alive at
+    /// the end leaked, one that has since exited was only slow.
+    /// </summary>
+    public static IReadOnlyList<ProcessIdentity> LeakedAfterSettling(
+        ISet<ProcessIdentity> before,
+        IReadOnlyCollection<ProcessIdentity> harnessOwned,
         TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (true)
         {
             var leaked = SnapshotExcelProcesses()
-                .Count(identity => !before.Contains(identity) && !harnessOwned.Contains(identity));
-            if (leaked == 0 || DateTime.UtcNow >= deadline) return leaked;
+                .Where(identity => !before.Contains(identity) && !harnessOwned.Contains(identity))
+                .ToArray();
+            if (leaked.Length == 0 || DateTime.UtcNow >= deadline) return leaked;
             Thread.Sleep(250);
         }
     }
@@ -131,6 +148,60 @@ internal sealed class FieldCheckFixtures
         }
     }
 
+    /// <summary>
+    /// Creates a workbook whose Data Model holds two joinable tables, or returns why this machine
+    /// would not. The fact table's key repeats and the lookup table's key is unique, because that is
+    /// what a one-to-many relationship requires and Excel refuses one whose one side is not.
+    ///
+    /// A measure and a relationship both have nothing to act on without model tables, and a model
+    /// table only exists once a query has been loaded into the model - so these steps depend on
+    /// Power Query being permitted here. When it is not, the reason is reported and those rows are
+    /// skipped, rather than a policy refusal being counted against the product. Both fixtures come
+    /// from one Excel launch, which is most of what a step costs.
+    /// </summary>
+    public string? TryCreateModelFixture(string path, string factTable, string lookupTable)
+    {
+        var application = Start();
+        try
+        {
+            var workbooks = Get(application, "Workbooks");
+            var workbook = Invoke(workbooks, "Add")!;
+            var queries = Get(workbook, "Queries");
+            Invoke(queries, "Add", lookupTable, "let Source = #table({\"K\",\"Label\"}, {{1,\"a\"},{2,\"b\"}}) in Source");
+            Invoke(queries, "Add", factTable, "let Source = #table({\"K\",\"Amount\"}, {{1,10},{1,20},{2,30}}) in Source");
+
+            // CreateModelConnection is the argument that lands these in the model rather than on a
+            // sheet; 6 is xlCmdExcel, and the Mashup provider is how a query is addressed as a
+            // data source. Excel names each model table after its query, which is what the measure
+            // and relationship steps then ask for.
+            var connections = Get(workbook, "Connections");
+            foreach (var name in new[] { lookupTable, factTable })
+            {
+                Invoke(connections, "Add2", name + "Conn", "field check model connection",
+                    $"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location={name}",
+                    name, 6, true, false);
+            }
+
+            var tables = Get(Get(workbook, "Model"), "ModelTables");
+            var count = Convert.ToInt32(Get(tables, "Count"), CultureInfo.InvariantCulture);
+            Invoke(workbook, "SaveAs", path);
+            Invoke(workbook, "Close", false);
+            return count >= 2
+                ? null
+                : $"Excel accepted the queries but produced {count} Data Model table(s) rather than two, so Data Model measures and relationships were not measured.";
+        }
+        catch (Exception exception) when (exception is COMException or TargetInvocationException or InvalidOperationException)
+        {
+            return "The Data Model fixture could not be created, so Data Model measures and relationships were not measured. " +
+                   "This usually means Power Query or the Data Model is unavailable or not permitted on this machine. " +
+                   $"Underlying error: {exception.Message.ReplaceLineEndings(" ").Trim()}";
+        }
+        finally
+        {
+            Close(application);
+        }
+    }
+
     public void TerminateOwnedProcesses()
     {
         foreach (var identity in _ownedProcesses)
@@ -157,13 +228,19 @@ internal sealed class FieldCheckFixtures
             ?? throw new InvalidOperationException("Microsoft Excel is not registered on this machine.");
         var application = Activator.CreateInstance(type)
             ?? throw new InvalidOperationException("Microsoft Excel could not be started.");
-        Set(application, "Visible", false);
-        Set(application, "DisplayAlerts", false);
+
+        // Registered before it is configured, not after. A throw from either property write - and
+        // RPC_E_SERVERCALL_RETRYLATER off a mid-launch Excel is exactly the kind this machine
+        // produces - used to escape with a running Excel that TerminateOwnedProcesses could not
+        // find and the leak count then charged to the product. This is the harness; being mistaken
+        // for the thing it measures is the one failure it must not have.
         foreach (var identity in SnapshotExcelProcesses().Where(identity => !before.Contains(identity)))
         {
             if (!_ownedProcesses.Contains(identity)) _ownedProcesses.Add(identity);
         }
 
+        Set(application, "Visible", false);
+        Set(application, "DisplayAlerts", false);
         return application;
     }
 

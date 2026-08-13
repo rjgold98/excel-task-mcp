@@ -16,31 +16,363 @@ So that dates and versions stay checkable rather than approximate:
 - **No entry claims a specific version is current.** Documents point at
   `releases/latest`, which cannot go stale.
 
-## 0.18.0 - 2026-08-13
+## 0.21.0 - 2026-08-13
 
-### Added - explicit formula writes
+Direct formula writes are now explicit, bounded, and verified; the formula and
+exhibit paths also use the shared mutation transaction for save, cleanup proof,
+reopen verification, and promotion classification.
 
-- Added `WriteWorksheetFormulas`, a separate bounded operation for caller-supplied
-  A1 formulas. It accepts up to 200 single-cell formulas (8,192 characters each,
-  within a 400-cell span, and 768 KiB of UTF-8 formula text per request), reads
-  them back before saving, and verifies them after reopening. Formula text is
-  never returned in receipts.
-- `WriteWorksheetValues` remains constants-only and now directs intentional
-  formula writes to the explicit operation; inferred repair and extension remain
-  preferred when sheet evidence can prove the intended pattern.
+### Added - `WriteWorksheetFormulas`
 
-### Changed - formula mutations use the shared transaction lifecycle
+- Caller-supplied A1 formulas are accepted only through the new operation. It
+  permits at most 200 single-cell formulas, 8,192 characters per formula, a
+  400-cell span, and 768 KiB of UTF-8 formula text per request.
+- Excel reads each formula back before saving and verifies it after reopening.
+  Formula text is never echoed in receipts. `WriteWorksheetValues` remains
+  constants-only, and inferred repair/extension remains the safer choice when
+  the intended pattern is present in the workbook.
 
-- Formula and exhibit Apply operations now use the private mutation transaction
-  for save, owned-Excel cleanup proof, file-lock checking, reopen verification,
-  staging promotion, and uncertain-outcome classification. Their formula
-  preflight, two-phase revalidation, mutation, recalculation, and verifier stay
-  operation-specific. Macro editing remains bespoke because its VBA hash,
-  dialog, and abandoned-process rules are different.
-- This is a reliability consolidation, not a measured MCP-token or
-  end-to-end-speed optimization. The new regression proves a locked promotion
-  is returned as `Unknown` with a failed `formula-save` check instead of the
-  former `Partial` result with no operation-specific failure check.
+### Changed - one mutation transaction
+
+- Generic, direct/inferred formula, and exhibit Apply paths now share one
+  private save-close/prove-lock-reopen-promote lifecycle. Operation-specific
+  preflight, revalidation, copy-rebind policy, and formula verification remain
+  local. Macro editing stays bespoke for its VBA hash, dialog, and abandoned
+  process semantics.
+
+### Verification
+
+- Release build: 0 warnings, 0 errors.
+- Core 156, Excel fast 103, MCP fast 28, serial Excel on-demand 50, and full
+  MCP 32 passed; the full gate totals 341 tests.
+- The serial Excel suite left no owned Excel process behind. Managed-work-
+  computer field validation remains pending.
+
+## 0.20.0 - 2026-08-12
+
+One policy reversed, at the owner's instruction, and the documents that argued for
+it rewritten rather than quietly edited.
+
+### Changed - `ManageQuery` in Plan returns the M expression
+
+- **The expression is in the Plan receipt, with its fingerprint and length.** Until
+  now Plan returned the fingerprint alone, so a caller replacing a query either
+  authored the replacement blind against a hash or left the tool to read the query
+  in Excel. Both were the cost of a rule this release removes.
+- **The rule it removes was a real one, and worth restating before it goes.** An M
+  expression is where a workbook says what it connects to: `Sql.Database(...)`,
+  `Web.Contents(...)`, and — where whoever wrote the query hardcoded one instead of
+  using Excel's credential store — a key in plain text. All of that now goes to the
+  MCP client and the model behind it. The instruction was explicit, and the reason
+  given was that the model reading it is enterprise Copilot, which does not train on
+  or access the owner's data. `PRIVACY.md` section 4 says that in the document
+  rather than only in this entry, and marks it as a property of one deployment
+  rather than of this software.
+- **It is a receipt field, not a check detail — which is what makes it usable.**
+  `ManageModelMeasure` puts its DAX in a check detail, and worker-authored details
+  are cut to 128 characters crossing the pipe. Any M expression worth reading is
+  longer than that, and would have arrived a fragment that reads as whole. The new
+  `QueryReceipt` takes the macro operation's bound instead: at most 8,192
+  characters, **omitted rather than truncated** past it, with `Length` always
+  reporting the real size. Apply returns no expression, the same split macro source
+  has always used.
+- **The schema rose 141 bytes, and the 22 KB bound held without being raised.** Two
+  descriptions existed to explain a restriction that no longer exists, and deleting
+  them paid for most of what `QueryReceipt` costs the output schema — but not all of
+  it. The pin measures **22,355 bytes of 22,528, leaving 173**, up from 22,214 at
+  0.19.0. Reclaim before raising held; it did not end in a net saving this time, and
+  the first draft of this entry claimed that it had.
+
+### Changed - the documents that made the old argument
+
+- `PRIVACY.md` moves `ManageQuery` from the exception in section 3 to the list in
+  section 4, retires the Plan/Apply asymmetry that section 5 called out, and adds
+  "your server names never reach the model" to the wording this project does not
+  use — it was true until this release.
+- `README.md`, `docs/ARCHITECTURE.md` and the operation's own contract prose no
+  longer state the withholding rule as a feature.
+
+### Unchanged, deliberately
+
+- **`AuditWorkbookFlows` still does not read stored M.** An audit walks every query
+  in a workbook; the operation that exists to look at one query is `ManageQuery`.
+  That is now a size decision rather than a secrecy one, and it is written down as
+  one.
+- **The diagnostic trace file and the field-check report still redact.** Those are
+  files that get sent to other people — field reports land in pull requests on a
+  public repository. "The model may read this" and "this is safe to publish" are
+  different questions, and only the first one changed.
+
+## 0.19.0 - 2026-08-12
+
+The fifteenth operation, and then an adversarial review of the day's own work that
+found thirteen defects in it — including two in the tests written to catch them.
+
+### Added - `ManageModelRelationship`
+
+- Create or delete one Data Model relationship, naming the many side and the one
+  side explicitly. `Replace` is refused rather than implemented: a relationship
+  has no editable middle, so the honest instruction is to delete it and create
+  the new one.
+- Excel answers a second relationship between the same pair of tables by adding
+  it **inactive** rather than refusing. That is silent, and an inactive
+  relationship joins nothing, so a `Completed` receipt for one would be a lie
+  about the model. It is detected and reported.
+- Excel refusing a relationship whose one side is not unique now reports
+  `Rejected`, not `Unknown`. `Add` is atomic and the model can be re-read to
+  prove nothing changed, and the check names the likely cause — the one side is
+  not unique — because that is the fix and swapping the sides is usually it.
+
+### Fixed - a copy that stayed external reported success
+
+- `CopyExhibit` saved and returned `Completed` when some formulas on the copied
+  worksheet still read the reference workbook. It now returns `Partial` and the
+  retry reason names the worksheets that are missing from the destination. This
+  is the worst defect class the product exists to prevent, and it shipped in the
+  same day's work that added the rebind.
+- A partly-bound copy emitted **two** `copy-rebind` checks with opposite
+  verdicts. One check, one verdict.
+- The passing check said the copy "reads nothing from the reference workbook",
+  which the scan cannot support: it reads cell formulas, not defined names,
+  chart series, conditional formats or validation lists. It now states what it
+  examined.
+- A worksheet named `2024` was written back into a formula unquoted, producing
+  `=2024!A1`, which Excel rejects **after** the copy has happened — leaving the
+  caller an `Unknown` on a workbook to reconcile by hand, for an ordinary
+  fiscal-year tab. Quoting now follows Excel's actual rule: leading digit,
+  cell-reference shapes, and punctuation.
+- A worksheet named `Payer's Data` was read back as `Payer''s Data`, matched no
+  worksheet, and so was left external while the receipt named a worksheet that
+  cannot exist. Apostrophes are un-doubled on read and re-doubled on write, and
+  a fifteen-case table test pins both halves.
+
+### Fixed - two tests that could not fail
+
+- The copy-failure test was named for the behaviour it was meant to assert and
+  never asserted the status, so the production path returned `Completed` through
+  exactly the defect the test existed to catch, and stayed green.
+- Both relationship tests used `Assert.True(true, "...")` when the Data Model
+  fixture could not be built, which xUnit records as **Passed** with the message
+  never printed. A Power Query policy change on a managed machine would have
+  turned them into permanent silent no-ops, with the green suite as the evidence
+  for shipping. They now throw `SkipException`, as five other tests in the same
+  file already did, so the run prints `Skipped` and the reason reaches the TRX.
+
+### Fixed - the tool description had gone stale enough to misroute work
+
+- `excel_task` described itself as performing "one bounded formula, exhibit, or
+  macro-procedure operation" while fifteen operations shipped. That sentence is
+  the whole of what a routing model reads before deciding whether to open the
+  schema at all, and a v0.18.0 field session sent ordinary formula work to a
+  different Excel tool rather than here. It now lists the operations, and says
+  plainly that it **never authors new formula text** — it reads formulas, and
+  repairs or extends ones already present. Learning that from a rejection costs
+  a round trip; learning it from the description costs nothing.
+- The rewrite cost 369 bytes, leaving **314 of the 22,528-byte budget**. The
+  budget assertion now carries the measured size and the headroom in its
+  message, so reading the number no longer means temporarily breaking the bound.
+
+### Changed - the trace no longer calls itself safe to share
+
+- Its header said "safe to share" while the same header's first list included
+  workbook file names and worksheet names. Where the workbooks are real those
+  names are real, and one can name a payer, a client, a facility or a deal by
+  itself. The file cannot know whether that is acceptable where it is going, so
+  it now states its contents and leaves the conclusion to the person holding it
+  — the same rule the receipts follow: report the evidence, never assert a
+  verdict the evidence does not reach.
+
+### Added - `PRIVACY.md`
+
+- Four channels with four different contracts, written down separately because
+  collapsing them into "sends no private data" made the strong parts
+  unbelievable along with the loose one. It records what the earlier summaries
+  missed: a `WriteWorksheetValues` receipt returns the values **and formula
+  text** it overwrote, which is deliberate and responsive, but is workbook
+  content crossing the boundary during an operation that is not a read.
+
+### Fixed - the field check reported three things wrongly
+
+- **Macro settings could come from an Office version that is not running.** The
+  registry read walked `16.0` then `15.0` and overwrote as it went, so the last
+  hive present won. A machine carrying a stale Office 15.0 key reported
+  `officeVersion 15.0` — and took `accessVBOM` and `vbaWarnings` from that dead
+  hive while Excel 16.0 answered every other probe. Those two values are the
+  entire reason the section exists: they decide whether macro editing can work
+  on a managed computer. The read is now keyed on the Excel that answered, and
+  says so when it has to fall back.
+- **"Leaked Excel: 2" against operations that leaked nothing.** Each operation
+  waits twenty seconds for its Excel processes to exit, which is ample on a
+  clean machine and not always enough on one that loads four connected COM
+  add-ins into every instance. The report stated `excelLeakedByProduct = 0` and
+  `Leaked Excel: 2` in the same file; both cannot be true, and the one the eye
+  lands on was the wrong one — a false accusation of the single defect this
+  product exists to rule out, raised only on the class of machine whose verdict
+  matters. Per-operation figures are now reconciled against the run's final
+  snapshot, which is taken after everything has stopped.
+- **`powerShellLockdownPolicy` was named for a conclusion it cannot reach.** It
+  reads one environment variable; AppLocker and WDAC enforce Constrained
+  Language Mode without setting it. Renamed `psLockdownPolicyVariable`, because
+  a security control reported absent while it is being enforced is the more
+  damaging of the two mistakes that line can make.
+
+### Added - the field report's two new rules are pinned by tests
+
+- Neither rule can be reached by a real run on a healthy machine. The leak
+  reconciliation only does anything when an Excel process outlives its
+  operation's wait and then exits before the run ends, and on the personal
+  machine every operation reported zero, so the correcting branch never
+  executed. A fix for a defect measured on the work computer would otherwise
+  have shipped with no evidence it works - the same shape as the two tests
+  above that could not fail. Nine tests drive both rules directly, including
+  the work computer's exact shape, a process that is still running at the end
+  and therefore still counts, and the case-insensitive path compare that fails
+  outright under `Ordinal` - which matters because `DOTNET_ROOT` and MCP client
+  commands are typed by people and installers that disagree about casing, so an
+  ordinal compare would pass every test written from `Environment`'s own output
+  and redact nothing in the field.
+
+### Changed - the field report no longer names the person
+
+- The Windows account name appeared in `serverPath` and `dotnetRoot`. Paired
+  with the computer name already in the report, that names a person as well as a
+  machine, and it bought nothing: what matters about either path is whether it
+  is set and where it sits, never whose profile it is. Both are rewritten as
+  `%USERPROFILE%`. Reports generated before this version still contain it.
+
+## 0.18.0 - 2026-08-12
+
+Four capabilities the owner asked for by name. Eleven operations become
+fourteen, and the number-format operation becomes the whole of `range_format`.
+
+### Added - `SetRangeFormat` replaces `SetNumberFormat`
+
+- **Fonts, fills, borders and widths**, alongside the number format it already
+  had: bold, italic, font size, name and colour, fill colour, borders and their
+  weight, column width, row height. Every field is optional and independent -
+  formatting is the one mutation with no recoverable prior state on the sheet,
+  so changing a fill must not require restating a font. Supplying nothing is
+  refused rather than performed, because a no-op returning `Completed` hides a
+  caller who meant to send a field.
+- Colours are `#RRGGBB` and converted to the byte order Excel actually stores,
+  which is the whole difference between asking for red and getting blue.
+  Clearing a fill is `None` and changes the pattern rather than painting white.
+- **Verification cannot catch a misspelled font, and the description says so.**
+  Excel stores whatever name it is given and substitutes only when rendering, so
+  the read-back always agrees. This was assumed to work the other way while the
+  operation was being built; the test that expected `Unknown` and got
+  `Completed` is what corrected it, and it now pins the real behaviour.
+
+### Added - `ManageTable`, beyond listing
+
+- Create a table over a range, rename, restyle, resize, or convert one back to
+  plain cells. `ConvertToRange` is the only action another call cannot undo, so
+  it keeps every cell and drops only the table over them.
+- A style Excel does not have is reported rather than ignored: Excel keeps the
+  style it had, which reads as success from the assignment.
+
+### Added - `ManageQuery`, Power Query mutation
+
+- Create, replace, or delete one Power Query, guarded by the fingerprint a Plan
+  reports - the same precondition a macro edit uses, because a query decides
+  where a workbook's numbers come from.
+- **Plan never returns the M expression.** An M expression usually names a
+  server and a database and sometimes a key, and `AuditWorkbookFlows` already
+  refuses to return query text for that reason. Returning it here would have
+  been a hole in a rule the rest of the product keeps. The fingerprint proves
+  the caller is replacing what they looked at; the expression is read in Excel.
+
+### Added - `ManageModelMeasure`, Data Model mutation
+
+- Create, replace, or delete one Data Model measure, guarded the same way. Here
+  Plan **does** return the DAX, because DAX names model tables and columns
+  rather than servers - the two operations differ because the risk differs.
+- A leading equals sign is refused by name. Excel's own measure editor shows
+  one, the object model rejects it, and the COM error says only "value does not
+  fall within the expected range".
+- Only measures. Model tables come from loading a query into the model, which
+  `ManageQuery` now makes possible. Relationships are deliberately absent: a
+  wrong one silently changes every number the model produces, and the operation
+  that adds one should be able to show what it would join first.
+
+### Changed
+
+- **The schema bound rose 16 KB to 22 KB, and was paid down first.** Reclaiming
+  repetition returned enough that `ManageTable` fitted with no rise at all; the
+  query and measure operations then cost what a thirteenth and fourteenth
+  operation genuinely cost. What remains is load-bearing prose, so the pin now
+  records that fourteen is where a one-tool server should be asking whether the
+  fifteenth earns its bytes.
+- **A safety guard was narrowed, deliberately.** A test banned any schema
+  property named `*model*`, written to stop a field selecting an LLM. Excel's
+  Data Model is now legitimately part of the surface, so the ban is on the names
+  that would actually mean model selection. The enforcement that matters - no
+  model SDK, no such parameter - is unchanged.
+
+## 0.17.2 - 2026-08-12
+
+A code review of 0.17.1, and a leak the gate caught that the review did not.
+
+### Fixed - the dialog sentry stopped retrying, and leaked Excel
+
+- **A dialog that survives its first click is clicked again.** v0.16.0 added
+  per-window deduplication so that one message box could not be counted three
+  times in a receipt, and suppressed the *click* along with the duplicate: once
+  a window was seen, the sentry never pressed its button again while it stood.
+  That is exactly backwards for the case the retry loop existed for. A dialog
+  whose `BM_CLICK` is processed but which does not close stayed up, Excel could
+  not quit, and the run leaked the process. Deduplicating the receipt is the
+  job; deduplicating the click is not, and the two are now separate.
+- **Found by the gate rather than by review.** It failed twice in the full gate
+  on `MacroRunErrorIsTrappedAndReportedInsteadOfBlockingOnADialog` - the test's
+  own assertions passing, the leak assertion firing after its full thirty-second
+  settle - and passed three times when that tier ran alone. Running it in the
+  exact failing sequence is what made it reproducible; the first instinct, that
+  a stranded process from earlier work was to blame, was wrong.
+
+A code review of 0.17.1 found that one of its fixes had been applied to one of
+six places that needed it. The rest of this release is that review's output.
+
+### Fixed - the drop-by-omission guarantee now covers the whole module
+
+- **All six bounding methods carry unnamed fields through.** 0.17.1 fixed
+  `Range` and left `Changes`, `Checks`, `Requirements`, `Audit` and
+  `MacroProcedure` rebuilding their records positionally - while its own
+  docstring claimed `with` was used "precisely so that a field added later
+  survives by default". `WorkbookFlowItem` carries the same
+  optional-parameter shape that made `IsFormula` vanish, so adding a field to
+  any of those five would have reproduced the defect silently at all three
+  seams.
+- **Cell text is bounded through `RequiredText` rather than an inline length
+  test.** Simpler, and safer: this seam bounds a receipt deserialized from the
+  worker pipe, where a non-nullable annotation is not enforced, so a frame
+  carrying a null text would have thrown inside the layer whose job is making an
+  untrusted receipt safe.
+
+### Fixed - a retryable rejection that said nothing to retry
+
+- **`Create` now names the likely cause when it refuses before writing.** 0.17.1
+  correctly made a reserved-worksheet-name failure `Rejected` and retryable, but
+  left `RetryReason` null - so the caller was told to retry with nothing to
+  correct except a raw HRESULT in a check detail, and would resubmit unchanged.
+
+### Added - tests for the two 0.17.1 fixes that had none
+
+- **`StaComDispatcher` counts its live instances**, and three tests assert the
+  count returns to where it started. Instrumentation rather than bookkeeping -
+  nothing reads it in production - but the STA thread leak survived its entire
+  life precisely because nothing counted, and was found by reading, lost, and
+  re-found hours later.
+- **An integration test for the create rejection**: `Rejected`, retryable, a
+  non-empty reason, and no file on disk, with an early exit if the local Excel
+  build happens to accept the name.
+
+### Changed
+
+- **`ComReferences.cs` is now `ComReferenceScope.cs`**, matching the only type
+  it still contains, and the `System.Runtime.InteropServices` using that 0.17.1
+  orphaned is removed. The other nine usings in that file are older than this
+  change and are left alone.
 
 ## 0.17.1 - 2026-08-11
 

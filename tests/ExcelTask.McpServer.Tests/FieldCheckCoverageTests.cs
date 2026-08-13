@@ -44,8 +44,14 @@ public sealed class FieldCheckCoverageTests
 
         var uncovered = FieldCheckCoverage.UncoveredKinds(shipped);
 
+        // Derived rather than restated. The expectation used to be a written-out list, which meant
+        // every new operation broke this test for the one reason that is not a defect - and the
+        // temptation each time is to paste the new name in, which is how a list stops being a check.
+        // The property is what matters: every kind the run did not exercise is named, in declaration
+        // order, so a reader gets names rather than a ratio.
+        var ran = shipped.Select(result => result.Label.Split(' ')[0]).ToHashSet(StringComparer.Ordinal);
         Assert.Equal(
-            ["RepairExistingWorksheet", "ReadWorksheetRange", "WriteWorksheetValues", "WriteWorksheetFormulas", "FindReplace", "Create", "SetNumberFormat", "ScanWorkbookStructure"],
+            OperationCatalog.AllKinds.Select(kind => kind.ToString()).Where(name => !ran.Contains(name)),
             uncovered);
     }
 

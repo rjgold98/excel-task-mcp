@@ -385,7 +385,7 @@ and it is currently unproven.
 > to blow the assertion in tests that are otherwise correct; a run must start from a clean
 > process table. Separately, v0.16.0 fixed the supervisor's cleanup sweep never firing on a
 > worker that *reported* a failed exit rather than going silent. The bet holds: the full gate
-> now runs 276 tests against real desktop Excel with no process left behind.
+> now runs 281 tests against real desktop Excel with no process left behind.
 
 ## Round 8 — head to head against sbroenne/mcp-server-excel
 

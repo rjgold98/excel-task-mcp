@@ -112,7 +112,8 @@ internal static class WorkbookWorkerProtocol
         RetryReason = ReceiptBounds.Text(outcome.RetryReason, MaxTextLength),
         MacroProcedure = ReceiptBounds.MacroProcedure(outcome.MacroProcedure, includeSource: true, MaxTextLength),
         Audit = ReceiptBounds.Audit(outcome.Audit, MaxTextLength),
-        Range = ReceiptBounds.Range(outcome.Range, MaxTextLength)
+        Range = ReceiptBounds.Range(outcome.Range, MaxTextLength),
+        Query = ReceiptBounds.Query(outcome.Query, includeFormula: true, MaxTextLength)
     };
 }
 

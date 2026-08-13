@@ -52,7 +52,7 @@ mutation stays on live Excel for fidelity.
 
 | Choice | ExcelTask | The field |
 |---|---|---|
-| Tool surface | 1 deep tool, 12 operations, ~16 KB | 7 (negokaz) to 26 tools / 234 operations (incumbent); xlwings ~19 documented, ~29 registered |
+| Tool surface | 1 deep tool, 16 operations, ~22 KB | 7 (negokaz) to 26 tools / 234 operations (incumbent); xlwings ~19 documented, ~29 registered |
 | State | Stateless per call | xlwings-mcp is explicitly session-based (`open_workbook` → session_id → `close_workbook`, TTL/LRU eviction); the incumbent's model could not be characterized (a daemon/named-pipe claim was refuted 0-3) |
 | Model-written formulas | Explicit `WriteWorksheetFormulas` path accepts bounded A1 text and verifies it after reopening; `WriteWorksheetValues` and inferred repairs remain separate | Accepted by every competitor that writes formulas — haris-musa syntax-checks plus a 5-function blocklist; negokaz writes `=`-prefixed strings verbatim to `SetFormula` with no validation and no recalculation; xlwings-mcp same accept-with-syntax-check pattern |
 | Verification | Save, reopen in a separate Excel, read back; uncertain = `Unknown` | No surveyed system has any counterpart (absence of evidence in this survey, not proven uniqueness) |

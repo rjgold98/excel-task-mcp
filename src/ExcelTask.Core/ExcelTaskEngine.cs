@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -14,6 +15,20 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
 
     /// <summary>Excel's own ceiling on a number format code, so the bound is its rule rather than one invented here.</summary>
     private const int MaxNumberFormatLength = 255;
+
+    // Excel's own ceilings, enforced here so an out-of-range value is a clean rejection rather than
+    // a COM error mid-operation. Font size and row height share 409; column width is in characters.
+    private const double MinFontSize = 1;
+    private const double MaxFontSize = 409;
+    private const double MaxRowHeight = 409;
+    private const double MaxColumnWidth = 255;
+    private const int MaxFontNameLength = 31;
+    private const int MaxTableNameLength = 255;
+    private const int MaxTableStyleLength = 64;
+    private const int MaxQueryNameLength = 80;
+
+    /// <summary>Excel's xlNone, the value that clears a fill rather than painting one.</summary>
+    public const int NoFillColor = -4142;
     private static readonly HashSet<string> AutoEntryProcedureNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "Auto_Activate", "Auto_Close", "Auto_Deactivate", "Auto_Exec", "Auto_Exit", "Auto_New", "Auto_Open"
@@ -186,7 +201,11 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
                 normalizedRequest.Operation.EditMacroProcedure is not null &&
                 outcome.Status == ExcelTaskStatus.Planned,
                 outcome.Audit,
-                outcome.Range);
+                outcome.Range,
+                outcome.Query,
+                normalizedRequest.Mode == ExcelTaskMode.Plan &&
+                normalizedRequest.Operation.ManageQuery is not null &&
+                outcome.Status == ExcelTaskStatus.Planned);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -316,7 +335,9 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         MacroProcedureReceipt? macroProcedure = null,
         bool includeMacroSource = false,
         WorkbookAuditReceipt? audit = null,
-        WorksheetRangeReceipt? range = null)
+        WorksheetRangeReceipt? range = null,
+        QueryReceipt? query = null,
+        bool includeQueryFormula = false)
     {
         if (status == ExcelTaskStatus.Rejected)
         {
@@ -349,7 +370,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             new PhaseTimings(validation, inspection, execution, total),
             ReceiptBounds.MacroProcedure(macroProcedure, includeMacroSource, ReceiptBounds.MaxModelTextLength),
             ReceiptBounds.Audit(audit, ReceiptBounds.MaxModelTextLength),
-            ReceiptBounds.Range(range, ReceiptBounds.MaxModelTextLength));
+            ReceiptBounds.Range(range, ReceiptBounds.MaxModelTextLength),
+            ReceiptBounds.Query(query, includeQueryFormula, ReceiptBounds.MaxModelTextLength));
     }
 
 
@@ -864,12 +886,24 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
             case ExcelOperationKind.Create when operation.Create is not null:
                 return TryNormalizeCreate(operation.Create, operation.Kind, out normalized, out error);
 
-            case ExcelOperationKind.SetNumberFormat when operation.SetNumberFormat is not null:
-                return TryNormalizeNumberFormat(operation.SetNumberFormat, operation.Kind, out normalized, out error);
+            case ExcelOperationKind.SetRangeFormat when operation.SetRangeFormat is not null:
+                return TryNormalizeRangeFormat(operation.SetRangeFormat, operation.Kind, out normalized, out error);
 
             case ExcelOperationKind.ScanWorkbookStructure when operation.ScanWorkbookStructure is not null:
                 normalized = new NormalizedExcelOperation(operation.Kind, ScanWorkbookStructure: new NormalizedScanWorkbookStructureOperation());
                 return true;
+
+            case ExcelOperationKind.ManageTable when operation.ManageTable is not null:
+                return TryNormalizeManageTable(operation.ManageTable, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.ManageQuery when operation.ManageQuery is not null:
+                return TryNormalizeManageQuery(operation.ManageQuery, mode, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.ManageModelMeasure when operation.ManageModelMeasure is not null:
+                return TryNormalizeModelMeasure(operation.ManageModelMeasure, mode, operation.Kind, out normalized, out error);
+
+            case ExcelOperationKind.ManageModelRelationship when operation.ManageModelRelationship is not null:
+                return TryNormalizeModelRelationship(operation.ManageModelRelationship, operation.Kind, out normalized, out error);
 
             default:
                 error = "Operation payload does not match its kind.";
@@ -877,8 +911,8 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         }
     }
 
-    private static bool TryNormalizeNumberFormat(
-        SetNumberFormatOperation format,
+    private static bool TryNormalizeRangeFormat(
+        SetRangeFormatOperation format,
         ExcelOperationKind kind,
         out NormalizedExcelOperation? normalized,
         out string? error)
@@ -887,36 +921,515 @@ public sealed partial class ExcelTaskEngine(IWorkbookRuntime runtime) : IExcelTa
         if (!TryNormalizeWorksheetName(format.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
         if (!TryNormalizeA1Range(format.Range, out var range))
         {
-            error = "Number format range must be a rectangular A1 range such as A1:C10.";
+            error = "Range format range must be a rectangular A1 range such as A1:C10.";
             return false;
         }
 
         var cells = CellCount(range);
         if (cells > MaxFormulaRepairCells)
         {
-            error = $"Number format range covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}. Split it across calls.";
+            error = $"Range format covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}. Split it across calls.";
+            return false;
+        }
+
+        // A request that would change nothing is a mistake, not a no-op. Performing it would return
+        // Completed for work nobody asked for and hide a caller that meant to supply a field.
+        if (format is { NumberFormat: null, Bold: null, Italic: null, FontSize: null, FontName: null,
+                        FontColor: null, FillColor: null, Borders: null, BorderStyle: null,
+                        ColumnWidth: null, RowHeight: null })
+        {
+            error = "Supply at least one thing to change: numberFormat, bold, italic, fontSize, fontName, fontColor, fillColor, borders, columnWidth, or rowHeight.";
             return false;
         }
 
         // Not trimmed. Leading and trailing spaces are meaningful in a format code - "_)" and " " pad
         // a column so negatives in parentheses line up under positives - so trimming would silently
         // produce a different format from the one asked for.
-        if (string.IsNullOrEmpty(format.NumberFormat))
+        if (format.NumberFormat is not null)
         {
-            error = "A number format code is required; use General to clear formatting.";
+            if (format.NumberFormat.Length == 0)
+            {
+                error = "A number format code cannot be empty; use General to clear formatting, or omit it to leave the format alone.";
+                return false;
+            }
+
+            if (format.NumberFormat.Length > MaxNumberFormatLength)
+            {
+                error = $"A number format code must be at most {MaxNumberFormatLength} characters.";
+                return false;
+            }
+        }
+
+        if (!TryNormalizeFontSize(format.FontSize, out var fontSize, out error)) return false;
+        if (!TryNormalizeFontName(format.FontName, out var fontName, out error)) return false;
+        if (!TryNormalizeColor(format.FontColor, "fontColor", allowNone: false, out var fontColor, out error)) return false;
+        if (!TryNormalizeColor(format.FillColor, "fillColor", allowNone: true, out var fillColor, out error)) return false;
+        if (!TryNormalizeBorders(format.Borders, format.BorderStyle, out var borders, out var borderStyle, out error)) return false;
+        if (!TryNormalizeDimension(format.ColumnWidth, "Column width", MaxColumnWidth, out var columnWidth, out error)) return false;
+        if (!TryNormalizeDimension(format.RowHeight, "Row height", MaxRowHeight, out var rowHeight, out error)) return false;
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            SetRangeFormat: new NormalizedSetRangeFormatOperation(
+                worksheetName!, ToFormulaRepairRange(range), format.NumberFormat,
+                format.Bold, format.Italic, fontSize, fontName, fontColor, fillColor,
+                borders, borderStyle, columnWidth, rowHeight));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Each action needs a different subset, so the rejection names the field that is missing for
+    /// the action asked for rather than a generic shape complaint. A caller who sends a range with
+    /// a Rename is told the range is ignored, not left to wonder whether it was used.
+    /// </summary>
+    private static bool TryNormalizeManageTable(
+        ManageTableOperation table,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeWorksheetName(table.WorksheetName, "Worksheet name", out var worksheetName, out error)) return false;
+        if (!Enum.IsDefined(table.Action))
+        {
+            error = "Table action must be Create, Rename, Restyle, Resize, or ConvertToRange.";
             return false;
         }
 
-        if (format.NumberFormat.Length > MaxNumberFormatLength)
+        if (!TryNormalizeTableName(table.TableName, "Table name", out var tableName, out error)) return false;
+
+        FormulaRepairRange? range = null;
+        if (table.Action is TableAction.Create or TableAction.Resize)
         {
-            error = $"A number format code must be at most {MaxNumberFormatLength} characters.";
+            if (!TryNormalizeA1Range(table.Range, out var parsed))
+            {
+                error = $"{table.Action} needs a rectangular A1 range such as A1:D20, including the header row.";
+                return false;
+            }
+
+            var cells = CellCount(parsed);
+            if (cells > MaxFormulaRepairCells)
+            {
+                error = $"The table range covers {cells:N0} cells and the limit is {MaxFormulaRepairCells:N0}.";
+                return false;
+            }
+
+            range = ToFormulaRepairRange(parsed);
+        }
+
+        string? newName = null;
+        if (table.Action == TableAction.Rename)
+        {
+            if (!TryNormalizeTableName(table.NewName, "New table name", out newName, out error)) return false;
+            if (string.Equals(newName, tableName, StringComparison.OrdinalIgnoreCase))
+            {
+                error = "The new table name is the one it already has.";
+                return false;
+            }
+        }
+
+        string? style = null;
+        if (table.Action is TableAction.Create or TableAction.Restyle)
+        {
+            style = table.TableStyle?.Trim();
+            if (table.Action == TableAction.Restyle && string.IsNullOrEmpty(style))
+            {
+                error = "Restyle needs a table style name, or None to remove the style.";
+                return false;
+            }
+
+            if (style is { Length: > MaxTableStyleLength })
+            {
+                error = $"A table style name must be at most {MaxTableStyleLength} characters.";
+                return false;
+            }
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageTable: new NormalizedManageTableOperation(worksheetName!, table.Action, tableName!, range, newName, style));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Plan is inspect-only and carries none of the Apply fields, exactly as the macro operation
+    /// works - and for the same reason. A caller who sends a replacement on a Plan believes it has
+    /// been staged, and finding out otherwise costs a round trip the interface study priced.
+    /// </summary>
+    private static bool TryNormalizeManageQuery(
+        ManageQueryOperation query,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(query.QueryName, out var queryName, out error)) return false;
+        if (!Enum.IsDefined(query.Action))
+        {
+            error = "Query action must be Create, Replace, or Delete.";
+            return false;
+        }
+
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (query.Formula is not null || query.ExpectedFormulaSha256 is not null)
+            {
+                error = "Query Plan is inspect-only and must omit the expression and the expected fingerprint.";
+                return false;
+            }
+
+            normalized = new NormalizedExcelOperation(kind, ManageQuery: new NormalizedManageQueryOperation(queryName!, query.Action, null, null));
+            error = null;
+            return true;
+        }
+
+        var needsFormula = query.Action is QueryAction.Create or QueryAction.Replace;
+        if (needsFormula)
+        {
+            if (string.IsNullOrWhiteSpace(query.Formula))
+            {
+                error = $"Query {query.Action} requires the complete M expression.";
+                return false;
+            }
+
+            if (query.Formula.Length > MacroProcedureText.MaxSourceCharacters)
+            {
+                error = $"An M expression must be at most {MacroProcedureText.MaxSourceCharacters} characters.";
+                return false;
+            }
+        }
+        else if (query.Formula is not null)
+        {
+            error = "Query Delete takes no expression.";
+            return false;
+        }
+
+        // Create has nothing to fingerprint - the query does not exist yet - so demanding one would
+        // be asking the caller to prove the state of something that is not there.
+        var needsFingerprint = query.Action is QueryAction.Replace or QueryAction.Delete;
+        if (needsFingerprint)
+        {
+            if (query.ExpectedFormulaSha256?.Trim() is not { } supplied || !Sha256Regex().IsMatch(supplied))
+            {
+                error = $"Query {query.Action} requires a 64-character hexadecimal expected fingerprint from the Plan receipt.";
+                return false;
+            }
+        }
+        else if (query.ExpectedFormulaSha256 is not null)
+        {
+            error = "Query Create takes no expected fingerprint; nothing exists to fingerprint yet.";
             return false;
         }
 
         normalized = new NormalizedExcelOperation(
             kind,
-            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheetName!, ToFormulaRepairRange(range), format.NumberFormat));
+            ManageQuery: new NormalizedManageQueryOperation(
+                queryName!,
+                query.Action,
+                needsFormula ? MacroProcedureText.NormalizeLineEndings(query.Formula!) : null,
+                needsFingerprint ? query.ExpectedFormulaSha256!.ToLowerInvariant() : null));
         error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Same Plan/Apply split as the query and macro operations. The one rule unique to DAX is the
+    /// leading equals sign: Excel's own measure editor shows one, the object model rejects it, and
+    /// a caller copying an expression out of the editor will paste it in. Refusing it by name is
+    /// worth more than a COM error that says only "value does not fall within the expected range" -
+    /// which is exactly the message that made this operation look impossible while it was being
+    /// probed.
+    /// </summary>
+    private static bool TryNormalizeModelMeasure(
+        ManageModelMeasureOperation measure,
+        ExcelTaskMode mode,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(measure.TableName, out var tableName, out error)) return false;
+        if (!TryNormalizeQueryName(measure.MeasureName, out var measureName, out error)) return false;
+        if (!Enum.IsDefined(measure.Action))
+        {
+            error = "Measure action must be Create, Replace, or Delete.";
+            return false;
+        }
+
+        if (mode == ExcelTaskMode.Plan)
+        {
+            if (measure.Formula is not null || measure.ExpectedFormulaSha256 is not null)
+            {
+                error = "Measure Plan is inspect-only and must omit the expression and the expected fingerprint.";
+                return false;
+            }
+
+            normalized = new NormalizedExcelOperation(kind, ManageModelMeasure: new NormalizedManageModelMeasureOperation(tableName!, measureName!, measure.Action, null, null));
+            error = null;
+            return true;
+        }
+
+        var needsFormula = measure.Action is QueryAction.Create or QueryAction.Replace;
+        string? formula = null;
+        if (needsFormula)
+        {
+            formula = measure.Formula?.Trim();
+            if (string.IsNullOrEmpty(formula))
+            {
+                error = $"Measure {measure.Action} requires the DAX expression.";
+                return false;
+            }
+
+            if (formula.StartsWith('='))
+            {
+                error = "A DAX measure expression must not start with an equals sign; send SUM(Sales[Amount]), not =SUM(Sales[Amount]).";
+                return false;
+            }
+
+            if (formula.Length > MacroProcedureText.MaxSourceCharacters)
+            {
+                error = $"A DAX expression must be at most {MacroProcedureText.MaxSourceCharacters} characters.";
+                return false;
+            }
+        }
+        else if (measure.Formula is not null)
+        {
+            error = "Measure Delete takes no expression.";
+            return false;
+        }
+
+        var needsFingerprint = measure.Action is QueryAction.Replace or QueryAction.Delete;
+        if (needsFingerprint)
+        {
+            if (measure.ExpectedFormulaSha256?.Trim() is not { } supplied || !Sha256Regex().IsMatch(supplied))
+            {
+                error = $"Measure {measure.Action} requires a 64-character hexadecimal expected fingerprint from the Plan receipt.";
+                return false;
+            }
+        }
+        else if (measure.ExpectedFormulaSha256 is not null)
+        {
+            error = "Measure Create takes no expected fingerprint; nothing exists to fingerprint yet.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageModelMeasure: new NormalizedManageModelMeasureOperation(
+                tableName!, measureName!, measure.Action, formula,
+                needsFingerprint ? measure.ExpectedFormulaSha256!.ToLowerInvariant() : null));
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// A relationship has no expression, so there is nothing to fingerprint and nothing to reject on
+    /// length. What it does have is a direction, and two ways to get it wrong that this catches by
+    /// name: Replace, which sounds like it would re-point an existing join and does not exist, and a
+    /// column joined to itself, which Excel accepts as an argument and refuses as a relationship.
+    /// </summary>
+    private static bool TryNormalizeModelRelationship(
+        ManageModelRelationshipOperation relationship,
+        ExcelOperationKind kind,
+        out NormalizedExcelOperation? normalized,
+        out string? error)
+    {
+        normalized = null;
+        if (!TryNormalizeQueryName(relationship.FromTable, out var fromTable, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.FromColumn, out var fromColumn, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.ToTable, out var toTable, out error)) return false;
+        if (!TryNormalizeQueryName(relationship.ToColumn, out var toColumn, out error)) return false;
+
+        if (relationship.Action is not (QueryAction.Create or QueryAction.Delete))
+        {
+            error = "Relationship action must be Create or Delete. A relationship is not replaced in place; delete it and create the new one.";
+            return false;
+        }
+
+        if (string.Equals(fromTable, toTable, StringComparison.OrdinalIgnoreCase))
+        {
+            error = "A relationship joins two different model tables; the many side and the one side cannot be the same table.";
+            return false;
+        }
+
+        normalized = new NormalizedExcelOperation(
+            kind,
+            ManageModelRelationship: new NormalizedManageModelRelationshipOperation(
+                fromTable!, fromColumn!, toTable!, toColumn!, relationship.Action));
+        error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeQueryName(string? value, out string? normalized, out string? error)
+    {
+        normalized = null;
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            error = "Query name is required.";
+            return false;
+        }
+
+        if (trimmed.Length > MaxQueryNameLength)
+        {
+            error = $"A query name must be at most {MaxQueryNameLength} characters.";
+            return false;
+        }
+
+        normalized = trimmed;
+        error = null;
+        return true;
+    }
+
+    /// <summary>
+    /// Excel's own rules for a table name, enforced here so a bad one is a clean rejection rather
+    /// than a COM error after Excel has started: no spaces, not a cell reference, and it must begin
+    /// with a letter, an underscore, or a backslash.
+    /// </summary>
+    private static bool TryNormalizeTableName(string? value, string field, out string? normalized, out string? error)
+    {
+        normalized = null;
+        var trimmed = value?.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            error = $"{field} is required.";
+            return false;
+        }
+
+        if (trimmed.Length > MaxTableNameLength)
+        {
+            error = $"{field} must be at most {MaxTableNameLength} characters.";
+            return false;
+        }
+
+        if (trimmed.Contains(' ', StringComparison.Ordinal))
+        {
+            error = $"{field} cannot contain spaces; Excel table names use underscores.";
+            return false;
+        }
+
+        if (!char.IsLetter(trimmed[0]) && trimmed[0] is not ('_' or '\\'))
+        {
+            error = $"{field} must start with a letter, an underscore, or a backslash.";
+            return false;
+        }
+
+        normalized = trimmed;
+        error = null;
+        return true;
+    }
+
+    private static bool TryNormalizeFontSize(double? size, out double? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (size is null) return true;
+        if (double.IsNaN(size.Value) || size.Value < MinFontSize || size.Value > MaxFontSize)
+        {
+            error = $"Font size must be between {MinFontSize} and {MaxFontSize} points.";
+            return false;
+        }
+
+        normalized = size;
+        return true;
+    }
+
+    private static bool TryNormalizeFontName(string? name, out string? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (name is null) return true;
+        var trimmed = name.Trim();
+        if (trimmed.Length == 0 || trimmed.Length > MaxFontNameLength)
+        {
+            error = $"A font name must be 1 to {MaxFontNameLength} characters.";
+            return false;
+        }
+
+        normalized = trimmed;
+        return true;
+    }
+
+    /// <summary>
+    /// #RRGGBB to the BGR integer Excel actually stores. Excel reverses the byte order relative to
+    /// every other place a colour is written down, so accepting hex and converting here is what
+    /// stops a caller who asked for red getting blue.
+    /// </summary>
+    private static bool TryNormalizeColor(string? value, string field, bool allowNone, out int? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (value is null) return true;
+
+        var trimmed = value.Trim();
+        if (allowNone && string.Equals(trimmed, "None", StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = NoFillColor;
+            return true;
+        }
+
+        var hex = trimmed.StartsWith('#') ? trimmed[1..] : trimmed;
+        if (hex.Length != 6 || !int.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var rgb))
+        {
+            error = allowNone
+                ? $"{field} must be #RRGGBB, such as #1F6B45, or None to clear it."
+                : $"{field} must be #RRGGBB, such as #1F6B45.";
+            return false;
+        }
+
+        normalized = ((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF);
+        return true;
+    }
+
+    private static bool TryNormalizeBorders(
+        string? edges,
+        string? style,
+        out RangeBorderEdges normalizedEdges,
+        out RangeBorderWeight normalizedStyle,
+        out string? error)
+    {
+        normalizedEdges = RangeBorderEdges.Unspecified;
+        normalizedStyle = RangeBorderWeight.Thin;
+        error = null;
+
+        if (edges is not null && !Enum.TryParse(edges.Trim(), ignoreCase: true, out normalizedEdges) ||
+            normalizedEdges == RangeBorderEdges.Unspecified && edges is not null)
+        {
+            error = "Borders must be All, Outline, Top, Bottom, Left, Right, or None.";
+            return false;
+        }
+
+        if (style is not null && !Enum.TryParse(style.Trim(), ignoreCase: true, out normalizedStyle))
+        {
+            error = "Border style must be Hairline, Thin, Medium, or Thick.";
+            return false;
+        }
+
+        // A weight with nothing to draw is a caller who expected an edge and will not get one.
+        if (style is not null && normalizedEdges is RangeBorderEdges.Unspecified or RangeBorderEdges.None)
+        {
+            error = "Border style applies only when borders names edges to draw.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryNormalizeDimension(double? value, string field, double max, out double? normalized, out string? error)
+    {
+        normalized = null;
+        error = null;
+        if (value is null) return true;
+        if (double.IsNaN(value.Value) || value.Value < 0 || value.Value > max)
+        {
+            error = $"{field} must be between 0 and {max}.";
+            return false;
+        }
+
+        normalized = value;
         return true;
     }
 

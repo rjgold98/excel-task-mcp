@@ -15,18 +15,17 @@ happened.
 The single tool accepts:
 
 - target workbook path;
-- one manual `operation` union of twelve kinds - `CopyExhibit`,
+- one manual `operation` union of sixteen kinds - `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `WriteWorksheetFormulas`, `FindReplace`, `Create`, `SetNumberFormat`,
-  `ScanWorkbookStructure`; exactly
-  one matching payload is required, and `docs/ARCHITECTURE.md` carries the full
-  table;
+  `WriteWorksheetFormulas`,
+  `FindReplace`, `Create`, `SetRangeFormat`, `ScanWorkbookStructure`,
+  `ManageTable`, `ManageQuery`, `ManageModelMeasure`,
+  `ManageModelRelationship`; exactly one matching
+  payload is required, and `docs/ARCHITECTURE.md` carries the full table;
 - A1 ranges only; repair/copy ranges are capped at 16 ranges and 10,000 scanned
   cells, while extension is capped at two evidence periods, 1–24 destination
-  periods, and 2,000 planned mutations. Direct formula writes are capped at
-  200 single-cell formulas, 8,192 characters per formula, a 400-cell span, and
-  768 KiB of UTF-8 formula text per request;
+  periods, and 2,000 planned mutations;
 - `plan` or `apply` mode;
 - `ask`, `use_open`, or `isolated` workbook binding;
 - save-in-place or save-copy policy;
@@ -34,25 +33,30 @@ The single tool accepts:
   by resubmitting with the explicit workbook-binding choice and/or overwrite
   authorization; there is no server session or confirmation token.
 
+`WriteWorksheetFormulas` accepts at most 200 single-cell A1 formulas, 8,192
+characters per formula, a 400-cell span and 768 KiB of UTF-8 formula text per
+request. Excel reads them back before save and verifies them after reopen; formula
+text is never returned in receipts. `WriteWorksheetValues` remains constants-only.
+
 `EditMacroProcedure` is isolated `.xlsm` + save-copy only. Plan returns the
 explicitly requested procedure's bounded source and hash. Apply requires the
 expected hash plus a complete replacement, returns no source, and can only
 optionally run that no-argument procedure. Excel Trust access is user-managed;
 dialogs and timeouts after dispatch are `Unknown`. The tool exposes no
 arbitrary VBE API, sessions, COM objects, low-level command names, checkpoint
-switches, idempotency keys, model selection, or CLI behavior. It accepts formula
-text only in `WriteWorksheetFormulas`, where Excel reads it back before save and
-verifies it after reopen; formula text is never returned in receipts.
+  switches, idempotency keys, model selection, or CLI behavior. It accepts
+  formula text only in `WriteWorksheetFormulas`, and never returns formula text
+  or cell values.
 
 ## Acceptance evidence
 
 1. `tools/list` returns exactly one ExcelTask tool with a bounded schema.
 2. Model-free MCP calls normalize each operation payload and reject a mismatched
    union before inspection.
-3. A copied worksheet, direct formula write, or in-place inferred formula
-   mutation is verified after save and reopen.
-4. Every reported formula repair, extension, or direct formula write is
-   verified without returning formula text or cell contents in the receipt.
+3. A copied worksheet, direct formula write, or in-place formula mutation is verified after save and
+   reopen.
+4. Every reported formula repair, extension, or direct formula write is verified without returning
+   formula text or cell contents in the receipt.
 5. Plan mode analyzes but makes no workbook change, save, or recalculation.
 6. An open workbook with `ask` returns `NeedsConfirmation` without mutation.
 7. Save-in-place without explicit authorization is rejected before Excel

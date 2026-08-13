@@ -33,9 +33,17 @@ want a clean run.
 
 ## What it records, and why that matters
 
-The trace is designed to be **safe to paste into a chat**, and every file it writes opens by saying
-so. That constraint is the point: the work computer holds real client workbooks, and a debug log
-that carried their contents would be worse than no log at all.
+The trace is designed to carry **no workbook contents**, and every file it writes opens with both
+lists below so the person sending it can see what they are sending. That constraint is the point:
+the work computer holds real client workbooks, and a debug log that carried their contents would be
+worse than no log at all.
+
+What the header no longer claims — through v0.18.0 it did — is that the result is **safe to share**.
+Read the first list: workbook file names and worksheet names are in it, by design, because without
+them a trace cannot be matched to the run it describes. Where the workbooks are real, so are those
+names, and a workbook named for a payer, a client, a facility or a deal discloses that by its name
+alone. Whether the file can leave your machine depends on what yours are called, which the file
+cannot know. It states its contents; you draw the conclusion. See [PRIVACY.md](../PRIVACY.md).
 
 **Records:**
 
@@ -58,7 +66,7 @@ that carried their contents would be worse than no log at all.
 
 ```
 15:23:54.968 [7e3175a6] === worker start ===
-15:23:54.972 [7e3175a6]   execute: SetNumberFormat mode=Apply binding=Isolated save=Same ...
+15:23:54.972 [7e3175a6]   execute: SetRangeFormat mode=Apply binding=Isolated save=Same ...
 15:23:54.986 [7e3175a6]   phase start session-open
 15:23:55.293 [7e3175a6]   owned Excel started, pid 70452
 15:23:55.384 [7e3175a6]   phase end   session-open (398 ms)
@@ -75,7 +83,9 @@ from opening the saved workbook, and the modal-dialog or file-lock paths are whe
 
 ## What the first run already showed
 
-On a `SetNumberFormat` apply against a 12-row sheet:
+On a `SetNumberFormat` apply against a 12-row sheet — the operation was still called that when this
+was measured in v0.12.0, and the phase name below is the one the trace actually wrote, so both are
+left as recorded rather than renamed to match today's `SetRangeFormat`:
 
 | phase | duration |
 |---|---:|

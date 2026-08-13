@@ -9,24 +9,19 @@ public sealed class ExcelTaskEngineTests
     [Fact]
     public void EveryModelFacingInputFieldHasADescription()
     {
-        var modelTypes = new[]
-        {
-            typeof(ExcelTaskRequest),
-            typeof(ExcelOperation),
-            typeof(CopyExhibitOperation),
-            typeof(RepairExistingWorksheetOperation),
-            typeof(ExtendFormulaSeriesOperation),
-            typeof(EditMacroProcedureOperation),
-            typeof(ReadWorksheetRangeOperation),
-            typeof(WriteWorksheetValuesOperation),
-            typeof(WorksheetCellValue),
-            typeof(WriteWorksheetFormulasOperation),
-            typeof(WorksheetCellFormula),
-            typeof(FindReplaceOperation),
-            typeof(CreateOperation),
-            typeof(SetNumberFormatOperation),
-            typeof(ScanWorkbookStructureOperation)
-        };
+        // Derived from the union, not hand-kept. The list that used to be written out here had
+        // fallen three operations behind without failing - the same way the parallel payload array
+        // this project already replaced once went stale, and for the same reason: a list of what to
+        // check is only as current as the last person who remembered it exists.
+        var modelTypes = new[] { typeof(ExcelTaskRequest), typeof(ExcelOperation), typeof(WorksheetCellValue) }
+            .Concat(typeof(ExcelOperation).GetProperties()
+                .Select(property => Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType)
+                .Where(type => type.IsClass && type.Namespace == typeof(ExcelOperation).Namespace))
+            .Distinct()
+            .ToArray();
+
+        // Cheap proof the derivation found the payloads rather than an empty set that passes.
+        Assert.Equal(OperationCatalog.AllKinds.Count + 3, modelTypes.Length);
 
         foreach (var property in modelTypes.SelectMany(type => type.GetProperties()))
         {
@@ -184,6 +179,39 @@ public sealed class ExcelTaskEngineTests
         Assert.Equal(SaveMode.Same, runtime.InspectionRequest.Save);
         Assert.Equal(SaveMode.Same, receipt.Save.Mode);
         Assert.False(receipt.Save.OverwriteConfirmed);
+    }
+
+    [Theory]
+    [MemberData(nameof(ImpossibleRelationships))]
+    public async Task RejectsARelationshipThatCannotExistBeforeExcelIsStarted(ExcelOperation operation, string expected)
+    {
+        // Both are cheap to state and expensive to discover: Replace sounds like it would re-point
+        // an existing join and has no counterpart in the object model, and a table joined to itself
+        // is accepted as an argument and refused as a relationship. Naming them here means the
+        // caller learns why without an Excel launch.
+        var runtime = new FakeRuntime();
+
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(Request(operation), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Null(runtime.InspectionRequest);
+        Assert.Contains(expected, receipt.Checks.Single().Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static IEnumerable<object[]> ImpossibleRelationships()
+    {
+        yield return
+        [
+            new ExcelOperation(ExcelOperationKind.ManageModelRelationship,
+                ManageModelRelationship: new("Sales", "CustomerId", "Customers", "Id", QueryAction.Replace)),
+            "delete it and create the new one"
+        ];
+        yield return
+        [
+            new ExcelOperation(ExcelOperationKind.ManageModelRelationship,
+                ManageModelRelationship: new("Sales", "ManagerId", "Sales", "Id", QueryAction.Create)),
+            "cannot be the same table"
+        ];
     }
 
     [Theory]
@@ -812,8 +840,12 @@ public sealed class ExcelTaskEngineTests
             new(ExcelOperationKind.WriteWorksheetFormulas, WriteWorksheetFormulas: new("Sheet1", [new("A1", "=1")])),
             new(ExcelOperationKind.FindReplace, FindReplace: new("Sheet1", "FY25")),
             new(ExcelOperationKind.Create, Create: new(CreateKind.Workbook)),
-            new(ExcelOperationKind.SetNumberFormat, SetNumberFormat: new("Sheet1", "A1:B2", "#,##0.00")),
-            new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new())
+            new(ExcelOperationKind.SetRangeFormat, SetRangeFormat: new("Sheet1", "A1:B2", "#,##0.00")),
+            new(ExcelOperationKind.ScanWorkbookStructure, ScanWorkbookStructure: new()),
+            new(ExcelOperationKind.ManageTable, ManageTable: new("Sheet1", TableAction.Rename, "Payroll", NewName: "PayrollFY26")),
+            new(ExcelOperationKind.ManageQuery, ManageQuery: new("ProbeQuery", QueryAction.Delete)),
+            new(ExcelOperationKind.ManageModelMeasure, ManageModelMeasure: new("Sales", "Total", QueryAction.Delete)),
+            new(ExcelOperationKind.ManageModelRelationship, ManageModelRelationship: new("Sales", "CustomerId", "Customers", "Id", QueryAction.Create))
         ];
 
         // The list above is the checklist: a new operation that is not added here fails this line
@@ -1190,7 +1222,7 @@ public sealed class ExcelTaskEngineTests
         // A format code's leading and trailing spaces are meaningful - they are what makes a column
         // of parenthesised negatives line up - so trimming would apply a format nobody asked for.
         Assert.Equal(ExcelTaskStatus.Completed, receipt.Status);
-        Assert.Equal($" {padded} ", runtime.Plan!.Request.Operation.SetNumberFormat!.NumberFormat);
+        Assert.Equal($" {padded} ", runtime.Plan!.Request.Operation.SetRangeFormat!.NumberFormat);
     }
 
     [Fact]
@@ -1209,13 +1241,107 @@ public sealed class ExcelTaskEngineTests
         bool overwriteConfirmed = true) => new(
             TargetWorkbookPath: ".\\model.xlsx",
             Operation: new ExcelOperation(
-                ExcelOperationKind.SetNumberFormat,
-                SetNumberFormat: new SetNumberFormatOperation("Sheet1", range, code)),
+                ExcelOperationKind.SetRangeFormat,
+                SetRangeFormat: new SetRangeFormatOperation("Sheet1", range, code)),
             Mode: ExcelTaskMode.Apply,
             WorkbookBinding: WorkbookBinding.Isolated,
             Save: SaveMode.Same,
             OutputWorkbookPath: null,
             OverwriteConfirmed: overwriteConfirmed);
+
+    /// <summary>A valid range-format request with one field changed, so each test names only what it is about.</summary>
+    private static ExcelTaskRequest RangeFormatRequest(Func<SetRangeFormatOperation, SetRangeFormatOperation> change) => new(
+        TargetWorkbookPath: ".\\model.xlsx",
+        Operation: new ExcelOperation(
+            ExcelOperationKind.SetRangeFormat,
+            SetRangeFormat: change(new SetRangeFormatOperation("Sheet1", "A1:D50", "#,##0.00"))),
+        Mode: ExcelTaskMode.Apply,
+        WorkbookBinding: WorkbookBinding.Isolated,
+        Save: SaveMode.Same,
+        OutputWorkbookPath: null,
+        OverwriteConfirmed: true);
+
+    [Fact]
+    public async Task RangeFormatRefusesARequestThatWouldChangeNothing()
+    {
+        // A no-op would return Completed for work nobody asked for, and hide a caller who meant to
+        // supply a field and did not. Every field being optional makes this reachable by accident.
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { NumberFormat = null }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("at least one", receipt.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    // Excel reverses the byte order of a colour relative to how everyone writes one down, so this
+    // conversion is the whole difference between a caller asking for red and getting blue.
+    [InlineData("#FF0000", 0x0000FF)]
+    [InlineData("#0000FF", 0xFF0000)]
+    [InlineData("1F6B45", 0x456B1F)]
+    public async Task ColoursAreConvertedFromHexToTheOrderExcelStores(string hex, int stored)
+    {
+        var runtime = new FakeRuntime();
+        var receipt = await new ExcelTaskEngine(runtime).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = hex }), CancellationToken.None);
+
+        Assert.True(receipt.Status == ExcelTaskStatus.Completed, receipt.Summary);
+        Assert.Equal(stored, runtime.Plan!.Request.Operation.SetRangeFormat!.FontColor);
+    }
+
+    [Theory]
+    [InlineData("red")]
+    [InlineData("#FFF")]
+    [InlineData("#GGGGGG")]
+    public async Task AColourThatIsNotHexIsRefusedRatherThanGuessedAt(string value)
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = value }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("#RRGGBB", receipt.Summary, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ClearingAFillIsSpelledNoneAndOnlyFillAcceptsIt()
+    {
+        var runtime = new FakeRuntime();
+        var cleared = await new ExcelTaskEngine(runtime).RunAsync(
+            RangeFormatRequest(format => format with { FillColor = "None" }), CancellationToken.None);
+
+        Assert.True(cleared.Status == ExcelTaskStatus.Completed, cleared.Summary);
+        Assert.Equal(ExcelTaskEngine.NoFillColor, runtime.Plan!.Request.Operation.SetRangeFormat!.FillColor);
+
+        // Text has no "no colour", so None there is a mistake worth naming rather than silently
+        // painting the theme default over whatever the caller had.
+        var refused = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontColor = "None" }), CancellationToken.None);
+        Assert.Equal(ExcelTaskStatus.Rejected, refused.Status);
+    }
+
+    [Fact]
+    public async Task ABorderWeightWithNoEdgesToDrawIsRefused()
+    {
+        // Otherwise the caller gets Completed and no border, having asked for a thick one.
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { BorderStyle = "Thick" }), CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+        Assert.Contains("borders", receipt.Summary, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(0.5, null)]
+    [InlineData(500.0, null)]
+    [InlineData(null, 500.0)]
+    public async Task SizesOutsideExcelsOwnCeilingsAreRefusedBeforeExcelStarts(double? fontSize, double? rowHeight)
+    {
+        var receipt = await new ExcelTaskEngine(new FakeRuntime()).RunAsync(
+            RangeFormatRequest(format => format with { FontSize = fontSize, RowHeight = rowHeight }),
+            CancellationToken.None);
+
+        Assert.Equal(ExcelTaskStatus.Rejected, receipt.Status);
+    }
 
     private static ExcelTaskRequest FindReplaceRequest(
         string? replaceWith = "FY26",

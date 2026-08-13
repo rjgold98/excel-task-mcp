@@ -53,7 +53,8 @@ public sealed partial class ExcelWorkbookRuntime
             Func<ExcelSession, (bool Verified, TaskCheck Check)> Verify,
             string CompletedSummary,
             string VerifyFailedSummary,
-            WorksheetRangeReceipt? Range = null) : MutationStep;
+            WorksheetRangeReceipt? Range = null,
+            Func<WorkbookExecutionOutcome, WorkbookExecutionOutcome>? Classify = null) : MutationStep;
     }
 
     /// <summary>
@@ -195,7 +196,8 @@ public sealed partial class ExcelWorkbookRuntime
                 changes.Add(new TaskChange("copy-promotion", "workbook", "Promoted the verified staging workbook to the requested output path."));
             }
 
-            return new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, save.CompletedSummary, changes, checks, Range: save.Range);
+            var completed = new WorkbookExecutionOutcome(ExcelTaskStatus.Completed, save.CompletedSummary, changes, checks, Range: save.Range);
+            return save.Classify?.Invoke(completed) ?? completed;
         }
         // The operation and the lifecycle both run inside this boundary. A COM fault, a failed
         // save, a locked promotion destination, or an unexpected late-bound Excel failure must

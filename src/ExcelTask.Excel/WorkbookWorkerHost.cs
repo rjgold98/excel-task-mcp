@@ -113,13 +113,17 @@ public static class WorkbookWorkerHost
             ExcelOperationKind.WriteWorksheetValues => $"sheet={operation.WriteWorksheetValues!.WorksheetName} cells={operation.WriteWorksheetValues.Cells.Count}",
             ExcelOperationKind.WriteWorksheetFormulas => $"sheet={operation.WriteWorksheetFormulas!.WorksheetName} cells={operation.WriteWorksheetFormulas.Cells.Count}",
             ExcelOperationKind.FindReplace => $"sheet={operation.FindReplace!.WorksheetName} range={operation.FindReplace.Range?.ToString() ?? "(used range)"} wholeCell={operation.FindReplace.WholeCell} matchCase={operation.FindReplace.MatchCase}",
-            ExcelOperationKind.SetNumberFormat => $"sheet={operation.SetNumberFormat!.WorksheetName} range={operation.SetNumberFormat.Range}",
+            ExcelOperationKind.SetRangeFormat => $"sheet={operation.SetRangeFormat!.WorksheetName} range={operation.SetRangeFormat.Range}",
             ExcelOperationKind.Create => $"createKind={operation.Create!.Kind} sheet={operation.Create.WorksheetName ?? "(default)"}",
             ExcelOperationKind.RepairExistingWorksheet => $"sheet={operation.RepairExistingWorksheet!.WorksheetName} ranges={operation.RepairExistingWorksheet.Ranges.Count}",
             ExcelOperationKind.ExtendFormulaSeries => $"sheet={operation.ExtendFormulaSeries!.WorksheetName} direction={operation.ExtendFormulaSeries.Direction} evidence={operation.ExtendFormulaSeries.EvidenceRange} destination={operation.ExtendFormulaSeries.DestinationRange}",
             ExcelOperationKind.CopyExhibit => $"referenceSheet={operation.CopyExhibit!.ReferenceWorksheet} newSheet={operation.CopyExhibit.NewWorksheetName} repairRanges={operation.CopyExhibit.RepairRanges.Count}",
             ExcelOperationKind.EditMacroProcedure => $"component={operation.EditMacroProcedure!.ComponentName} procedure={operation.EditMacroProcedure.ProcedureName} run={operation.EditMacroProcedure.RunAfterEdit}",
             ExcelOperationKind.ScanWorkbookStructure => "direct file scan, no Excel",
+            ExcelOperationKind.ManageTable => $"sheet={operation.ManageTable!.WorksheetName} action={operation.ManageTable.Action} table={operation.ManageTable.TableName}",
+            ExcelOperationKind.ManageQuery => $"action={operation.ManageQuery!.Action} query={operation.ManageQuery.QueryName}",
+            ExcelOperationKind.ManageModelMeasure => $"action={operation.ManageModelMeasure!.Action} table={operation.ManageModelMeasure.TableName} measure={operation.ManageModelMeasure.MeasureName}",
+            ExcelOperationKind.ManageModelRelationship => $"action={operation.ManageModelRelationship!.Action} from={operation.ManageModelRelationship.FromTable} to={operation.ManageModelRelationship.ToTable}",
             // Listed rather than defaulted. A `_ =>` arm here meant a new operation silently traced
             // as "no options" - no compile error, no test failure, just a diagnostic that quietly
             // stopped describing the thing it exists to describe. Naming the option-less kinds

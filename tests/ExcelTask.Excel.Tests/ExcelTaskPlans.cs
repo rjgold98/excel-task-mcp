@@ -104,6 +104,17 @@ internal static class ExcelTaskPlans
         string range,
         string numberFormat,
         ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) =>
+        RangeFormat(target, worksheet, range, mode, binding, numberFormat: numberFormat);
+
+    public static NormalizedExcelTaskRequest Measure(
+        string target,
+        QueryAction action,
+        string tableName,
+        string measureName,
+        string? formula = null,
+        string? expectedSha256 = null,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
         WorkbookBinding binding = WorkbookBinding.Isolated) => new(
         target,
         mode,
@@ -112,8 +123,96 @@ internal static class ExcelTaskPlans
         null,
         mode == ExcelTaskMode.Apply,
         new NormalizedExcelOperation(
-            ExcelOperationKind.SetNumberFormat,
-            SetNumberFormat: new NormalizedSetNumberFormatOperation(worksheet, ToRange(range), numberFormat)));
+            ExcelOperationKind.ManageModelMeasure,
+            ManageModelMeasure: new NormalizedManageModelMeasureOperation(
+                tableName, measureName, action, formula, expectedSha256)));
+
+    public static NormalizedExcelTaskRequest Relationship(
+        string target,
+        QueryAction action,
+        string fromTable,
+        string fromColumn,
+        string toTable,
+        string toColumn,
+        ExcelTaskMode mode = ExcelTaskMode.Apply) => new(
+        target,
+        mode,
+        WorkbookBinding.Isolated,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ManageModelRelationship,
+            ManageModelRelationship: new NormalizedManageModelRelationshipOperation(
+                fromTable, fromColumn, toTable, toColumn, action)));
+
+    public static NormalizedExcelTaskRequest Query(
+        string target,
+        QueryAction action,
+        string queryName,
+        string? formula = null,
+        string? expectedSha256 = null,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ManageQuery,
+            ManageQuery: new NormalizedManageQueryOperation(queryName, action, formula, expectedSha256)));
+
+    public static NormalizedExcelTaskRequest Table(
+        string target,
+        string worksheet,
+        TableAction action,
+        string tableName,
+        string? range = null,
+        string? newName = null,
+        string? tableStyle = null,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.ManageTable,
+            ManageTable: new NormalizedManageTableOperation(
+                worksheet, action, tableName, range is null ? null : ToRange(range), newName, tableStyle)));
+
+    public static NormalizedExcelTaskRequest RangeFormat(
+        string target,
+        string worksheet,
+        string range,
+        ExcelTaskMode mode = ExcelTaskMode.Apply,
+        WorkbookBinding binding = WorkbookBinding.Isolated,
+        string? numberFormat = null,
+        bool? bold = null,
+        bool? italic = null,
+        double? fontSize = null,
+        string? fontName = null,
+        int? fontColor = null,
+        int? fillColor = null,
+        RangeBorderEdges borders = RangeBorderEdges.Unspecified,
+        RangeBorderWeight borderStyle = RangeBorderWeight.Thin,
+        double? columnWidth = null,
+        double? rowHeight = null) => new(
+        target,
+        mode,
+        binding,
+        SaveMode.Same,
+        null,
+        mode == ExcelTaskMode.Apply,
+        new NormalizedExcelOperation(
+            ExcelOperationKind.SetRangeFormat,
+            SetRangeFormat: new NormalizedSetRangeFormatOperation(
+                worksheet, ToRange(range), numberFormat, bold, italic, fontSize, fontName,
+                fontColor, fillColor, borders, borderStyle, columnWidth, rowHeight)));
 
     public static NormalizedExcelTaskRequest Scan(
         string target,

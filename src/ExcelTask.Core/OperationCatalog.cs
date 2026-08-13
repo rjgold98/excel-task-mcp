@@ -41,8 +41,12 @@ public static class OperationCatalog
             ExcelOperationKind.WriteWorksheetFormulas => operation.WriteWorksheetFormulas,
             ExcelOperationKind.FindReplace => operation.FindReplace,
             ExcelOperationKind.Create => operation.Create,
-            ExcelOperationKind.SetNumberFormat => operation.SetNumberFormat,
-            ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure
+            ExcelOperationKind.SetRangeFormat => operation.SetRangeFormat,
+            ExcelOperationKind.ScanWorkbookStructure => operation.ScanWorkbookStructure,
+            ExcelOperationKind.ManageTable => operation.ManageTable,
+            ExcelOperationKind.ManageQuery => operation.ManageQuery,
+            ExcelOperationKind.ManageModelMeasure => operation.ManageModelMeasure,
+            ExcelOperationKind.ManageModelRelationship => operation.ManageModelRelationship
         };
 #pragma warning restore CS8524
     }

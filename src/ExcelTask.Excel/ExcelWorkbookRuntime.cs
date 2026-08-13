@@ -154,7 +154,7 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
 
         // Same reason as the write above: each carries its own save, verification and gates, and
         // none of them wants the formula plan the shared path below builds.
-        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetNumberFormat)
+        if (plan.Request.Operation.Kind is ExcelOperationKind.FindReplace or ExcelOperationKind.SetRangeFormat or ExcelOperationKind.ManageTable or ExcelOperationKind.ManageQuery or ExcelOperationKind.ManageModelMeasure or ExcelOperationKind.ManageModelRelationship)
         {
             if (plan.Request.WorkbookBinding == WorkbookBinding.UseOpen && plan.Request.Save == SaveMode.Copy)
             {
@@ -170,9 +170,15 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
                     Checks: [new TaskCheck("same-file-overwrite", false, "Apply with save Same requires overwrite confirmation.")]);
             }
 
-            return plan.Request.Operation.Kind == ExcelOperationKind.FindReplace
-                ? ExecuteFindReplaceCore(plan, observer)
-                : ExecuteNumberFormatCore(plan, observer);
+            return plan.Request.Operation.Kind switch
+            {
+                ExcelOperationKind.FindReplace => ExecuteFindReplaceCore(plan, observer),
+                ExcelOperationKind.SetRangeFormat => ExecuteRangeFormatCore(plan, observer),
+                ExcelOperationKind.ManageTable => ExecuteManageTableCore(plan, observer),
+                ExcelOperationKind.ManageQuery => ExecuteManageQueryCore(plan, observer),
+                ExcelOperationKind.ManageModelMeasure => ExecuteModelMeasureCore(plan, observer),
+                _ => ExecuteModelRelationshipCore(plan, observer)
+            };
         }
 
         // A creation writes the target it names and is refused a copy destination during validation,
@@ -277,16 +283,51 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             }
 
             var operation = plan.Request.Operation;
+            var stillExternalAfterCopy = false;
             if (operation.Kind == ExcelOperationKind.CopyExhibit)
             {
                 context.OnPhase("worksheet-copy");
                 context.MarkMutationAttempted();
-                CopyReferenceWorksheet(context.Session,
+                var rebind = CopyReferenceWorksheet(context.Session,
                     operation.CopyExhibit!.ReferenceWorksheet,
                     operation.CopyExhibit.NewWorksheetName,
                     context.OnPhase);
                 context.Changes.Add(new TaskChange("worksheet-copy", formulaPlan.WorksheetName,
                     "Copied the requested reference worksheet."));
+
+                // Excel rewrites the copied sheet's cross-sheet formulas to point back at the
+                // workbook they came from, and the result still calculates - so without this the
+                // receipt said Completed while the new exhibit quietly reported the template's
+                // numbers. Reported either way: what was pointed home, and what could not be.
+                //
+                // One check, not two. Emitting a passed and a failed check under the same name for
+                // a partly-bound copy left a consumer keying on the name reading whichever came
+                // first, which is a worse answer than either half.
+                if (rebind.StillExternal.Count > 0)
+                {
+                    var bound = rebind.Rebound.Count > 0
+                        ? $"{string.Join(", ", rebind.Rebound)} bound home, but "
+                        : string.Empty;
+                    context.Checks.Add(new TaskCheck("copy-rebind", false,
+                        $"{bound}the copied formulas still read the reference workbook: this workbook has no {string.Join(", ", rebind.StillExternal)}. Add those worksheets and copy again."));
+                    stillExternalAfterCopy = true;
+                }
+                else if (rebind.Rebound.Count > 0)
+                {
+                    context.Checks.Add(new TaskCheck("copy-rebind", true,
+                        $"Excel had pointed the copied formulas at the reference workbook; they were bound back to this workbook's {string.Join(", ", rebind.Rebound)}."));
+                }
+                else
+                {
+                    // Deliberately not "reads nothing from the reference workbook". This scan sees
+                    // cell formulas in the used range and nothing else - a sheet-scoped defined
+                    // name, a chart series, a conditional format or a validation list can carry the
+                    // same external reference and would leave this silent. Claiming a clean sheet
+                    // from that silence would be an affirmative false statement about the workbook,
+                    // so it reports what was actually examined.
+                    context.Checks.Add(new TaskCheck("copy-rebind", true,
+                        "No copied cell formula reads the reference workbook. Defined names, chart series, conditional formats and validation lists are not covered by this check."));
+                }
             }
 
             context.OnPhase(operation.Kind == ExcelOperationKind.ExtendFormulaSeries ? "formula-extension" : "formula-repair");
@@ -327,7 +368,16 @@ public sealed partial class ExcelWorkbookRuntime : IWorkbookRuntime, IDisposable
             return new MutationStep.SaveAndVerify(
                 verification => VerifySavedWorkbook(verification, formulaPlan.WorksheetName, formulaPlan.Repairs),
                 "Workbook changes were saved and verified after reopening.",
-                "Excel saved the workbook, but reopen verification did not confirm all requested changes.");
+                "Excel saved the workbook, but reopen verification did not confirm all requested changes.",
+                Classify: outcome => stillExternalAfterCopy
+                    ? outcome with
+                    {
+                        Status = ExcelTaskStatus.Partial,
+                        Summary = "The worksheet was copied and saved, but some of its formulas still read the reference workbook.",
+                        CanRetry = true,
+                        RetryReason = "Add the named worksheets to this workbook, then copy again; the copy-rebind check lists them."
+                    }
+                    : outcome);
         });
     }
 

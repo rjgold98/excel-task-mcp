@@ -64,40 +64,20 @@ internal sealed class RotWorkbookLocator : IDisposable
         return null;
     }
 
+    /// <summary>
+    /// Whether the exact target workbook is open, proven the same way <see cref="Find"/> proves it.
+    /// This once matched the moniker display name alone and never bound, so a stray <c>Book1</c> an
+    /// add-in had registered satisfied it and the receipt still said the <em>exact</em> workbook was
+    /// open. Delegating makes the two answers one answer rather than two that can disagree.
+    ///
+    /// It final-releases what it binds, so it must not run while a session holds workbook references
+    /// - the running object table can hand back the very RCW that session is using. Its one caller
+    /// is workbook inspection, which runs before any session exists.
+    /// </summary>
     public static bool ContainsPath(string targetPath)
     {
-        var result = GetRunningObjectTable(0, out var table);
-        if (result < 0 || table is null) Marshal.ThrowExceptionForHR(result);
-        var runningTable = table ?? throw new InvalidOperationException("The running object table was unavailable.");
-        try
-        {
-            runningTable.EnumRunning(out var enumerator);
-            try
-            {
-                var monikers = new IMoniker[1];
-                while (enumerator.Next(1, monikers, IntPtr.Zero) == 0)
-                {
-                    var moniker = monikers[0];
-                    try
-                    {
-                        var bindResult = CreateBindCtx(0, out var bindContext);
-                        if (bindResult < 0 || bindContext is null) continue;
-                        try
-                        {
-                            moniker.GetDisplayName(bindContext, null, out var displayName);
-                            if (MatchesDisplayName(displayName, targetPath)) return true;
-                        }
-                        catch (Exception exception) when (IsExpectedBindingNonmatch(exception)) { }
-                        finally { ComAccess.Release(bindContext); }
-                    }
-                    finally { ComAccess.Release(moniker); }
-                }
-            }
-            finally { ComAccess.Release(enumerator); }
-        }
-        finally { ComAccess.Release(runningTable); }
-
-        return false;
+        using var located = Find(targetPath);
+        return located is not null;
     }
 
     /// <summary>

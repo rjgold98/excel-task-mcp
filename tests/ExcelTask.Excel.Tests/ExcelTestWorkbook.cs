@@ -68,6 +68,133 @@ internal static class ExcelTestWorkbook
         return hasQuery;
     }
 
+    /// <summary>
+    /// A workbook whose Data Model holds one table, which is the only way to get a model table to
+    /// exist: a model table is not created directly, it appears when a query is loaded into the
+    /// model. Returns false when this Excel build or policy will not do it, so the test can say so
+    /// rather than fail for the wrong reason.
+    /// </summary>
+    public static bool CreateModelTarget(string path, string queryName)
+    {
+        var hasModel = false;
+        Create(path, workbook =>
+        {
+            try
+            {
+                var queries = Get(workbook, "Queries");
+                Invoke(queries, "Add", queryName, "let Source = #table({\"K\",\"V\"}, {{1,\"a\"},{2,\"b\"}}) in Source");
+                Release(queries);
+
+                // CreateModelConnection is the argument that makes this land in the model rather
+                // than on a sheet; 6 is xlCmdExcel, and the Mashup provider is how a query is
+                // addressed as a data source.
+                var connections = Get(workbook, "Connections");
+                Invoke(connections, "Add2", queryName + "Conn", "test model connection",
+                    $"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location={queryName}",
+                    queryName, 6, true, false);
+                Release(connections);
+
+                var model = Get(workbook, "Model");
+                var tables = Get(model, "ModelTables");
+                hasModel = Convert.ToInt32(Get(tables, "Count"), System.Globalization.CultureInfo.InvariantCulture) > 0;
+                Release(tables);
+                Release(model);
+            }
+            catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or System.Reflection.TargetInvocationException)
+            {
+                // No Power Query, no Data Model, or policy forbids the connection.
+            }
+        });
+        return hasModel;
+    }
+
+    /// <summary>
+    /// A workbook whose Data Model holds two tables that can legally be joined: the fact table's
+    /// key repeats and the lookup table's key is unique, which is what a one-to-many relationship
+    /// requires. Excel refuses the relationship outright if the one side is not unique, so the
+    /// fixture has to be built this way for the operation to have anything real to do.
+    /// </summary>
+    public static bool CreateModelPair(string path, string factTable, string lookupTable)
+    {
+        var hasBoth = false;
+        Create(path, workbook =>
+        {
+            try
+            {
+                var queries = Get(workbook, "Queries");
+                Invoke(queries, "Add", lookupTable, "let Source = #table({\"K\",\"Label\"}, {{1,\"a\"},{2,\"b\"}}) in Source");
+                Invoke(queries, "Add", factTable, "let Source = #table({\"K\",\"Amount\"}, {{1,10},{1,20},{2,30}}) in Source");
+                Release(queries);
+
+                var connections = Get(workbook, "Connections");
+                foreach (var name in new[] { lookupTable, factTable })
+                {
+                    Invoke(connections, "Add2", name + "Conn", "test model connection",
+                        $"OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location={name}",
+                        name, 6, true, false);
+                }
+
+                Release(connections);
+
+                var model = Get(workbook, "Model");
+                var tables = Get(model, "ModelTables");
+                hasBoth = Convert.ToInt32(Get(tables, "Count"), System.Globalization.CultureInfo.InvariantCulture) >= 2;
+                Release(tables);
+                Release(model);
+            }
+            catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or System.Reflection.TargetInvocationException)
+            {
+                // No Power Query, no Data Model, or policy forbids the connection.
+            }
+        });
+        return hasBoth;
+    }
+
+    /// <summary>
+    /// A workbook with a Data sheet and an Exhibit sheet whose formulas read it. The two workbooks
+    /// in a copy test must hold different numbers, because the value is the only way to tell a
+    /// formula bound to this workbook from one still reading the other.
+    /// </summary>
+    public static void CreateCrossSheetExhibit(string path, double sourceValue, bool withoutExhibit = false) => Create(path, workbook =>
+    {
+        var sheets = Get(workbook, "Worksheets");
+        var data = Item(sheets, 1);
+        Set(data, "Name", "Data");
+        Set(Get(data, "Range", "A1"), "Value2", sourceValue);
+        Set(Get(data, "Range", "A2"), "Value2", sourceValue * 2);
+
+        if (!withoutExhibit)
+        {
+            var exhibit = Invoke(sheets, "Add")!;
+            Set(exhibit, "Name", "Exhibit");
+            Set(Get(exhibit, "Range", "A1"), "Formula", "=Data!A1*2");
+            Set(Get(exhibit, "Range", "A2"), "Formula", "=SUM(Data!A1:A2)");
+            Release(exhibit);
+        }
+
+        Release(data);
+        Release(sheets);
+    });
+
+    /// <summary>How many other workbooks this one links to. Zero is the point of the copy rebind.</summary>
+    public static int CountExternalLinks(string path)
+    {
+        using var application = TestExcelApplication.Start();
+        var workbooks = Get(application.Value, "Workbooks");
+        var workbook = Invoke(workbooks, "Open", Path.GetFullPath(path))!;
+        try
+        {
+            var links = Invoke(workbook, "LinkSources", 1);
+            return links is Array array ? array.Length : 0;
+        }
+        finally
+        {
+            Invoke(workbook, "Close", false);
+            Release(workbook);
+            Release(workbooks);
+        }
+    }
+
     public static void CreateMacroTarget(string path, string componentName, string source)
     {
         using var application = TestExcelApplication.Start();
@@ -251,7 +378,7 @@ internal static class ExcelTestWorkbook
         }
     }
 
-    public static bool HasValue(string path, string range, object expected)
+    public static bool HasValue(string path, string range, object expected, string? worksheet = null)
     {
         using var application = TestExcelApplication.Start();
         object? workbook = null;
@@ -261,7 +388,7 @@ internal static class ExcelTestWorkbook
             try { workbook = Invoke(workbooks, "Open", path, 0, true); }
             finally { Release(workbooks); }
             var sheets = Get(workbook, "Worksheets");
-            var sheet = Item(sheets, 1);
+            var sheet = Item(sheets, worksheet ?? (object)1);
             var target = Get(sheet, "Range", range);
             var actual = Get(target, "Value2");
             Release(target);

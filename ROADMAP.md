@@ -49,18 +49,26 @@ All four original phases landed and were field-validated on the work computer on
     synced folder reports a service URL as its `FullName`, so exact-path
     matching refused every `UseOpen` against the storage the owner actually
     uses. The caller's path is now resolved through the sync client's own
-    registry mapping and then compared exactly. **The registry lookup itself is
-    still unproven** - see the open gates below.
+    registry mapping and then compared exactly. **Half of this is now proven.**
+    The 2026-08-12 field run on the managed machine reported
+    `syncRootsRegistered 3` and `syncPathsResolving 3 of 3`: the sync client's
+    registry is there, ExcelTask reads it, and every root it names resolves to a
+    real local directory. What that does *not* prove is the other half - that a
+    workbook Excel reports by service URL matches the local path a caller typed -
+    because no `UseOpen` against a synced workbook has run yet. See the open
+    gates below.
 13. **A field check that states its own coverage** (v0.16.0, completed v0.17.0):
-    it once validated five of twelve operations and printed PASS. It now names
+    it once validated five of eleven operations and printed PASS. It now names
     any operation it did not exercise - and on its first run named a real one,
-    `RepairExistingWorksheet`, which is now a step. All twelve are covered.
-14. **Direct formula writes** (v0.18.0): a separate
-    `WriteWorksheetFormulas` operation accepts bounded caller-supplied A1
-    formulas (8,192 characters per formula and 768 KiB of UTF-8 formula text per
-    request), reads them back before save, and verifies them after reopen.
-    `WriteWorksheetValues` remains constants-only, and receipts never echo
-    formula text.
+    `RepairExistingWorksheet`, which is now a step. All sixteen are covered as of
+    2026-08-12, the last of them `ManageModelMeasure` and
+    `ManageModelRelationship`, which needed the check to build its own Data Model
+    fixture: two joinable tables, the many side repeating and the one side unique,
+    because Excel refuses a relationship whose one side is not.
+14. **Direct formula writes** (v0.21.0): a separate `WriteWorksheetFormulas`
+    operation accepts bounded caller-supplied A1 formulas, reads them back before
+    save, and verifies them after reopen. `WriteWorksheetValues` remains
+    constants-only, and receipts never echo formula text.
 
 ### Current test counts
 
@@ -68,13 +76,13 @@ Updated every release; `docs/FIELD-TASK.md` step 4 checks against these.
 
 | Suite | Count |
 |---|---|
-| Core | 138 |
-| Excel (fast) | 88 |
-| McpServer (fast) | 19 |
-| **Fast total** | **245** |
-| Excel (OnDemand, real Excel) | 39 |
+| Core | 156 |
+| Excel (fast) | 103 |
+| McpServer (fast) | 28 |
+| **Fast total** | **287** |
+| Excel (OnDemand, real Excel) | 50 |
 | McpServer (OnDemand) | 4 |
-| **Full gate total** | **288** |
+| **Full gate total** | **341** |
 
 Measured against the original server on the work computer: 8.1x smaller tool
 surface; 74% fewer input tokens, 73% fewer model requests, 84% fewer MCP calls,
@@ -101,31 +109,109 @@ never contents. Both were in code shipped an hour earlier, and the test that
 should have caught them asserted a single benign example rather than the
 guarantee.
 
-## From the 2026-08-11 field log, not yet addressed
+## Data Model mutation is reachable, and the first answer was wrong
 
-A full day's real work produced four frictions. Two are fixed in 0.16.0 - the
+**Measured 2026-08-12.** A first probe found `ModelTables`, `ModelRelationships`
+and `ModelMeasures` reachable but empty on a fresh workbook, and concluded that
+Data Model mutation was blocked behind needing a real model to develop against.
+That conclusion was wrong twice over.
+
+A model table is created by loading a query into the model, which works:
+`Connections.Add2(name, description, connectionString, commandText, 6,
+CreateModelConnection: true, false)` against
+`OLEDB;Provider=Microsoft.Mashup.OleDb.1;Data Source=$Workbook$;Location=<query>`
+produces one. So the fixture the entry said was missing can be built by the
+product's own Power Query operation.
+
+And `ModelMeasures.Add` works. Its first failure - "Value does not fall within
+the expected range" - was two mistakes in the call, not a limitation: the
+`FormatInformation` argument is required and must be a real format object such as
+`Model.ModelFormatGeneral`, and the DAX expression must carry **no** leading
+equals sign. With both corrected the measure is created and deleted cleanly.
+
+The lesson is the one this project keeps relearning: a COM call that fails is
+not evidence the capability is absent until the call itself has been checked.
+
+## The real-Excel tier is intermittently flaky, and that is a problem
+
+**Observed 2026-08-12, unresolved.** The `RunType=OnDemand` suite fails
+occasionally when the full gate runs it immediately after the fast tier, and
+passes reliably when run on its own. Across five runs of the same commit: two
+gate runs failed, each naming a *different* pair of tests, while three
+standalone runs of the same 39 tests passed with nothing left behind.
+
+One of those failures was real and is fixed - a phase renamed from
+`number-format` to `range-format` that the choreography assertion still expected.
+The others are not explained. The candidates are Excel COM activation being
+slower right after a burst of COM work in another process, and the leak
+assertion's thirty-second settle being too short under that load.
+
+This matters more than an annoyance. The competitive argument is measured
+correctness, and a gate that fails differently on identical code is not a
+measurement - it teaches whoever runs it to re-run rather than read, which is
+how a real defect gets waved through as "probably the flaky one". It has already
+happened once today: a genuine leak was dismissed as environmental twice before
+being tracked to a retry the sentry had stopped performing.
+
+Worth doing before more features: capture the failing run's full output rather
+than a filtered view, and record which test, which assertion, and the machine
+load at the time. Three data points would probably name it.
+
+## From the 2026-08-11 field log
+
+A full day's real work produced four frictions. Two were fixed in 0.16.0 - the
 SharePoint identity refusals and the audit truncating its worksheet list, the
-latter already answered by `ScanWorkbookStructure`. These two are not.
+latter already answered by `ScanWorkbookStructure`. The rest are closed below.
 
-- **`CopyExhibit` leaves the copied worksheet pointing at the source workbook.**
-  Copying a sheet from a reference workbook produced 305 formula cells on the
-  new tab carrying external references back to the source - and the follow-up
-  repair fixed none of them, because Excel normalized the proposed internal
-  references straight back into external ones. The workbook was left with an
-  external link the owner did not ask for and could not remove, and the session
-  ended with its state unknown. This is the flagship operation, and it is the
-  largest product gap the log exposed. Worth measuring first: whether writing
-  the formulas as R1C1 after the copy, or copying cell contents rather than the
-  sheet, avoids the normalization.
+- **`CopyExhibit` left the copied worksheet pointing at the source workbook.**
+  *Fixed 2026-08-12.* Copying a sheet from a reference workbook produced 305
+  formula cells on the new tab carrying external references back to the source -
+  and the follow-up repair fixed none of them, because Excel normalized the
+  proposed internal references straight back into external ones. The workbook
+  was left with an external link the owner did not ask for and could not remove.
 
-- **`UseOpen` bound to a stray `Book1` instead of the named workbook.** Live
-  verification reported an active workbook of `Book1` containing `iwe_getinst`
-  and `Sheet1` - an add-in artifact, not the target. `RotWorkbookLocator.Find`
-  and `HasExternalWorkbookAtPath` both bind the moniker and re-read `FullName`;
-  `ContainsPath` matches on the ROT display name alone and is what
-  `InspectCore` uses to set `TargetIsOpen`, which becomes "The exact target
-  workbook is open." The word *exact* is carrying weight that code path does not
-  supply. Fix is to bind and confirm, as its two siblings already do.
+  The mechanism was measured before anything was written. Excel rewrites
+  `=Data!A1` to `='[reference.xlsx]Data'!A1` during the copy because the sheet
+  it names is not yet in the destination; the copy still calculates, which is
+  what made it quiet. `UsedRange.Replace` over the copied sheet, run once per
+  external sheet name in both the quoted and bare forms, binds them home:
+
+  ```
+  after copy:     A1: ='[p2-src.xlsx]Data'!A1*2  -> 20
+  after Replace:  A1: =Data!A1*2                 -> 200
+  external links remaining: 0
+  ```
+
+  A sheet the destination does not have is deliberately **not** rewritten -
+  that would turn a wrong number into `#REF` - so the `copy-rebind` check fails
+  and names it. Two real-Excel tests hold both halves: one asserts the copied
+  exhibit reads 200 rather than 20 with zero external links, the other asserts
+  the unbindable case reports the missing sheet by name instead of clean
+  success.
+
+- **`UseOpen` bound to a stray `Book1` instead of the named workbook.**
+  *Fixed 2026-08-12.* Live verification reported an active workbook of `Book1`
+  containing `iwe_getinst` and `Sheet1` - an add-in artifact, not the target.
+  `RotWorkbookLocator.Find` and `HasExternalWorkbookAtPath` both bind the
+  moniker and re-read `FullName`; `ContainsPath` matched on the ROT display name
+  alone and was what set `TargetIsOpen`, which becomes "The exact target
+  workbook is open." The word *exact* was carrying weight that code path did not
+  supply.
+
+  `ContainsPath` now delegates to `Find`, so the inspection's claim and the
+  binding are one answer rather than two that can disagree. This is fixed by
+  construction rather than by a test: the failing input was a moniker registered
+  under the target's path that resolved to a different workbook, which an
+  add-in produced and a fixture cannot. Deleting the second code path is the
+  guarantee; a test pinning an example would not have caught it.
+
+- **`ManageModelMeasure` had no field-check step.** *Fixed 2026-08-12.* The
+  check now builds its own Data Model fixture - a query loaded into the model
+  via `Connections.Add2` - and exercises Create then Delete against it, the
+  delete proving the fingerprint precondition round-trips. Where policy forbids
+  Power Query the fixture reports why and the two rows are skipped, so a policy
+  refusal is never counted against the product. Verified locally on 2026-08-12:
+  **all 14 operations exercised, `leaked=0`, `result=PASS`.**
 
 ## Open field gates (small, when convenient)
 
@@ -142,16 +228,38 @@ latter already answered by `ScanWorkbookStructure`. These two are not.
 - The repeated benchmark: one MCP catalog per client profile, three or more
   repetitions per workflow, median and spread, order alternated. Until then no
   percentage above is quoted as characteristic.
-- **The schema budget is nearly spent: 16,012 bytes of 16,384 at 0.15.1.** The
-  next description that states a rule will fail the pin test, and the strategy
-  this project chose - no new tools, richer descriptions on the one that exists
-  - spends exactly that budget. So the next addition has to buy its space from
-  text already there rather than append. Two candidates to reclaim it: the
-  eleven payload descriptions each re-state "all other payloads must be null"
-  (~400 bytes of pure repetition, and the enum plus the `required` list already
-  carry the rule), and several restate their kind name, which the property name
-  already gives. Do that reclamation *before* the next feature, not during one,
-  so a budget failure never arrives disguised as a feature bug.
+- **Schema budget: 22,355 bytes of 22,528, measured 2026-08-12 with the
+  fifteenth operation, the rewritten tool description and the returned M
+  expression in.** The
+  reclamation this entry used to ask for was done before the three operations
+  that followed it: the payload descriptions no longer each re-state "all other
+  payloads must be null", which the enum and the `required` list already carry.
+  That bought enough that `ManageTable` fitted with no rise at all, and the
+  query and measure operations then cost what a thirteenth and fourteenth
+  operation genuinely cost. The relationship operation took roughly half of what
+  was left, and a clause routing worksheet discovery to `ScanWorkbookStructure`
+  rather than the audit took some of the rest - the free operation had five
+  descriptions pointing away from it and none pointing at it.
+
+  The last rise was not an operation at all. The tool's own one-line description
+  still named three kinds of work while fifteen shipped, and a field session
+  routed ordinary formula work to a different Excel tool rather than here - so
+  369 bytes went on listing the operations and stating that this tool never
+  authors new formula text. That is the rule this bound exists to enforce
+  working as intended: prose may grow only for something a caller cannot act
+  without, and a caller that discovers the formula refusal from a rejection has
+  already paid a round trip to learn it.
+
+  0.20.0 then spent 141 of what was left returning a query's M expression in the
+  Plan receipt: two descriptions that explained the withholding rule came out,
+  which paid for most of the `QueryReceipt` but not all of it.
+
+  v0.21.0 paid for the sixteenth operation by keeping its schema descriptions
+  deliberately compact. The 22,528-byte assertion remains the gate; the MCP
+  protocol test reports the measured size and remaining headroom on failure.
+
+  The measurement no longer needs the bound temporarily broken to read: the
+  assertion carries the byte count and the remaining headroom in its message.
 
 ## Candidates, ranked by measured demand
 
@@ -170,16 +278,18 @@ contents are never carried *incidentally* - and in a read they are the entire
 request. So it returns them, under a hard bound rather than a refusal.
 
 **3. Writing values and formulas.** `set-values` 19 sessions, `set-formulas` 15.
-Values shipped in v0.10.0, and direct formulas are now covered by v0.18.0
-operation described above:
+Now the top open item, and the two halves should be separated rather than decided
+together:
 
 - **Values shipped in v0.10.0**, within the existing stance rather than against
   it: a constant is exactly what the caller named, and a read-back proves it.
-- **Formula text is explicit, bounded, and verified.** `WriteWorksheetFormulas`
-  is the escape hatch for cases inference cannot cover: it accepts up to 200
-  single-cell A1 formulas, reads them back before saving, and verifies them after
-  reopening. `ExtendFormulaSeries` and `RepairExistingWorksheet` remain safer
-  when sheet evidence can prove the intended pattern.
+- **Formula text remains a genuine collision, and remains refused.** Inference
+  plus verification is what makes an ExcelTask edit safe, and accepting composed
+  formula text discards exactly that. `ExtendFormulaSeries` and
+  `RepairExistingWorksheet` already serve the cases where the intended formula is
+  derivable from evidence. What is still unknown is how much of the 15 sessions
+  those two already cover - measurable rather than arguable, and not yet
+  measured.
 
 **4. Find and replace shipped in v0.11.0** (`range_edit`, 13 sessions). What
 remains in demand order is below.
@@ -315,12 +425,20 @@ implementation, on the closed-workbook path.
   exists and carries no risk of disagreeing with the audit, because it would stop
   short of every category the audit alone can answer.
 
-**2. Direct formula writes are now implemented with a narrow safety seam.** The
-  field's 15 `set-formulas` sessions justified a separate bounded operation rather
-  than changing constant writes. Its verification proves persistence and formula
-  identity, not semantic intent, so inferred formula operations remain preferred
-  when neighbouring evidence can establish the pattern. The remaining gate is
-  managed-work-computer execution of the new field-check step.
+**2. The formula refusal has a middle, and the field has mapped it.** Every
+surveyed competitor accepts model-written formula text; ExcelTask refuses and
+infers instead. The survey found the design space is not binary: SheetMind
+constrains generation to a closed BNF grammar of seven operations, and
+Microsoft's SheetBrain accepts model-written Python but runs it sandboxed. The
+grammar option is the one compatible with this project's stance - a caller could
+name a *shape* (sum this contiguous range into that cell) which the engine
+composes and verifies, without any model-authored text ever reaching a cell.
+
+  This remains the largest open product question, and the gate has not moved:
+  `set-formulas` was 15 of 46 sessions, and how much of it `ExtendFormulaSeries`
+  and `RepairExistingWorksheet` already cover is still unmeasured. **Gate:** that
+  measurement first. A grammar built before it would be guessing at which shapes
+  matter, which is the same error as building all of `range_format`.
 
 **3. Verification now has outside grounding, and should be cited.** Nothing in
 the survey has a counterpart to reopen-and-verify or proof-of-exit. Independently,
@@ -348,7 +466,6 @@ Receipts stay bounded and truthful: a truncated report says so, and an uncertain
 outcome is `Unknown`. Workbook contents appear in a receipt only when they are
 the explicit request - the range a read asked for, the one procedure a macro
 Plan named - and never incidentally. No receipt ever carries connection
-strings, machine paths, or content nobody asked for. Formula text is accepted
-only by `WriteWorksheetFormulas`, is bounded and verified after reopening, and is
-never returned in receipts; inferred formulas remain preferred when evidence is
-available.
+strings, machine paths, or content nobody asked for. Model-written formula text
+is never accepted; formulas are inferred from evidence in the sheet and
+verified after reopening.

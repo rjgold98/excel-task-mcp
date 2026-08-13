@@ -1,4 +1,4 @@
-# ExcelTask 0.18.0
+# ExcelTask 0.21.0
 
 ExcelTask is a clean-sheet, Copilot-first Excel automation engine. The selected
 client model calls one high-level `excel_task` tool; deterministic code handles
@@ -8,7 +8,7 @@ cleanup. The server never chooses or invokes a model.
 This repository does not depend on or preserve the former ExcelMcp interface.
 There is intentionally no broad CLI or low-level tool catalog.
 
-See the [changelog](CHANGELOG.md), [roadmap](ROADMAP.md), and
+See the [changelog](CHANGELOG.md), [roadmap](ROADMAP.md), [privacy](PRIVACY.md), and
 [latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest).
 
 ## What works
@@ -29,31 +29,41 @@ One request can perform exactly one operation:
 6. read the contents of one bounded worksheet range, as displayed values or as
    R1C1 formulas; or
 7. write constants into named cells, never formula text; or
-8. write caller-supplied A1 formulas through the explicit
+8. write bounded caller-supplied A1 formulas through the explicit
    `WriteWorksheetFormulas` operation, with immediate read-back and save/reopen
    verification; or
 9. find the cells whose text matches, and rewrite the constants among them,
    leaving any cell whose text comes from a formula reported but untouched; or
 10. create an empty workbook, or add an empty worksheet, never overwriting
    either; or
-11. set one number format code across a bounded range, changing how numbers
-   display and never the numbers themselves; or
+11. set how a bounded range looks - number format, bold, italic, font size, name
+    and colour, fill, borders, column width, row height - changing no cell value;
+    or
 12. map a workbook's structure by reading the file directly - no Excel process
-   at all: sheets, dimensions, formula/constant counts, the constant islands
-   that mark manual overrides inside calculated columns, plus defined names,
-   tables, and external links by file name; then
-13. recalculate, save, close owned Excel, reopen the saved workbook, and verify
-    the worksheet, repairs, procedure, written values, replacements, or format;
-    and
-14. return a compact, structured receipt.
+    at all: sheets, dimensions, formula/constant counts, the constant islands
+    that mark manual overrides inside calculated columns, plus defined names,
+    tables, and external links by file name; or
+13. create, rename, restyle, resize, or convert back to plain cells one Excel
+    table, keeping every cell when the table goes; or
+14. create, replace, or delete one Power Query, guarded by the fingerprint a Plan
+    reports. Plan returns the M expression too - and an M expression usually names
+    a server, so PRIVACY.md section 4 states what that puts on the wire; or
+15. create, replace, or delete one Data Model measure, guarded the same way, with
+    Plan returning the DAX; or
+16. create or delete one Data Model relationship, naming the many side and the
+    one side. Replace is refused: a relationship has no editable middle, so the
+    honest instruction is to delete it and create the new one; then
+17. recalculate, save, close owned Excel, reopen the saved workbook, and verify
+    the worksheet, repairs, procedure, written values, formulas, replacements, format,
+    table, query, measure, or relationship; and
+18. return a compact, structured receipt.
 
-Operations 5, 6, and 12 never write, and say so from evidence: their receipts
-carry a check proving the workbook's size and timestamp were identical before
-and after (the structure scan additionally avoids Excel entirely).
+Operations 5 and 6 never write, and say so from evidence: their receipts carry a
+check proving the workbook's size and timestamp were identical before and after.
 The receipt withholds workbook values and formula text everywhere except the
 range read, where the contents are the entire request rather than incidental.
-Formula text is accepted only by `WriteWorksheetFormulas`; it is never echoed
-in a receipt.
+Formula text is accepted only by `WriteWorksheetFormulas` and is still withheld
+from the receipt.
 
 Every inspection and execution runs in a short-lived private worker. The MCP
 host enforces a two-minute deadline, reports interrupted mutations as
@@ -78,14 +88,19 @@ suppressed either way.
 - The request has one `operation` union: `CopyExhibit`,
   `RepairExistingWorksheet`, `ExtendFormulaSeries`, `EditMacroProcedure`,
   `AuditWorkbookFlows`, `ReadWorksheetRange`, `WriteWorksheetValues`,
-  `WriteWorksheetFormulas`, `FindReplace`, `Create`, `SetNumberFormat`, or
-  `ScanWorkbookStructure`. Supply exactly the one matching payload.
-  `WriteWorksheetValues` still takes constants only and rejects any value
-  starting with `=`; `WriteWorksheetFormulas` is the explicit path for A1
-  formulas and `FindReplace` still refuses a replacement that would leave a
-  cell starting with `=`.
-- Start with `AuditWorkbookFlows` when the worksheet names are unknown. Every
-  other operation requires a worksheet name it otherwise has no way to discover.
+  `WriteWorksheetFormulas`,
+  `FindReplace`, `Create`, `SetRangeFormat`, `ScanWorkbookStructure`, `ManageTable`,
+  `ManageQuery`, `ManageModelMeasure`, or `ManageModelRelationship`. Supply exactly the one
+  matching payload. `WriteWorksheetValues` takes constants only and rejects any
+  value starting with `=`. `WriteWorksheetFormulas` is the explicit path for
+  bounded A1 formulas; `FindReplace` refuses a
+  replacement that would leave a cell starting with `=` even when the
+  replacement text itself is a legal constant. `RepairExistingWorksheet` and
+  `ExtendFormulaSeries` write formulas, but only ones inferred from formulas
+  already on the sheet - never text a caller supplied.
+- Start with `ScanWorkbookStructure` when the worksheet names are unknown: it
+  names them and starts no Excel process at all. Every other operation requires
+  a worksheet name it otherwise has no way to discover.
 - `FindReplace` matches plain text on what the cell displays; `*` and `?` are
   literal rather than wildcards, which is where it deliberately differs from
   Excel's own Find. It searches at most 10,000 cells, and refuses rather than
@@ -93,10 +108,21 @@ suppressed either way.
 - `Create` writes the target it names, so it takes no save destination and
   requires binding `Isolated`. It never overwrites: an existing file, or an
   existing worksheet name, is refused outright.
-- `SetNumberFormat` sets only the number format, on at most 10,000 cells. It
-  changes no cell values and sets no fonts, fills, borders, widths, or
-  conditional formats. Codes are not trimmed, because a format's leading and
-  trailing spaces are what align parenthesised negatives under positives.
+- `SetRangeFormat` sets only how a range looks, on at most 10,000 cells: number
+  format, bold, italic, font size, name and colour, fill, borders and their
+  weight, column width, row height. Every field is optional and independent, and
+  at least one must be supplied. It changes no cell values and sets no
+  conditional formats. Number-format codes are not trimmed, because a format's
+  leading and trailing spaces are what align parenthesised negatives under
+  positives. Colours are `#RRGGBB`. A misspelled font name cannot be caught by
+  verification: Excel stores whatever name it is given and substitutes only when
+  rendering, so the read-back always agrees.
+- `CopyExhibit` binds the copied worksheet's references to the workbook it
+  landed in. Excel rewrites `=Data!A1` into a link back to the source during the
+  copy, because the sheet it names is not yet in the destination; the copy still
+  calculates, which is what makes that quiet. A sheet the destination does not
+  have is deliberately left alone rather than turned into `#REF`, and the
+  `copy-rebind` check names it.
 - `ScanWorkbookStructure` is the one operation that never starts Excel: it reads
   the file as the ZIP of XML it physically is. Counts and addresses only, never
   contents. Encrypted workbooks cannot be scanned this way; the Excel-based
@@ -104,11 +130,6 @@ suppressed either way.
 - `ReadWorksheetRange` returns at most 400 cells, omits blank ones, and caps each
   cell's text. It rejects a range larger than that rather than truncating to a
   partial answer that would read as a complete one.
-- `WriteWorksheetFormulas` accepts at most 200 single-cell A1 formulas, each no
-  longer than 8,192 characters, within one 400-cell span, and no more than
-  768 KiB of UTF-8 formula text per request. Excel reads them back before saving
-  and verifies them again after reopening; the receipt returns counts and
-  checks, never formula text.
 - The `EditMacroProcedure` operation is deliberately narrow: only an isolated
   `.xlsm` saved as a `Copy`, one named standard-module procedure, full
   replacement guarded by the expected current hash, and an optional no-argument
@@ -121,6 +142,9 @@ suppressed either way.
   ranges and scan at most 10,000 cells. Series extension accepts two evidence
   periods, 1–24 adjacent destination periods, and no more than 2,000 planned
   mutations.
+- `WriteWorksheetFormulas` accepts at most 200 single-cell A1 formulas, each no
+  longer than 8,192 characters, within a 400-cell span and 768 KiB of UTF-8
+  formula text per request. Excel reads them back before saving and after reopen.
 - `mode: "Plan"` analyzes only; it never changes, saves, or recalculates a
   workbook.
 
@@ -195,14 +219,14 @@ client cache untouched.
 
 ## Current boundary
 
-Eleven operations ship today: formula, exhibit, macro editing, discovery, range
-reading, constant writes, find/replace, creation, number formats, worksheet
-repair, and structure scanning without Excel. The version is the heading above,
-and the build is always the
+Fifteen operations ship today: formula, exhibit, macro editing, discovery, range
+reading, constant writes, find/replace, creation, worksheet repair, structure
+scanning without Excel, range formatting, table management, Power Query
+mutation, and Data Model measures and relationships. The version is the heading
+above, and the build is always the
 [latest release](https://github.com/rjgold98/excel-task-mcp/releases/latest).
-It does not yet set fonts, fills, borders or widths, refresh Power Query or data
-models, attach to unsaved workbooks, edit sheet or class modules, or expose a
-general automation surface.
+It does not yet refresh Power Query or data models, attach to unsaved workbooks,
+edit sheet or class modules, or expose a general automation surface.
 Authentication or IRM can still require a person; a macro dialog or timeout is
 `Unknown` and must be reconciled before retrying.
 

@@ -19,7 +19,7 @@ Three questions, in order of value. Everything else is confirmation.
 2. **What does the agent reach for instead of ExcelTask?** A previous session
    made 216 PowerShell calls against 71 ExcelTask calls. Knowing which receipt
    sent it away is worth more than any feature on the roadmap. Step 6.
-3. **Do all twelve operations still work on managed hardware?** Step 3.
+3. **Do all sixteen operations still work on managed hardware?** Step 3.
 
 ## Boundaries
 
@@ -34,6 +34,33 @@ These bind, and they come from `docs/AGENT-BRIDGE.md`.
   disposable copy step 5 asks for. Never a real business workbook.
 - Do not reconfigure or interfere with any other MCP install. Measuring is fine.
 - Anything this task does not cover is a question for Ross, not an improvisation.
+
+---
+
+## Step 0 — record what else is loaded (~2 min)
+
+This is new, and it comes from a finding rather than a guess. Two Excel skills
+were enabled on this machine during earlier sessions. One names nineteen tools,
+none of which exist here — ExcelTask advertises exactly one, `excel_task`. The
+other drives a **separate** Excel automation binary with its own sessions, and
+its own documentation says unclosed sessions leave Excel processes running.
+
+That second one matters to this task specifically: an Excel process started by
+something else **while the check is running** is counted as a process ExcelTask
+leaked, and the run prints `result=FAIL` for a leak that is not ours. Step 1a
+clears strays *before* the run; nothing protects the run from something started
+*during* it.
+
+1. List every skill currently **loaded and enabled**, whether or not it fires.
+   In the Copilot app that is `/skills`. **Paste the list into the report.**
+2. If any Excel-related skill is enabled, **say so and stop for Ross's decision**
+   before disabling anything. Disabling a client-side skill is not the same as
+   touching another MCP install, but it is close enough to the boundary above
+   that the owner makes the call, not the agent.
+3. Run nothing else that automates Excel for the duration of this task.
+
+A skill that shaped behaviour without ever being invoked is invisible to an
+invocation log, which is why the inventory is asked for separately from step 6.
 
 ---
 
@@ -171,12 +198,27 @@ changes no setting, and touches nothing of yours.
 & "$env:USERPROFILE\ExcelTask\excel-task-mcp.exe" --field-check
 ```
 
-It prints a digest of about fifteen lines and writes three files to
+It prints a digest of about twenty lines and writes three files to
 `Desktop\ExcelTask-FieldCheck`.
 
 **What good looks like:** every operation row reads `Completed` or `Planned`,
-every row ends `leaked=0`, the last line reads `Coverage: all 12 operations
-exercised.`, and the digest ends `leaked=0 result=PASS`. Exit code `0`.
+the last line reads `Coverage: all 16 operations exercised.`, and the digest
+ends `leaked=0 result=PASS`. Exit code `0`.
+
+A live row ending `excelStillUp=1` or `=2` is **not** a leak. It means Excel was
+still shutting down when that operation stopped waiting, which is ordinary here:
+four connected COM add-ins load into every instance and unload again on exit, so
+teardown runs past the twenty seconds the per-row wait allows. The written report
+reconciles every row against a final snapshot taken after everything has stopped.
+Judge leaks by the report's `Leaked Excel` column and the digest's `leaked=`,
+never by the console line — the 2026-08-12 run printed `L2` against three
+operations and `leaked=0 result=PASS` in the same file.
+
+The four Data Model rows — two `ManageModelMeasure`, two `ManageModelRelationship`
+— need a Data Model, which needs Power Query.
+If policy forbids it here, those rows are absent and a note says why — that is
+a machine answer, not a product failure, and the run can still pass. **Report
+the note verbatim if it appears.**
 
 ```powershell
 $LASTEXITCODE
@@ -213,6 +255,12 @@ Re-run with the trace on. The log states its own contract in its header: phases,
 durations, operation kinds, worksheet names, A1 ranges, workbook **file names
 only**, process ids, statuses. It never records cell values, formulas, VBA
 source, connection strings, or full paths.
+
+What its header no longer says — through v0.18.0 it did — is that the result is
+**safe to share**. Read that first list again: worksheet names and workbook file
+names are in it. Where this run touched a real workbook, those names are real.
+The file states its contents; whether it can leave this machine is your call.
+See the reporting section at the end before relaying it.
 
 ```powershell
 $env:EXCELTASK_TRACE = "$env:USERPROFILE\exceltask-trace.log"
@@ -274,7 +322,11 @@ VBA, no full paths, no prompt or reasoning content.
    operation kind, the mode, and the receipt status returned. **Not** arguments.
 2. Any `tool.execution_start` with no matching `tool.execution_complete`: which
    tool, when, and what followed it.
-3. Every skill invocation: name, timestamp, duration.
+3. Every skill invocation: name, timestamp, duration. Separately, every skill
+   **loaded and enabled** for the session, invoked or not — the step 0 list. A
+   skill that shaped the agent's behaviour without ever firing leaves no
+   invocation to log, and would otherwise confound exactly the question this
+   step exists to answer.
 4. Every subagent: label, duration, whether it completed.
 5. **For each `excel_task` call, the tool names of the three calls immediately
    before and after it.** This is the important one — it shows what the agent
@@ -307,7 +359,7 @@ git -C <your local clone> pull
 dotnet test ExcelTask.slnx --filter "RunType!=OnDemand" -p:NuGetAudit=false
 ```
 
-**Expected: 245 fast tests, zero failures** — Core 138, Excel 88, McpServer 19.
+**Expected: 287 fast tests, zero failures** — Core 156, Excel 103, McpServer 28.
 The current counts are also in `ROADMAP.md` under Delivered, updated each
 release; if these disagree with the roadmap, trust the roadmap and report the
 difference.
@@ -318,7 +370,7 @@ Then the full gate, which drives real Excel and takes about ten minutes:
 .\scripts\Test-Mvp.ps1 -IncludeExcel
 ```
 
-**Expected: 288 total, zero failures, and no Excel process left behind.**
+**Expected: 341 total, zero failures, and no Excel process left behind.**
 
 **Report the pass/fail/skip counts per assembly, verbatim.** "Tests passed"
 without counts will be sent back.
@@ -348,10 +400,27 @@ requested.
 
 Files on the work computer, paths to Ross, **no git operations**.
 
-1. The three generated field-check files, unedited.
-2. The trace log, if step 4 ran.
-3. `ANALYTICS.md` from step 6.
-4. One `SUMMARY.md` containing:
+**Read anything before you relay it.** These artifacts are not equally
+shareable, and two of them describe the machine and its real work rather than
+the product. That judgement is yours to make with the facts, and nothing here
+makes it for you — see [PRIVACY.md](../PRIVACY.md).
+
+1. The **digest** first. It carries versions, per-operation status and timing,
+   the leak count and the result. No machine name, no add-in list, no paths.
+2. The Markdown and JSON reports, which name the computer, the Office and Excel
+   builds, the macro-trust values, and **every connected COM add-in by ProgID** —
+   a fair description of the finance stack this shop runs. From 0.19.0 the
+   Windows account name is written as `%USERPROFILE%`; a report from an earlier
+   build has the account name in it, beside the computer name.
+3. The trace log, if step 4 ran — and **only after reading it**. It carries no
+   workbook contents, but it does carry workbook file names, worksheet names and
+   A1 ranges, by design, because a trace that cannot be matched to its run is
+   useless. If this run touched a real workbook, those are real names, and a
+   workbook here is routinely named for a payer, a client, a facility or a deal.
+   If that is a problem, say so and send the digest alone; the phase timings are
+   what the trace is wanted for and they can be quoted without the file.
+4. `ANALYTICS.md` from step 6.
+5. One `SUMMARY.md` containing:
    - the version removed and the version installed, with the file count;
    - each command exactly as executed;
    - the digest verbatim and every exit code;

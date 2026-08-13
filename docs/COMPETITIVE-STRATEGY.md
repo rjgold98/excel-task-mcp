@@ -5,7 +5,7 @@ or **portability**, and ExcelTask beats all of them on not being wrong. This is 
 claim it argues is that all three axes are reachable *from* the design rather than against it,
 because one move unlocks all three — and that move already shipped.
 
-## Status of this document's claims, as of v0.18.0
+## Status of this document's claims, as of v0.21.0
 
 Read this first; the rest was written before any of it was tested.
 
@@ -16,7 +16,7 @@ Read this first; the rest was written before any of it was tested.
 | ~44% off the four accelerable operations from file-based verification | **Still projected.** Arithmetic from the timings, not an observed result. Nothing has been built. |
 | "Correctness nobody has measured on a real machine" is the durable advantage | **Weakened by our own evidence.** Two correctness defects shipped and were found by running the binary against hostile fixtures, not by the suite. The advantage is real only to the extent the checking is real; see below. |
 | The competitor comparison numbers (8.1x surface, 74% fewer tokens…) | **One run per workflow**, on the work computer, at v0.10.x. Not a benchmark, and now four releases stale. |
-| Direct formula writing | **Implemented in v0.18.0.** `WriteWorksheetFormulas` is bounded and save/reopen verified; the field check still needs to run on managed hardware. |
+| Direct formula writing | **Implemented in v0.21.0.** `WriteWorksheetFormulas` is bounded and save/reopen verified; the field check still needs to run on managed hardware. |
 
 The fourth row is the one that changed. This document argues that the field is
 uniformly untested and that this is ExcelTask's opening. That is still true of
